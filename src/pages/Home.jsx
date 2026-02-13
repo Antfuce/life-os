@@ -385,7 +385,30 @@ Return ONLY valid JSON (no markdown, no extra text):
   }
 }
 
-Focus on extracting and structuring CV data with quantified achievements and clear impact statements.`;
+CRITICAL: When extracting CV data, always include:
+- Quantified achievements with numbers (e.g., "1,000+ candidates placed", "€10M revenue")
+- Clear date ranges (start_date, end_date or current:true)
+- Bullet points as separate achievement items
+- Impact metrics and scope (team size, revenue, placements, metrics)
+
+Example extraction for an experience entry:
+{
+  "title": "Managing Director",
+  "company": "Atlas Recruitment",
+  "location": "Ireland",
+  "start_date": "Aug 2019",
+  "end_date": null,
+  "current": true,
+  "description": "Founded and scaled boutique recruitment agency specializing in luxury hospitality staffing",
+  "achievements": [
+    "Placed 1,000+ candidates across all levels",
+    "Built partnerships with 350+ luxury hotels (Radisson Blu, Four Seasons, Hilton)",
+    "Scaled employee LinkedIn networks to 15K–30K followers, generating 100+ inbound leads/day",
+    "Launched Job Search Service generating €4K/month additional revenue"
+  ]
+}
+
+Extract ALL experiences, education, and skills from what the user shares.`;
   };
 
   const generateConversationSummary = async (messages, convId) => {
