@@ -6,7 +6,7 @@ import PersonaAvatar from "./PersonaAvatar";
 import ReactMarkdown from "react-markdown";
 import { base44 } from "@/api/base44Client";
 
-export default function MessageBubble({ message, isLast, onSpeakingChange }) {
+export default function MessageBubble({ message, isLast, onSpeakingChange, aiVoiceEnabled = true }) {
   const isUser = message.role === "user";
   const persona = message.persona || "both";
   const [isPlaying, setIsPlaying] = useState(false);
@@ -14,11 +14,11 @@ export default function MessageBubble({ message, isLast, onSpeakingChange }) {
   const audioRef = useRef(null);
 
   useEffect(() => {
-    // Auto-play assistant messages
-    if (!isUser && message.content && isLast) {
+    // Auto-play assistant messages ONLY if aiVoiceEnabled is true
+    if (!isUser && message.content && isLast && aiVoiceEnabled) {
       playAudio();
     }
-  }, [isUser, message.content, isLast]);
+  }, [isUser, message.content, isLast, aiVoiceEnabled]);
 
   const playAudio = async () => {
     if (audioUrl) {
