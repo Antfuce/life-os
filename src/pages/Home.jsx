@@ -4,8 +4,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Brain } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+import MessageBubble from "../components/chat/MessageBubble";
 import ChatInput from "../components/chat/ChatInput";
-import ConversationView from "../components/chat/ConversationView";
 import TypingIndicator from "../components/chat/TypingIndicator";
 import PersonaSelector from "../components/chat/PersonaSelector";
 import WhisperCaption from "../components/chat/WhisperCaption";
@@ -425,7 +425,7 @@ For mock interview mode, also include:
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.8, delay: 0.5 }}
-                className="w-full max-w-2xl px-6"
+                className="w-full max-w-lg"
               >
                 <ChatInput onSend={handleSend} />
               </motion.div>
@@ -460,18 +460,37 @@ For mock interview mode, also include:
           )}
         </AnimatePresence>
 
-        {/* Conversation State */}
+        {/* Voice Mode State */}
         <AnimatePresence mode="wait">
           {hasStarted && (
             <motion.div
-              key="conversation"
+              key="voice"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ duration: 0.3 }}
-              className="flex-1 flex flex-col relative h-full"
+              transition={{ duration: 0.5 }}
+              className="flex-1 flex flex-col items-center justify-center relative h-full overflow-hidden"
             >
+              {/* Whisper Response - fading text */}
+              <AnimatePresence>
+                {whisper && (
+                  <WhisperResponse text={whisper} visible={!!whisper} />
+                )}
+              </AnimatePresence>
+
+              {/* Central Avatar with Waves */}
+              <div className="flex-1 flex items-center justify-center">
+                <AvatarWithWaves persona={persona} isActive={isVoiceActive} />
+              </div>
+
+              {/* Memory Panel */}
+              <ContextPanel
+                memories={memories}
+                visible={showMemory}
+                onClose={() => setShowMemory(false)}
+              />
+
               {/* Header - top left */}
-              <div className="absolute top-6 left-6 z-10">
+              <div className="absolute top-6 left-6 flex items-center gap-3">
                 <button
                   onClick={() => {
                     setHasStarted(false);
@@ -490,7 +509,7 @@ For mock interview mode, also include:
               {/* Memory button - top right */}
               <button
                 onClick={() => setShowMemory(!showMemory)}
-                className="absolute top-6 right-6 z-10 relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
+                className="absolute top-6 right-6 relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
               >
                 <Brain className="w-4 h-4 text-neutral-500" />
                 {memories.length > 0 && (
@@ -498,20 +517,23 @@ For mock interview mode, also include:
                 )}
               </button>
 
-              {/* Memory Panel */}
-              <ContextPanel
-                memories={memories}
-                visible={showMemory}
-                onClose={() => setShowMemory(false)}
-              />
+              {/* Floating Modules */}
+              <AnimatePresence>
+                {floatingModules.map((module) => (
+                  <FloatingModule
+                    key={module.id}
+                    title={module.type === "cv" ? "Your CV" : module.type === "interview" ? "Interview Prep" : "Module"}
+                    position={module.position}
+                    onClose={() => setFloatingModules((prev) => prev.filter((m) => m.id !== module.id))}
+                  >
+                    {module.type === "cv" && <LiveCVPreview cvData={cvData} onDownload={() => {}} />}
+                    {module.type === "interview" && <LiveInterviewPrep questions={interviewQuestions} onClose={() => setFloatingModules((prev) => prev.filter((m) => m.id !== module.id))} />}
+                  </FloatingModule>
+                ))}
+              </AnimatePresence>
 
-              {/* Messages */}
-              <ConversationView messages={messages} isLoading={isLoading} whisper={whisper} />
-
-              {/* Input - bottom */}
-              <div className="border-t border-neutral-200 bg-neutral-50 px-6 py-4">
-                <ChatInput onSend={handleSend} disabled={isLoading} />
-              </div>
+              {/* Voice Input - bottom */}
+              <VoiceInput onTranscript={handleSend} isListening={isVoiceActive} />
             </motion.div>
           )}
         </AnimatePresence>
