@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Send } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import VoiceInput from "./VoiceInput";
 
 export default function ChatInput({ onSend, disabled }) {
   const [text, setText] = useState("");
@@ -27,6 +28,10 @@ export default function ChatInput({ onSend, disabled }) {
     }
   };
 
+  const handleVoiceTranscript = (transcript) => {
+    setText(transcript);
+  };
+
   return (
     <div className="relative">
       <div className="flex items-end gap-3 bg-white/60 backdrop-blur-xl border border-white/40 rounded-2xl px-4 py-3 shadow-lg shadow-black/[0.03]">
@@ -40,6 +45,7 @@ export default function ChatInput({ onSend, disabled }) {
           rows={1}
           className="flex-1 bg-transparent text-neutral-800 placeholder:text-neutral-400 text-[15px] leading-relaxed resize-none outline-none max-h-[120px]"
         />
+        <VoiceInput onTranscript={handleVoiceTranscript} disabled={disabled} />
         <AnimatePresence>
           {text.trim() && (
             <motion.button
