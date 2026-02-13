@@ -85,17 +85,17 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
         </AnimatePresence>
       </div>
       
-      {/* Live Caption Display */}
+      {/* Live Caption Display - Prominent Popup */}
       <AnimatePresence>
         {interimText && (
           <motion.div
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="absolute -top-12 left-0 right-0 bg-neutral-900/90 backdrop-blur-xl text-white text-sm px-4 py-2 rounded-xl shadow-lg"
+            initial={{ opacity: 0, scale: 0.95, y: -15 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: -15 }}
+            transition={{ type: "spring", damping: 20, stiffness: 300 }}
+            className="absolute -top-16 left-1/2 -translate-x-1/2 z-50 bg-gradient-to-r from-rose-500 to-rose-600 text-white text-base px-6 py-3 rounded-2xl shadow-2xl shadow-rose-500/20 font-medium whitespace-nowrap"
           >
-            <span className="text-neutral-400 text-xs mr-2">You're saying:</span>
-            {interimText}
+            🎤 {interimText}
           </motion.div>
         )}
       </AnimatePresence>
