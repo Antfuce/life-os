@@ -42,6 +42,8 @@ export default function Home() {
   const [voiceMode, setVoiceMode] = useState(true); // Voice-first by default
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [userName, setUserName] = useState(null); // User's full name for personalization
+  const [contextUsedList, setContextUsedList] = useState([]);
+  const [showDebug, setShowDebug] = useState(false); // Debug mode toggle
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
