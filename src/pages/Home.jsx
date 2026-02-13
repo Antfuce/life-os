@@ -48,6 +48,7 @@ export default function Home() {
   const [candidateId, setCandidateId] = useState(null);
   const [voiceMode, setVoiceMode] = useState(true); // Voice-first by default
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [userName, setUserName] = useState(null); // User's full name for personalization
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
