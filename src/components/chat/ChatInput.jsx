@@ -93,7 +93,7 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: -15 }}
             transition={{ type: "spring", damping: 20, stiffness: 300 }}
-            className="absolute -top-16 left-1/2 -translate-x-1/2 z-50 bg-gradient-to-r from-rose-500 to-rose-600 text-white text-base px-6 py-3 rounded-2xl shadow-2xl shadow-rose-500/20 font-medium whitespace-nowrap"
+            className="absolute -top-16 left-1/2 -translate-x-1/2 z-50 bg-neutral-900 text-white text-sm px-4 py-2 rounded-xl shadow-2xl shadow-black/30 font-medium max-w-xs break-words"
           >
             🎤 {interimText}
           </motion.div>
