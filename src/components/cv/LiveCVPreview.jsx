@@ -1,10 +1,22 @@
-import React from "react";
+import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { FileText, Download, Sparkles } from "lucide-react";
+import { FileText, Download, Sparkles, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { jsPDF } from "jspdf";
+import ModernTemplate from "./templates/ModernTemplate";
+import ClassicTemplate from "./templates/ClassicTemplate";
+import MinimalTemplate from "./templates/MinimalTemplate";
+import CVTemplateSelector from "./CVTemplateSelector";
+
+const TEMPLATES = {
+  modern: ModernTemplate,
+  classic: ClassicTemplate,
+  minimal: MinimalTemplate,
+};
 
 export default function LiveCVPreview({ cvData, onDownload }) {
+  const [selectedTemplate, setSelectedTemplate] = useState("modern");
+  const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const {
     name = "",
     email = "",
