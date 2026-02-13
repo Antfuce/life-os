@@ -1066,6 +1066,7 @@ GUIDANCE:
                         message={msg} 
                         isLast={isLastMsg}
                         onSpeakingChange={setIsSpeaking}
+                        aiVoiceEnabled={aiVoiceEnabled}
                       />
                       {isLastMsg && msg.role === "assistant" && (
                         <ContextUsageDebug 
