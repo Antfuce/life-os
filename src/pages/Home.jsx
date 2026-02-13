@@ -365,8 +365,19 @@ You intelligently choose which persona (or blend of both) based on the conversat
 ## WHAT YOU KNOW ABOUT THE USER
 ${memoryContext}
 
-## MEMORY PROBE INSTRUCTIONS
-${incompleteMemories.length > 0 ? `ATTENTION: The following memories are incomplete or vague. If relevant to the current conversation, naturally ask clarifying questions to enrich them:\n- ${incompleteMemories.map(m => `${m.key} (currently: "${m.value}")`).join("\n- ")}` : "All relevant memories are well-established."}
+## CONTEXT CONFIDENCE & MEMORY INJECTION
+You have HIGH CONFIDENCE in these facts (do NOT re-ask): ${highConfidenceKeys.length > 0 ? highConfidenceKeys.join(", ") : "none yet"}
+${incompleteMemories.length > 0 ? `\nYou should DEEPEN these incomplete memories ONLY IF relevant to current message:\n${incompleteMemories.map(m => `- ${m.key}: "${m.value}" → need specifics like: ${getProbeHint(m.key)}`).join("\n")}` : "\nAll relevant memories are well-established. Do NOT re-ask basic facts."}
+
+## CRITICAL: INTELLIGENT FOLLOW-UP RULES
+1. If context confidence is HIGH on key facts (name, role, company, years), DO NOT re-ask them
+2. Only probe for incomplete memories if:
+   - The information is relevant to WHAT THE USER JUST ASKED
+   - You don't have enough detail to move forward
+   - Your next output requires that information
+3. Avoid generic "what else?" or "any other achievements?" — ask specific, unblocking questions
+4. Examples of GOOD probes: "What was the impact?" "By how much?" "Timeline?" "Quantify that?"
+5. Examples of BAD probes: "Tell me more" / "Any other details?" / "Anything else?"
 
 ## CONVERSATION SO FAR
 ${chatHistory}${lastConvContext}
@@ -377,7 +388,7 @@ Return ONLY valid JSON (no markdown, no extra text) with this exact structure:
   "chat_message": "Your short response here (2-3 lines max)",
   "persona": "antonio" | "mariana" | "both",
   "intent": "cv_building" | "interview_prep" | "career_path" | "job_search" | "networking" | "social" | "travel" | "general",
-  "clarification_probe": ["question for incomplete memory 1", "question for incomplete memory 2"],
+  "context_used": ["name", "current_role", "company"],
   "memories": [{"category": "career|lifestyle|travel|social", "key": "memory_key", "value": "memory_value"}],
   "cv_data": {optional CV fields to update},
   "interview_questions": [{question, tip, followup}],
@@ -385,9 +396,10 @@ Return ONLY valid JSON (no markdown, no extra text) with this exact structure:
 }
 
 GUIDANCE:
-- chat_message: Keep it 2-3 lines max, natural, conversational
-- clarification_probe: OPTIONAL. Only if you need to deepen understanding of a memory. Keep questions natural and woven into conversation flow, not interrogative
-- Always include chat_message and intent. Weave probe questions into chat_message organically.`;
+- chat_message: 2-3 lines max. Feel natural & smart, not scripted.
+- context_used: List which memories you actually used to craft this response (shows transparency)
+- ONLY include memories/cv_data if you're adding NEW information, not just confirming
+- Persona assignment: Choose based on their actual need, not templated rules`;
 
     const responseSchema = {
       type: "object",
