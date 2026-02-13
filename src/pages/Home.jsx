@@ -535,7 +535,7 @@ CRITICAL RULES:
               <motion.button
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                transition={{ duration: 0.8, delay: 0.6 }}
+                transition={{ duration: 0.8, delay: 0.4 }}
                 onClick={() => setVoiceMode(!voiceMode)}
                 className="mt-4 text-xs text-neutral-400 hover:text-neutral-600 transition-colors"
               >
@@ -545,7 +545,7 @@ CRITICAL RULES:
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                transition={{ duration: 1, delay: 1 }}
+                transition={{ duration: 1, delay: 0.8 }}
                 className="mt-8"
               >
                 <WhisperCaption text="your next chapter starts with a conversation" visible={true} />
