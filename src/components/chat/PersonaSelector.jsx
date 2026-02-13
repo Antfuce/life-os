@@ -1,7 +1,6 @@
 import React from "react";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
-import { Lock } from "lucide-react";
 
 const personas = [
   { id: "antonio", label: "Antonio", desc: "Strategic · Direct", gradient: "from-amber-500 to-orange-600" },
