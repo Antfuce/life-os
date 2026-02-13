@@ -69,7 +69,7 @@ export default function FloatingHints({ visible }) {
   if (!visible) return null;
 
   return (
-    <div className="fixed inset-0 pointer-events-none z-50">
+    <div className="fixed inset-0 pointer-events-none z-10">
       <AnimatePresence>
         {activeHints.map((hint) => (
           <motion.div

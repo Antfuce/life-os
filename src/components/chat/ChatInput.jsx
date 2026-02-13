@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import { Send } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import VoiceInput from "./VoiceInput";
 
@@ -30,11 +31,15 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
   };
 
   const handleVoiceTranscript = (transcript) => {
-    // Auto-send immediately on voice transcript
-    if (transcript.trim()) {
-      onSend(transcript.trim());
-      setText("");
-      setInterimText("");
+    setText(prev => (prev + " " + transcript).trim());
+    setInterimText("");
+    
+    // Auto-send after voice input
+    if (voiceMode) {
+      setTimeout(() => {
+        onSend(transcript.trim());
+        setText("");
+      }, 100);
     }
   };
 
@@ -45,116 +50,58 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
   return (
     <div className="relative">
       {/* Animated wave overlay - flows right to left */}
-      <div className="flex items-end gap-2 bg-white/60 backdrop-blur-xl border border-white/40 rounded-2xl px-3 py-2 shadow-lg shadow-black/[0.03] relative z-10 overflow-hidden group hover:shadow-xl hover:shadow-violet-500/20 transition-all duration-300">
-        {/* Glow backdrop layer */}
-        <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-amber-500/0 via-rose-500/5 to-violet-600/0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
-
-        {/* Animated wave overlay - flows left to right with luxury glow */}
-        <motion.div
-          className="absolute inset-0 rounded-2xl overflow-hidden pointer-events-none"
+      <motion.div
+        className="absolute inset-0 rounded-2xl overflow-hidden pointer-events-none"
+      >
+        <svg
+          className="absolute inset-0 w-full h-full"
+          viewBox="0 0 600 60"
+          preserveAspectRatio="none"
         >
-          <svg
-            className="absolute inset-0 w-full h-full filter drop-shadow-xl"
-            viewBox="0 0 600 60"
-            preserveAspectRatio="none"
-          >
-            <defs>
-              {/* Primary gradient - orange to purple */}
-              <linearGradient id="waveGradientPrimary" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="rgba(251, 146, 60, 0.6)" />
-                <stop offset="25%" stopColor="rgba(251, 146, 60, 0.4)" />
-                <stop offset="50%" stopColor="rgba(244, 63, 94, 0.5)" />
-                <stop offset="75%" stopColor="rgba(168, 85, 247, 0.4)" />
-                <stop offset="100%" stopColor="rgba(168, 85, 247, 0.6)" />
-              </linearGradient>
-              
-              {/* Glow gradient for secondary wave */}
-              <linearGradient id="waveGradientGlow" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="rgba(251, 146, 60, 0.3)" />
-                <stop offset="50%" stopColor="rgba(168, 85, 247, 0.3)" />
-                <stop offset="100%" stopColor="rgba(168, 85, 247, 0.15)" />
-              </linearGradient>
+          <defs>
+            <linearGradient id="waveGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="rgba(168, 85, 247, 0.15)" />
+              <stop offset="50%" stopColor="rgba(244, 63, 94, 0.15)" />
+              <stop offset="100%" stopColor="rgba(251, 191, 36, 0.15)" />
+            </linearGradient>
+          </defs>
+          <motion.path
+            d="M0,30 Q150,10 300,30 T600,30"
+            stroke="url(#waveGradient)"
+            strokeWidth="1.5"
+            fill="none"
+            vectorEffect="non-scaling-stroke"
+            initial={{ strokeDashoffset: 0 }}
+            animate={{ strokeDashoffset: -300 }}
+            transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+            strokeDasharray="300"
+          />
+          <motion.path
+            d="M0,30 Q150,50 300,30 T600,30"
+            stroke="url(#waveGradient)"
+            strokeWidth="1.5"
+            fill="none"
+            vectorEffect="non-scaling-stroke"
+            initial={{ strokeDashoffset: 0 }}
+            animate={{ strokeDashoffset: -300 }}
+            transition={{ duration: 2.5, repeat: Infinity, ease: "linear", delay: 0.3 }}
+            strokeDasharray="300"
+          />
+        </svg>
+      </motion.div>
 
-              {/* Blur filter for glow effect */}
-              <filter id="glow">
-                <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
-                <feMerge>
-                  <feMergeNode in="coloredBlur"/>
-                  <feMergeNode in="SourceGraphic"/>
-                </feMerge>
-              </filter>
-            </defs>
-
-            {/* Glow layer waves - fat filled, converging to microphone */}
-            <motion.path
-              d="M0,30 Q200,10 500,15 Q580,12 600,10"
-              stroke="url(#waveGradientGlow)"
-              strokeWidth="8"
-              fill="url(#waveGradientGlow)"
-              vectorEffect="non-scaling-stroke"
-              filter="url(#glow)"
-              initial={{ strokeDashoffset: 0 }}
-              animate={{ strokeDashoffset: -300 }}
-              transition={{ duration: 2.5, repeat: Infinity, ease: "linear" }}
-              strokeDasharray="300"
-              opacity="0.6"
-            />
-
-            {/* Primary wave layer 1 - thick filled, converging */}
-            <motion.path
-              d="M0,30 Q200,8 500,12 Q580,8 600,5"
-              stroke="url(#waveGradientPrimary)"
-              strokeWidth="6"
-              fill="url(#waveGradientPrimary)"
-              vectorEffect="non-scaling-stroke"
-              filter="url(#glow)"
-              initial={{ strokeDashoffset: 0 }}
-              animate={{ strokeDashoffset: -300 }}
-              transition={{ duration: 1.8, repeat: Infinity, ease: "linear" }}
-              strokeDasharray="300"
-            />
-
-            {/* Primary wave layer 2 - thick filled, converging */}
-            <motion.path
-              d="M0,30 Q200,52 500,48 Q580,45 600,42"
-              stroke="url(#waveGradientPrimary)"
-              strokeWidth="6"
-              fill="url(#waveGradientPrimary)"
-              vectorEffect="non-scaling-stroke"
-              filter="url(#glow)"
-              initial={{ strokeDashoffset: 0 }}
-              animate={{ strokeDashoffset: -300 }}
-              transition={{ duration: 2.2, repeat: Infinity, ease: "linear", delay: 0.2 }}
-              strokeDasharray="300"
-              opacity="0.9"
-            />
-
-            {/* Accent shimmer wave - converging to microphone */}
-            <motion.path
-              d="M0,30 Q200,20 500,22 Q580,18 600,15"
-              stroke="url(#waveGradientGlow)"
-              strokeWidth="3"
-              fill="url(#waveGradientGlow)"
-              vectorEffect="non-scaling-stroke"
-              initial={{ strokeDashoffset: 0, opacity: 0.5 }}
-              animate={{ strokeDashoffset: -300, opacity: [0.2, 1, 0.2] }}
-              transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut", delay: 0 }}
-              strokeDasharray="300"
-            />
-          </svg>
-        </motion.div>
-
-        {/* Text label with glow on hover */}
-        <div className="relative z-10 flex items-center justify-center w-full pointer-events-none">
-          <motion.span 
-            className="text-[15px] bg-gradient-to-r from-amber-600 via-rose-600 to-violet-600 bg-clip-text text-transparent font-medium tracking-wide"
-            animate={{ opacity: [0.6, 1, 0.6] }}
-            transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-          >
-            Click to start talking...
-          </motion.span>
-        </div>
-
+      <div className="flex items-end gap-3 bg-white/60 backdrop-blur-xl border border-white/40 rounded-2xl px-4 py-3 shadow-lg shadow-black/[0.03] relative z-10">
+        <textarea
+          ref={textareaRef}
+          value={text + (interimText ? " " + interimText : "")}
+          onChange={(e) => !voiceMode && setText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={voiceMode ? "Listening..." : "Tell us what's on your mind..."}
+          disabled={disabled || voiceMode}
+          readOnly={voiceMode}
+          rows={1}
+          className="flex-1 bg-transparent text-neutral-800 placeholder:text-neutral-400 text-[15px] leading-relaxed resize-none outline-none max-h-[120px]"
+        />
         <VoiceInput 
           onTranscript={handleVoiceTranscript} 
           onInterimTranscript={handleInterimTranscript}
@@ -162,6 +109,21 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
           autoStart={voiceMode}
           pauseListening={pauseListening}
         />
+        <AnimatePresence>
+          {text.trim() && !voiceMode && (
+            <motion.button
+              initial={{ scale: 0, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0, opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              onClick={handleSubmit}
+              disabled={disabled}
+              className="flex-shrink-0 w-9 h-9 rounded-xl bg-neutral-900 text-white flex items-center justify-center hover:bg-neutral-800 transition-colors disabled:opacity-50"
+            >
+              <Send className="w-4 h-4" />
+            </motion.button>
+          )}
+        </AnimatePresence>
       </div>
       
       {/* Live Caption Display */}

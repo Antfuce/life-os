@@ -58,7 +58,10 @@ export default function Home() {
     loadMemories();
     loadDeliverables();
     initializeCandidate();
-    setShowHint(true); // Always show hint
+    
+    // Show hint after a few seconds
+    const hintTimer = setTimeout(() => setShowHint(true), 8000);
+    return () => clearTimeout(hintTimer);
   }, []);
 
   useEffect(() => {
