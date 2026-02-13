@@ -201,6 +201,26 @@ export default function Home() {
     return allMemories.slice(0, 10);
   };
 
+  const getLastConversationSummary = async () => {
+    const conversations = await base44.entities.Conversation.list("-updated_date", 5);
+    if (conversations.length === 0) return null;
+    
+    const lastConv = conversations[0];
+    if (!lastConv.messages || lastConv.messages.length === 0) return null;
+    
+    // Get last 3-5 messages to understand what was discussed
+    const recentMsgs = lastConv.messages.slice(-5);
+    const summary = recentMsgs
+      .map(m => `${m.role}: ${m.content}`)
+      .join("\n");
+    
+    return {
+      summary,
+      timestamp: lastConv.updated_date,
+      context: lastConv.context_extracted || {}
+    };
+  };
+
   const handleSendInner = async (currentMessages, text, convId) => {
     const userMsg = {
       role: "user",
@@ -216,6 +236,10 @@ export default function Home() {
     // Get relevant memories dynamically
     const relevantMemories = await getRelevantMemories(text);
 
+    // Get last conversation summary (only for first message in new conversation)
+    const isFirstMessage = newMessages.length === 1;
+    const lastConvSummary = isFirstMessage ? await getLastConversationSummary() : null;
+
     // Build condensed chat history (last 10 messages max)
     const recentMessages = newMessages.slice(-10);
     const chatHistory = recentMessages
@@ -226,21 +250,27 @@ export default function Home() {
       ? relevantMemories.map(m => `${m.key}: ${m.value}`).join("\n")
       : "No prior context available";
 
+    const lastConvContext = lastConvSummary 
+      ? `\n\nLAST CONVERSATION (${new Date(lastConvSummary.timestamp).toLocaleDateString()}):\n${lastConvSummary.summary}\n\nContext from last time: ${JSON.stringify(lastConvSummary.context)}`
+      : "";
+
     const prompt = `${SYSTEM_PROMPTS[persona]}
 
 CONVERSATION SO FAR:
 ${chatHistory}
 
 WHAT YOU KNOW ABOUT THE USER:
-${memoryContext}
+${memoryContext}${lastConvContext}
 
 Respond as ${persona === "both" ? "Antonio & Mariana together" : persona}.
 
 CRITICAL RULES:
-1. Chat message must be MAX 2-3 LINES. Short, conversational, human. Like texting. NO long explanations.
-2. Don't describe what the cards will show — just have a natural conversation.
-3. Use what you know about the user to personalize your response.
-4. Return structured data in the JSON format specified below.`;
+1. ${isFirstMessage && lastConvSummary ? "START by referencing the last conversation naturally (e.g., 'Last time we were working on...'), add a human thought about it, then transition to addressing today's message. Keep it conversational and natural." : "Continue the conversation naturally."}
+2. Chat message must be MAX 2-3 LINES (or 4 lines if recalling last conversation). Short, conversational, human. Like texting. NO long explanations.
+3. Don't describe what the cards will show — just have a natural conversation.
+4. Use what you know about the user to personalize your response.
+5. Be dynamic — if user says 'hi', be general. If they mention a specific topic, address it directly.
+6. Return structured data in the JSON format specified below.`;
 
     const responseSchema = {
       type: "object",
