@@ -560,9 +560,11 @@ GUIDANCE:
       loadMemories();
     }
 
-    // Update CV data
+    // Update CV data and persist to database
     if (response.cv_data && Object.keys(response.cv_data).length > 0) {
-      setCvData(prev => ({ ...prev, ...response.cv_data }));
+      const updatedCvData = { ...cvData, ...response.cv_data };
+      setCvData(updatedCvData);
+      await saveCandidateData(updatedCvData);
     }
 
     // Add interview questions
