@@ -46,7 +46,7 @@ export default function Home() {
   const [careerPathData, setCareerPathData] = useState([]);
   const [agentConversationId, setAgentConversationId] = useState(null);
   const [candidateId, setCandidateId] = useState(null);
-  const [voiceMode, setVoiceMode] = useState(true); // Voice-first by default
+  const [voiceMode, setVoiceMode] = useState(false); // Muted by default
   const [isSpeaking, setIsSpeaking] = useState(false);
   const messagesEndRef = useRef(null);
 
