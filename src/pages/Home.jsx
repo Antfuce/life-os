@@ -614,11 +614,14 @@ GUIDANCE:
             personal: {
               type: "object",
               properties: {
-                name: { type: "string" },
-                email: { type: "string" },
+                name: { type: "string", description: "Full name" },
+                email: { type: "string", format: "email" },
                 phone: { type: "string" },
-                location: { type: "string" }
-              }
+                location: { type: "string" },
+                linkedin: { type: "string" },
+                portfolio: { type: "string" }
+              },
+              required: ["name", "email"]
             },
             summary: { type: "string" },
             experience: {
@@ -635,7 +638,7 @@ GUIDANCE:
                   description: { type: "string" },
                   achievements: { type: "array", items: { type: "string" } }
                 },
-                required: ["title", "company"]
+                required: ["title", "company", "start_date"]
               }
             },
             education: {
@@ -646,13 +649,28 @@ GUIDANCE:
                   degree: { type: "string" },
                   institution: { type: "string" },
                   location: { type: "string" },
-                  graduation_date: { type: "string" }
+                  start_date: { type: "string" },
+                  graduation_date: { type: "string" },
+                  gpa: { type: "string" },
+                  description: { type: "string" }
                 },
-                required: ["degree", "institution"]
+                required: ["degree", "institution", "graduation_date"]
               }
             },
-            skills: { type: "array", items: { type: "string" } }
-          }
+            skills: { type: "array", items: { type: "string" } },
+            certifications: { type: "array", items: { type: "string" } },
+            languages: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  language: { type: "string" },
+                  proficiency: { type: "string", enum: ["Native", "Fluent", "Intermediate", "Basic"] }
+                }
+              }
+            }
+          },
+          required: ["personal", "summary", "experience", "education", "skills"]
         },
         context_used: {
           type: "array",
