@@ -219,11 +219,5 @@ export default function LiveCVPreview({ cvData, onDownload }) {
         </AnimatePresence>
       </div>
     </motion.div>
-  );
-
-  // Old single-template rendering code (commented out for reference)
-  /*
-            <div className="max-w-2xl mx-auto bg-white shadow-lg p-12 rounded-lg"
-            >
-
-}
+    );
+    }
