@@ -49,8 +49,8 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
           value={text + (interimText ? " " + interimText : "")}
           onChange={(e) => !voiceMode && setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={voiceMode ? "Listening..." : "Tell us what's on your mind..."}
-          disabled={disabled || voiceMode}
+          placeholder={voiceMode && isRecording ? "🎤 Recording... click send when done" : "Tell us what's on your mind..."}
+          disabled={disabled}
           readOnly={voiceMode}
           rows={1}
           className="flex-1 bg-transparent text-neutral-800 placeholder:text-neutral-400 text-[15px] leading-relaxed resize-none outline-none max-h-[120px]"
@@ -61,6 +61,8 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
           disabled={disabled}
           autoStart={voiceMode}
           pauseListening={pauseListening}
+          isRecording={isRecording}
+          onRecordingChange={setIsRecording}
         />
         <AnimatePresence>
           {text.trim() && !voiceMode && (
