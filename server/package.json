@@ -1,0 +1,13 @@
+{
+  "name": "life-os-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch index.mjs",
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "fastify": "^5.2.1",
+    "@fastify/cors": "^10.0.2"
+  }
+}

@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from "react";
-import { base44 } from "@/api/base44Client";
 import { motion, AnimatePresence } from "framer-motion";
 import { Brain } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -46,8 +45,6 @@ export default function Home() {
   const [activeMode, setActiveMode] = useState(null); // 'cv', 'interview', 'trip', etc.
   const [cvData, setCvData] = useState({});
   const [interviewQuestions, setInterviewQuestions] = useState([]);
-  const [agentConversationId, setAgentConversationId] = useState(null);
-  const [candidateId, setCandidateId] = useState(null);
   const [isVoiceActive, setIsVoiceActive] = useState(false);
   const [floatingModules, setFloatingModules] = useState([]); // Array of { id, type, data, position }
   const messagesEndRef = useRef(null);
@@ -57,115 +54,35 @@ export default function Home() {
   }, [messages]);
 
   useEffect(() => {
-    loadMemories();
-    loadDeliverables();
-    initializeCandidate();
-    
+    // Local-only beta: start empty (DB comes next)
+    setMemories([]);
+    setDeliverables([]);
+
     // Show hint after a few seconds
     const hintTimer = setTimeout(() => setShowHint(true), 8000);
     return () => clearTimeout(hintTimer);
   }, []);
 
-  useEffect(() => {
-    if (!agentConversationId) return;
-
-    const unsubscribe = base44.agents.subscribeToConversation(agentConversationId, (data) => {
-      setMessages(data.messages || []);
-      
-      // Extract CV data from latest assistant message
-      const latestMsg = data.messages?.[data.messages.length - 1];
-      if (latestMsg?.role === "assistant") {
-        loadCandidateData();
-      }
-    });
-
-    return unsubscribe;
-  }, [agentConversationId]);
-
-  const loadMemories = async () => {
-    const mems = await base44.entities.UserMemory.list("-created_date", 20);
-    setMemories(mems);
-  };
-
-  const loadDeliverables = async () => {
-    const dels = await base44.entities.Deliverable.list("-created_date", 10);
-    setDeliverables(dels);
-  };
-
-  const initializeCandidate = async () => {
-    const user = await base44.auth.me();
-    if (!user) return;
-
-    const candidates = await base44.entities.Candidate.filter({ created_by: user.email });
-    if (candidates.length > 0) {
-      setCandidateId(candidates[0].id);
-      setCvData(candidates[0].cv_data || {});
-    } else {
-      const newCandidate = await base44.entities.Candidate.create({
-        cv_data: { personal: {}, experience: [], education: [], skills: {} },
-        cv_version: 1,
-      });
-      setCandidateId(newCandidate.id);
-    }
-  };
-
-  const loadCandidateData = async () => {
-    if (!candidateId) return;
-    const candidate = await base44.entities.Candidate.filter({ id: candidateId });
-    if (candidate[0]) {
-      setCvData(candidate[0].cv_data || {});
-    }
-  };
-
   const startConversation = async (initialText) => {
-    // Check if this is CV building mode based on initial text
     const isCVMode = initialText && /\b(cv|resume|curriculum|experience|job|career)\b/i.test(initialText);
+    const id = `${Date.now()}`;
 
-    if (isCVMode) {
-      // Use agent for CV building
-      const agentConv = await base44.agents.createConversation({
-        agent_name: "antonio_mariana_cv",
-        metadata: { name: "CV Building Session" },
-      });
-      
-      const welcomeMsg = {
-        role: "assistant",
-        content: "Let's build your CV together. First things first — what's your full name and current role?",
-      };
+    const welcomeMsg = {
+      role: "assistant",
+      content: isCVMode
+        ? "Let’s build your CV together. First: what’s your full name and current role?"
+        : WELCOME_MESSAGES[persona],
+      persona,
+      timestamp: new Date().toISOString(),
+    };
 
-      // Set all state at once, then trigger transition
-      setAgentConversationId(agentConv.id);
-      setMessages([welcomeMsg]);
-      setActiveMode("cv");
-      setHasStarted(true);
+    setConversationId(id);
+    setMessages([welcomeMsg]);
+    setActiveMode(isCVMode ? "cv" : null);
+    setHasStarted(true);
 
-      if (initialText) {
-        setTimeout(() => handleAgentSend(agentConv, initialText), 100);
-      }
-    } else {
-      // Use regular conversation for other topics
-      const conv = await base44.entities.Conversation.create({
-        title: "New conversation",
-        persona,
-        status: "active",
-        messages: [],
-      });
-
-      const welcomeMsg = {
-        role: "assistant",
-        content: WELCOME_MESSAGES[persona],
-        persona,
-        timestamp: new Date().toISOString(),
-      };
-
-      // Set all state at once, then trigger transition
-      setConversationId(conv.id);
-      setMessages([welcomeMsg]);
-      setHasStarted(true);
-
-      if (initialText) {
-        setTimeout(() => handleSendInner([welcomeMsg], initialText, conv.id), 100);
-      }
+    if (initialText) {
+      setTimeout(() => handleSendInner([welcomeMsg], initialText, id), 50);
     }
   };
 
@@ -174,27 +91,7 @@ export default function Home() {
       await startConversation(text);
       return;
     }
-
-    // Route to agent if in CV mode
-    if (activeMode === "cv" && agentConversationId) {
-      const conversation = await base44.agents.getConversation(agentConversationId);
-      await handleAgentSend(conversation, text);
-    } else {
-      handleSendInner(messages, text, conversationId);
-    }
-  };
-
-  const handleAgentSend = async (conversation, text) => {
-    setIsLoading(true);
-    setWhisper("building your cv...");
-    
-    await base44.agents.addMessage(conversation, {
-      role: "user",
-      content: text,
-    });
-
-    setIsLoading(false);
-    setWhisper("");
+    handleSendInner(messages, text, conversationId);
   };
 
   const handleSendInner = async (currentMessages, text, convId) => {
@@ -258,9 +155,22 @@ Format: [INTERVIEW:question=Your specific question here]
 For mock interview mode, also include:
 [INTERVIEW:scenario=Brief scenario setup for the mock interview]`;
 
-    const res = await base44.integrations.Core.InvokeLLM({ prompt });
+    const r = await fetch('/v1/chat/turn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        persona,
+        messages: newMessages,
+        cvData,
+      }),
+    });
 
-    let content = res;
+    const j = await r.json();
+    if (!j?.ok) {
+      throw new Error(j?.error || 'Engine error');
+    }
+
+    let content = j.text || '';
     
     // Extract intent
     const intentMatch = content.match(/\[INTENT:(\w+)\]/);
@@ -286,20 +196,26 @@ For mock interview mode, also include:
     if (memoryMatches) {
       content = content.replace(/\[MEMORY:\w+=[^\]]+\]/g, "").trim();
 
+      // Update local memory state (DB wiring comes next)
       for (const match of memoryMatches) {
         const [, key, value] = match.match(/\[MEMORY:(\w+)=([^\]]+)\]/);
-        const existing = memories.find((m) => m.key === key);
-        if (!existing || existing.value !== value) {
-          const isSocial = ["social_interests", "social_goals", "desired_connections", "preferred_communities"].includes(key);
-          await base44.entities.UserMemory.create({
-            category: isSocial ? "social" : "career",
-            key,
-            value,
-            source_conversation_id: conversationId,
-          });
-        }
+        const isSocial = ["social_interests", "social_goals", "desired_connections", "preferred_communities"].includes(key);
+
+        setMemories((prev) => {
+          const existing = prev.find((m) => m.key === key);
+          if (existing && existing.value === value) return prev;
+          const without = prev.filter((m) => m.key !== key);
+          return [
+            ...without,
+            {
+              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              category: isSocial ? "social" : "career",
+              key,
+              value,
+            },
+          ];
+        });
       }
-      loadMemories();
     }
 
     if (cvMatches) {
@@ -362,11 +278,7 @@ For mock interview mode, also include:
     setIsLoading(false);
     setWhisper("");
 
-    if (convId) {
-      await base44.entities.Conversation.update(convId, {
-        messages: [...newMessages, assistantMsg],
-      });
-    }
+    // Persistence comes next (Postgres). For now, state lives in the session.
   };
 
   const handleDeliverableClick = (deliverable) => {
