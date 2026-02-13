@@ -129,11 +129,16 @@ export default function Home() {
   };
 
   const sanitizeCvData = (cvData) => {
-    // Only keep non-empty, valid string/array values
-    const sanitized = {};
+    // Start with required fields (must always be present)
+    const sanitized = {
+      personal: {},
+      summary: "",
+      experience: [],
+      education: [],
+      skills: []
+    };
     
     if (cvData.personal && typeof cvData.personal === 'object') {
-      sanitized.personal = {};
       Object.entries(cvData.personal).forEach(([key, val]) => {
         if (typeof val === 'string' && val.trim()) sanitized.personal[key] = val;
       });
