@@ -40,6 +40,7 @@ export default function Home() {
   const [agentConversationId, setAgentConversationId] = useState(null);
   const [candidateId, setCandidateId] = useState(null);
   const [voiceMode, setVoiceMode] = useState(true); // Voice-first by default
+  const [aiVoiceEnabled, setAiVoiceEnabled] = useState(true); // AI speaks back (session-level)
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [userName, setUserName] = useState(null); // User's full name for personalization
   const [contextUsedList, setContextUsedList] = useState([]);
