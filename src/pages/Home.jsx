@@ -11,6 +11,7 @@ import WhisperCaption from "../components/chat/WhisperCaption";
 import ContextPanel from "../components/chat/ContextPanel";
 import DeliverableCard from "../components/deliverables/DeliverableCard";
 import AvatarHint from "../components/chat/AvatarHint";
+import LiveCVPreview from "../components/cv/LiveCVPreview";
 
 const SYSTEM_PROMPTS = {
   antonio: `You are Antonio — a sharp, strategic, direct career advisor and life matchmaker. You speak with high energy and confidence. You help users with career moves AND social connections — whether that's making friends, finding communities, networking events, or social opportunities. You ask pointed questions, push for clarity, and drive action. Keep responses concise but powerful. When you have enough context, offer to create deliverables like CVs, outreach emails, interview prep, OR social matches (friend introductions, event recommendations, community suggestions). Always extract and remember key details: career (current role, target role, skills, salary, location) AND social (interests, hobbies, desired connections, social goals).`,
@@ -35,6 +36,8 @@ export default function Home() {
   const [conversationId, setConversationId] = useState(null);
   const [hasStarted, setHasStarted] = useState(false);
   const [showHint, setShowHint] = useState(false);
+  const [cvMode, setCvMode] = useState(false);
+  const [cvData, setCvData] = useState({});
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -124,12 +127,23 @@ Also, at the end of your response, on a new line, output any extracted data in t
 [MEMORY:social_interests=value]
 [MEMORY:social_goals=value]
 [MEMORY:desired_connections=value]
-[MEMORY:preferred_communities=value]`;
+[MEMORY:preferred_communities=value]
+
+Additionally, if the user is building a CV, extract CV data in this format:
+[CV:name=value]
+[CV:email=value]
+[CV:phone=value]
+[CV:location=value]
+[CV:summary=value]
+[CV:experience={"title":"Job Title","company":"Company Name","duration":"2020-2023","description":"What you did"}]
+[CV:education={"degree":"Degree","institution":"University","year":"2020"}]
+[CV:skills=skill1, skill2, skill3]`;
 
     const res = await base44.integrations.Core.InvokeLLM({ prompt });
 
     let content = res;
     const memoryMatches = content.match(/\[MEMORY:(\w+)=([^\]]+)\]/g);
+    const cvMatches = content.match(/\[CV:(\w+)=([^\]]+)\]/g);
 
     if (memoryMatches) {
       content = content.replace(/\[MEMORY:\w+=[^\]]+\]/g, "").trim();
@@ -148,6 +162,32 @@ Also, at the end of your response, on a new line, output any extracted data in t
         }
       }
       loadMemories();
+    }
+
+    if (cvMatches) {
+      content = content.replace(/\[CV:\w+=[^\]]+\]/g, "").trim();
+      const newCvData = { ...cvData };
+
+      for (const match of cvMatches) {
+        const [, key, value] = match.match(/\[CV:(\w+)=([^\]]+)\]/);
+        
+        if (key === "experience" || key === "education") {
+          try {
+            const parsed = JSON.parse(value);
+            newCvData[key] = newCvData[key] ? [...newCvData[key], parsed] : [parsed];
+          } catch {
+            // Skip invalid JSON
+          }
+        } else if (key === "skills") {
+          const skillsArray = value.split(",").map((s) => s.trim());
+          newCvData.skills = [...new Set([...(newCvData.skills || []), ...skillsArray])];
+        } else {
+          newCvData[key] = value;
+        }
+      }
+      
+      setCvData(newCvData);
+      if (!cvMode) setCvMode(true);
     }
 
     const assistantMsg = {
@@ -277,15 +317,16 @@ Also, at the end of your response, on a new line, output any extracted data in t
               </button>
             </div>
 
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto relative">
+            {/* Messages + CV Preview Split */}
+            <div className="flex-1 overflow-y-auto relative flex">
               <ContextPanel
                 memories={memories}
                 visible={showMemory}
                 onClose={() => setShowMemory(false)}
               />
 
-              <div className="max-w-3xl mx-auto px-6 py-8 space-y-6">
+              {/* Chat Column */}
+              <div className={cn("px-6 py-8 space-y-6 transition-all", cvMode ? "w-1/2" : "max-w-3xl mx-auto w-full")}>
                 {messages.map((msg, i) => (
                   <MessageBubble key={i} message={msg} isLast={i === messages.length - 1} />
                 ))}
@@ -293,7 +334,7 @@ Also, at the end of your response, on a new line, output any extracted data in t
                 {isLoading && <TypingIndicator persona={persona} />}
 
                 {/* Deliverables surface contextually */}
-                {deliverables.length > 0 && messages.length > 3 && (
+                {deliverables.length > 0 && messages.length > 3 && !cvMode && (
                   <motion.div
                     initial={{ opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -312,6 +353,20 @@ Also, at the end of your response, on a new line, output any extracted data in t
 
                 <div ref={messagesEndRef} />
               </div>
+
+              {/* CV Preview Column */}
+              <AnimatePresence>
+                {cvMode && (
+                  <motion.div
+                    initial={{ opacity: 0, x: 50 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 50 }}
+                    className="w-1/2 p-6 border-l border-neutral-200"
+                  >
+                    <LiveCVPreview cvData={cvData} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Whisper + Input */}
