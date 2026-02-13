@@ -460,19 +460,37 @@ For mock interview mode, also include:
           )}
         </AnimatePresence>
 
-        {/* Chat state */}
+        {/* Voice Mode State */}
         <AnimatePresence mode="wait">
           {hasStarted && (
             <motion.div
-              key="chat"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4, ease: "easeOut" }}
-              className="flex-1 flex flex-col h-full"
+              key="voice"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.5 }}
+              className="flex-1 flex flex-col items-center justify-center relative h-full overflow-hidden"
             >
-            {/* Header */}
-            <div className="flex-shrink-0 px-6 py-4 flex items-center justify-between bg-white/30 backdrop-blur-xl border-b border-white/20">
-              <div className="flex items-center gap-3">
+              {/* Whisper Response - fading text */}
+              <AnimatePresence>
+                {whisper && (
+                  <WhisperResponse text={whisper} visible={!!whisper} />
+                )}
+              </AnimatePresence>
+
+              {/* Central Avatar with Waves */}
+              <div className="flex-1 flex items-center justify-center">
+                <AvatarWithWaves persona={persona} isActive={isVoiceActive} />
+              </div>
+
+              {/* Memory Panel */}
+              <ContextPanel
+                memories={memories}
+                visible={showMemory}
+                onClose={() => setShowMemory(false)}
+              />
+
+              {/* Header - top left */}
+              <div className="absolute top-6 left-6 flex items-center gap-3">
                 <button
                   onClick={() => {
                     setHasStarted(false);
@@ -486,94 +504,37 @@ For mock interview mode, also include:
                 >
                   <span className="text-white text-[10px] font-bold">A·M</span>
                 </button>
-                <PersonaSelector active={persona} onChange={setPersona} />
               </div>
+
+              {/* Memory button - top right */}
               <button
                 onClick={() => setShowMemory(!showMemory)}
-                className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
+                className="absolute top-6 right-6 relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
               >
                 <Brain className="w-4 h-4 text-neutral-500" />
                 {memories.length > 0 && (
                   <div className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-violet-500" />
                 )}
               </button>
-            </div>
 
-            {/* Messages + CV Preview Split */}
-            <div className="flex-1 relative flex overflow-hidden">
-              <ContextPanel
-                memories={memories}
-                visible={showMemory}
-                onClose={() => setShowMemory(false)}
-              />
-
-              {/* Chat Column */}
-              <div className={cn("overflow-y-auto px-6 py-8 space-y-6 transition-all", activeMode ? "w-1/2" : "max-w-3xl mx-auto w-full")}>
-                {messages.map((msg, i) => (
-                  <MessageBubble key={i} message={msg} isLast={i === messages.length - 1} />
+              {/* Floating Modules */}
+              <AnimatePresence>
+                {floatingModules.map((module) => (
+                  <FloatingModule
+                    key={module.id}
+                    title={module.type === "cv" ? "Your CV" : module.type === "interview" ? "Interview Prep" : "Module"}
+                    position={module.position}
+                    onClose={() => setFloatingModules((prev) => prev.filter((m) => m.id !== module.id))}
+                  >
+                    {module.type === "cv" && <LiveCVPreview cvData={cvData} onDownload={() => {}} />}
+                    {module.type === "interview" && <LiveInterviewPrep questions={interviewQuestions} onClose={() => setFloatingModules((prev) => prev.filter((m) => m.id !== module.id))} />}
+                  </FloatingModule>
                 ))}
-
-                {isLoading && <TypingIndicator persona={persona} />}
-
-                {/* Deliverables surface contextually */}
-                {deliverables.length > 0 && messages.length > 3 && !activeMode && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="pt-4"
-                  >
-                    <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-300 mb-3">
-                      Your deliverables
-                    </p>
-                    <div className="grid gap-2">
-                      {deliverables.slice(0, 3).map((d) => (
-                        <DeliverableCard key={d.id} deliverable={d} onClick={handleDeliverableClick} />
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
-
-                <div ref={messagesEndRef} />
-              </div>
-
-              {/* Dynamic Side Panel - Fixed */}
-              <AnimatePresence mode="wait">
-                {activeMode === "cv" && (
-                  <motion.div
-                    key="cv"
-                    initial={{ opacity: 0, x: 50 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 50 }}
-                    className="w-1/2 border-l border-neutral-200 flex-shrink-0"
-                  >
-                    <LiveCVPreview cvData={cvData} onDownload={() => {}} />
-                  </motion.div>
-                )}
-                {activeMode === "interview" && (
-                  <motion.div
-                    key="interview"
-                    initial={{ opacity: 0, x: 50 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 50 }}
-                    className="w-1/2 border-l border-neutral-200 flex-shrink-0"
-                  >
-                    <LiveInterviewPrep 
-                      questions={interviewQuestions} 
-                      onClose={() => setActiveMode(null)} 
-                    />
-                  </motion.div>
-                )}
               </AnimatePresence>
-            </div>
 
-            {/* Whisper + Input */}
-            <div className="flex-shrink-0 px-6 pb-6 pt-2">
-              <WhisperCaption text={whisper} visible={!!whisper} />
-              <div className="max-w-3xl mx-auto mt-2">
-                <ChatInput onSend={handleSend} disabled={isLoading} />
-              </div>
-            </div>
-          </motion.div>
+              {/* Voice Input - bottom */}
+              <VoiceInput onTranscript={handleSend} isListening={isVoiceActive} />
+            </motion.div>
           )}
         </AnimatePresence>
       </div>
