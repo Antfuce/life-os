@@ -67,20 +67,7 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
         />
       </div>
       
-      {/* Live Caption Display */}
-      <AnimatePresence>
-        {interimText && (
-          <motion.div
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="absolute -top-12 left-0 right-0 bg-neutral-900/90 backdrop-blur-xl text-white text-sm px-4 py-2 rounded-xl shadow-lg"
-          >
-            <span className="text-neutral-400 text-xs mr-2">You're saying:</span>
-            {interimText}
-          </motion.div>
-        )}
-      </AnimatePresence>
+
     </div>
   );
 }
