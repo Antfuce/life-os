@@ -4,7 +4,7 @@ import { Mic, MicOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-export default function VoiceInput({ onTranscript, onInterimTranscript, onListeningChange, disabled, autoStart = false, pauseListening = false }) {
+export default function VoiceInput({ onTranscript, onInterimTranscript, disabled, autoStart = false, pauseListening = false }) {
   const [isListening, setIsListening] = useState(false);
   const [recognition, setRecognition] = useState(null);
   const pauseRef = React.useRef(pauseListening);
@@ -58,8 +58,6 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, onListen
       };
 
       recognitionInstance.onend = () => {
-        setIsListening(false);
-        if (onListeningChange) onListeningChange(false);
         // Auto-restart if still in listening mode and not paused
         if (isListening && !pauseRef.current) {
           try {
@@ -128,12 +126,10 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, onListen
     if (isListening) {
       recognition.stop();
       setIsListening(false);
-      if (onListeningChange) onListeningChange(false);
     } else {
       try {
         recognition.start();
         setIsListening(true);
-        if (onListeningChange) onListeningChange(true);
       } catch (e) {
         console.error("Start failed:", e);
       }

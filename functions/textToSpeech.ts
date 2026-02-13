@@ -34,8 +34,8 @@ Deno.serve(async (req) => {
           },
           audioConfig: {
             audioEncoding: 'MP3',
-            pitch: 2.0,
-            speakingRate: 0.95,
+            pitch: 0,
+            speakingRate: 1.0,
           },
         }),
       }
