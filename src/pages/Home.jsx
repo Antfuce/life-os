@@ -59,7 +59,7 @@ export default function Home() {
       }
       loadMemories();
       loadDeliverables();
-      initializeCandidate();
+      await initializeCandidate();
     };
     
     initializeApp();
@@ -68,6 +68,13 @@ export default function Home() {
     const hintTimer = setTimeout(() => setShowHint(true), 8000);
     return () => clearTimeout(hintTimer);
   }, []);
+
+  // Load candidate data when candidateId changes
+  useEffect(() => {
+    if (candidateId) {
+      loadCandidateData();
+    }
+  }, [candidateId]);
 
   useEffect(() => {
     if (!agentConversationId) return;
