@@ -1,0 +1,291 @@
+import React, { useState, useRef, useEffect } from "react";
+import { base44 } from "@/api/base44Client";
+import { motion, AnimatePresence } from "framer-motion";
+import { Brain } from "lucide-react";
+
+import MessageBubble from "../components/chat/MessageBubble";
+import ChatInput from "../components/chat/ChatInput";
+import TypingIndicator from "../components/chat/TypingIndicator";
+import PersonaSelector from "../components/chat/PersonaSelector";
+import WhisperCaption from "../components/chat/WhisperCaption";
+import ContextPanel from "../components/chat/ContextPanel";
+import DeliverableCard from "../components/deliverables/DeliverableCard";
+
+const SYSTEM_PROMPTS = {
+  antonio: `You are Antonio — a sharp, strategic, direct career advisor and matchmaker. You speak with high energy and confidence. You help users identify their strengths, build positioning, and execute career moves. You ask pointed questions, push for clarity, and drive action. Keep responses concise but powerful. When you have enough context about the user's career situation, offer to create deliverables like CVs, outreach emails, or interview prep. Always extract and remember key details: current role, target role, skills, salary expectations, location preferences.`,
+  mariana: `You are Mariana — a calm, structured, thoughtful career guide and life strategist. You speak with warmth and support. You help users explore their deeper motivations, overcome fears, and plan long-term. You listen carefully and reflect back insights. Keep responses supportive but substantive. When you have enough context, offer to create deliverables. Always extract and remember key details: current role, target role, skills, salary expectations, location preferences.`,
+  both: `You are Antonio & Mariana — dual career advisors working together. Antonio is sharp, strategic, and action-oriented. Mariana is calm, thoughtful, and supportive. Blend both energies in your responses — be direct yet empathetic, strategic yet caring. Help users with career transitions by understanding their situation deeply, then driving toward execution. When you have enough context, offer to create deliverables like CVs, outreach emails, cover letters, or interview prep. Always extract and remember key details about the user.`,
+};
+
+const WELCOME_MESSAGES = {
+  antonio: "What's the move? Tell me where you are and where you want to be — I'll map the fastest route there.",
+  mariana: "Welcome. Take a breath. Tell me what's been on your mind about your career — I'm here to listen and help you find clarity.",
+  both: "Hey — we're Antonio & Mariana. Think of us as your career matchmakers. Tell us what's going on, and we'll figure out the best move together.",
+};
+
+export default function Home() {
+  const [messages, setMessages] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [persona, setPersona] = useState("both");
+  const [memories, setMemories] = useState([]);
+  const [showMemory, setShowMemory] = useState(false);
+  const [deliverables, setDeliverables] = useState([]);
+  const [whisper, setWhisper] = useState("");
+  const [conversationId, setConversationId] = useState(null);
+  const [hasStarted, setHasStarted] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  useEffect(() => {
+    loadMemories();
+    loadDeliverables();
+  }, []);
+
+  const loadMemories = async () => {
+    const mems = await base44.entities.UserMemory.list("-created_date", 20);
+    setMemories(mems);
+  };
+
+  const loadDeliverables = async () => {
+    const dels = await base44.entities.Deliverable.list("-created_date", 10);
+    setDeliverables(dels);
+  };
+
+  const startConversation = async () => {
+    setHasStarted(true);
+    const conv = await base44.entities.Conversation.create({
+      title: "New conversation",
+      persona,
+      status: "active",
+      messages: [],
+    });
+    setConversationId(conv.id);
+
+    const welcomeMsg = {
+      role: "assistant",
+      content: WELCOME_MESSAGES[persona],
+      persona,
+      timestamp: new Date().toISOString(),
+    };
+    setMessages([welcomeMsg]);
+  };
+
+  const handleSend = async (text) => {
+    if (!hasStarted) {
+      await startConversation();
+    }
+
+    const userMsg = {
+      role: "user",
+      content: text,
+      timestamp: new Date().toISOString(),
+    };
+
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
+    setIsLoading(true);
+    setWhisper("thinking...");
+
+    const chatHistory = newMessages
+      .map((m) => `${m.role === "user" ? "User" : persona === "both" ? "Antonio & Mariana" : persona}: ${m.content}`)
+      .join("\n\n");
+
+    const prompt = `${SYSTEM_PROMPTS[persona]}
+
+CONVERSATION SO FAR:
+${chatHistory}
+
+Respond as ${persona === "both" ? "Antonio & Mariana together" : persona}. Be concise. If you detect career details (current role, target role, skills, salary, location), mention them naturally. If you have enough context to help, suggest creating a deliverable (CV, outreach email, cover letter, interview prep).
+
+Also, at the end of your response, on a new line, output any extracted career data in this exact format (only include lines where you found new info):
+[MEMORY:current_role=value]
+[MEMORY:target_role=value]
+[MEMORY:skills=value1, value2]
+[MEMORY:salary_range=value]
+[MEMORY:location_preference=value]`;
+
+    const res = await base44.integrations.Core.InvokeLLM({ prompt });
+
+    let content = res;
+    const memoryMatches = content.match(/\[MEMORY:(\w+)=([^\]]+)\]/g);
+
+    if (memoryMatches) {
+      content = content.replace(/\[MEMORY:\w+=[^\]]+\]/g, "").trim();
+
+      for (const match of memoryMatches) {
+        const [, key, value] = match.match(/\[MEMORY:(\w+)=([^\]]+)\]/);
+        const existing = memories.find((m) => m.key === key);
+        if (!existing || existing.value !== value) {
+          await base44.entities.UserMemory.create({
+            category: "career",
+            key,
+            value,
+            source_conversation_id: conversationId,
+          });
+        }
+      }
+      loadMemories();
+    }
+
+    const assistantMsg = {
+      role: "assistant",
+      content,
+      persona,
+      timestamp: new Date().toISOString(),
+    };
+
+    setMessages((prev) => [...prev, assistantMsg]);
+    setIsLoading(false);
+    setWhisper("");
+
+    if (conversationId) {
+      await base44.entities.Conversation.update(conversationId, {
+        messages: [...newMessages, assistantMsg],
+      });
+    }
+  };
+
+  const handleDeliverableClick = (deliverable) => {
+    // Future: open deliverable detail view
+  };
+
+  return (
+    <div className="relative h-screen overflow-hidden bg-gradient-to-b from-stone-50 via-neutral-50 to-stone-100">
+      {/* Subtle background texture */}
+      <div className="absolute inset-0 opacity-[0.015]" style={{
+        backgroundImage: `radial-gradient(circle at 1px 1px, black 1px, transparent 0)`,
+        backgroundSize: "32px 32px"
+      }} />
+
+      <div className="relative h-full flex flex-col">
+        {/* Landing state */}
+        <AnimatePresence>
+          {!hasStarted && (
+            <motion.div
+              initial={{ opacity: 1 }}
+              exit={{ opacity: 0, y: -40 }}
+              transition={{ duration: 0.6 }}
+              className="flex-1 flex flex-col items-center justify-center px-6"
+            >
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.8, delay: 0.1 }}
+                className="text-center mb-10"
+              >
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 mx-auto mb-8 flex items-center justify-center shadow-xl">
+                  <span className="text-white text-lg font-bold tracking-tight">A·M</span>
+                </div>
+                <h1 className="text-4xl md:text-5xl font-light text-neutral-800 tracking-tight mb-4">
+                  Antonio & Mariana
+                </h1>
+                <p className="text-neutral-400 text-sm tracking-[0.15em] uppercase font-medium">
+                  Matchmakers for your career
+                </p>
+              </motion.div>
+
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.8, delay: 0.3 }}
+                className="mb-8"
+              >
+                <PersonaSelector active={persona} onChange={setPersona} />
+              </motion.div>
+
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.8, delay: 0.5 }}
+                className="w-full max-w-lg"
+              >
+                <ChatInput onSend={(text) => { startConversation().then(() => handleSend(text)); }} />
+              </motion.div>
+
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 1, delay: 1 }}
+                className="mt-8"
+              >
+                <WhisperCaption text="your next chapter starts with a conversation" visible={true} />
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Chat state */}
+        {hasStarted && (
+          <>
+            {/* Header */}
+            <div className="flex-shrink-0 px-6 py-4 flex items-center justify-between bg-white/30 backdrop-blur-xl border-b border-white/20">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 flex items-center justify-center">
+                  <span className="text-white text-[10px] font-bold">A·M</span>
+                </div>
+                <PersonaSelector active={persona} onChange={setPersona} />
+              </div>
+              <button
+                onClick={() => setShowMemory(!showMemory)}
+                className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
+              >
+                <Brain className="w-4 h-4 text-neutral-500" />
+                {memories.length > 0 && (
+                  <div className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-violet-500" />
+                )}
+              </button>
+            </div>
+
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto relative">
+              <ContextPanel
+                memories={memories}
+                visible={showMemory}
+                onClose={() => setShowMemory(false)}
+              />
+
+              <div className="max-w-3xl mx-auto px-6 py-8 space-y-6">
+                {messages.map((msg, i) => (
+                  <MessageBubble key={i} message={msg} isLast={i === messages.length - 1} />
+                ))}
+
+                {isLoading && <TypingIndicator persona={persona} />}
+
+                {/* Deliverables surface contextually */}
+                {deliverables.length > 0 && messages.length > 3 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="pt-4"
+                  >
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-300 mb-3">
+                      Your deliverables
+                    </p>
+                    <div className="grid gap-2">
+                      {deliverables.slice(0, 3).map((d) => (
+                        <DeliverableCard key={d.id} deliverable={d} onClick={handleDeliverableClick} />
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+
+                <div ref={messagesEndRef} />
+              </div>
+            </div>
+
+            {/* Whisper + Input */}
+            <div className="flex-shrink-0 px-6 pb-6 pt-2">
+              <WhisperCaption text={whisper} visible={!!whisper} />
+              <div className="max-w-3xl mx-auto mt-2">
+                <ChatInput onSend={handleSend} disabled={isLoading} />
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
