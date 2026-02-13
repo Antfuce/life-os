@@ -109,21 +109,6 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
           autoStart={voiceMode}
           pauseListening={pauseListening}
         />
-        <AnimatePresence>
-          {text.trim() && !voiceMode && (
-            <motion.button
-              initial={{ scale: 0, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0, opacity: 0 }}
-              transition={{ duration: 0.15 }}
-              onClick={handleSubmit}
-              disabled={disabled}
-              className="flex-shrink-0 w-9 h-9 rounded-xl bg-neutral-900 text-white flex items-center justify-center hover:bg-neutral-800 transition-colors disabled:opacity-50"
-            >
-              <Send className="w-4 h-4" />
-            </motion.button>
-          )}
-        </AnimatePresence>
       </div>
       
       {/* Live Caption Display */}
