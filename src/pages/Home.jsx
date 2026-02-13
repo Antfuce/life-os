@@ -114,10 +114,18 @@ export default function Home() {
 
   const loadCandidateData = async () => {
     if (!candidateId) return;
-    const candidate = await base44.entities.Candidate.filter({ id: candidateId });
-    if (candidate[0]) {
-      setCvData(candidate[0].cv_data || {});
+    const candidates = await base44.entities.Candidate.filter({ id: candidateId });
+    if (candidates[0]) {
+      setCvData(candidates[0].cv_data || {});
     }
+  };
+
+  const saveCandidateData = async (updatedCvData) => {
+    if (!candidateId) return;
+    await base44.entities.Candidate.update(candidateId, {
+      cv_data: updatedCvData,
+      last_updated: new Date().toISOString(),
+    });
   };
 
   const startConversation = async (initialText) => {
