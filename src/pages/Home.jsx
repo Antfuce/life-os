@@ -361,12 +361,13 @@ If user is preparing for interview (intent: interview_prep):
         <FloatingHints visible={!hasStarted} />
         
         {/* Landing state */}
-        <AnimatePresence>
+        <AnimatePresence mode="wait">
           {!hasStarted && (
             <motion.div
+              key="landing"
               initial={{ opacity: 1 }}
-              exit={{ opacity: 0, y: -40 }}
-              transition={{ duration: 0.6 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.4, ease: "easeInOut" }}
               className="flex-1 flex flex-col items-center justify-center px-6"
             >
               <motion.div
@@ -435,13 +436,15 @@ If user is preparing for interview (intent: interview_prep):
         </AnimatePresence>
 
         {/* Chat state */}
-        {hasStarted && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.3, delay: 0.4 }}
-            className="flex-1 flex flex-col h-full"
-          >
+        <AnimatePresence mode="wait">
+          {hasStarted && (
+            <motion.div
+              key="chat"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+              className="flex-1 flex flex-col h-full"
+            >
             {/* Header */}
             <div className="flex-shrink-0 px-6 py-4 flex items-center justify-between bg-white/30 backdrop-blur-xl border-b border-white/20">
               <div className="flex items-center gap-3">
@@ -546,7 +549,8 @@ If user is preparing for interview (intent: interview_prep):
               </div>
             </div>
           </motion.div>
-        )}
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
