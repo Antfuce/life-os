@@ -13,6 +13,7 @@ import ContextPanel from "../components/chat/ContextPanel";
 import DeliverableCard from "../components/deliverables/DeliverableCard";
 import AvatarHint from "../components/chat/AvatarHint";
 import LiveCVPreview from "../components/cv/LiveCVPreview";
+import LiveInterviewPrep from "../components/interview/LiveInterviewPrep";
 import FloatingHints from "../components/chat/FloatingHints";
 
 const SYSTEM_PROMPTS = {
@@ -38,8 +39,9 @@ export default function Home() {
   const [conversationId, setConversationId] = useState(null);
   const [hasStarted, setHasStarted] = useState(false);
   const [showHint, setShowHint] = useState(false);
-  const [cvMode, setCvMode] = useState(false);
+  const [activeMode, setActiveMode] = useState(null); // 'cv', 'interview', 'trip', etc.
   const [cvData, setCvData] = useState({});
+  const [interviewQuestions, setInterviewQuestions] = useState([]);
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -120,7 +122,10 @@ ${chatHistory}
 
 Respond as ${persona === "both" ? "Antonio & Mariana together" : persona}. Be concise. If you detect career details (current role, target role, skills, salary, location), mention them naturally. If you have enough context to help, suggest creating a deliverable (CV, outreach email, cover letter, interview prep).
 
-Also, at the end of your response, on a new line, output any extracted data in this exact format (only include lines where you found new info):
+CRITICAL: At the start of your response, classify the conversation intent:
+[INTENT:category] where category is one of: cv_building, interview_prep, job_search, networking, social, travel, general
+
+Then, at the end of your response, output any extracted data in this exact format (only include lines where you found new info):
 [MEMORY:current_role=value]
 [MEMORY:target_role=value]
 [MEMORY:skills=value1, value2]
@@ -131,7 +136,7 @@ Also, at the end of your response, on a new line, output any extracted data in t
 [MEMORY:desired_connections=value]
 [MEMORY:preferred_communities=value]
 
-Additionally, if the user is building a CV, extract CV data in this format:
+If user is building a CV (intent: cv_building):
 [CV:name=value]
 [CV:email=value]
 [CV:phone=value]
@@ -139,13 +144,36 @@ Additionally, if the user is building a CV, extract CV data in this format:
 [CV:summary=value]
 [CV:experience={"title":"Job Title","company":"Company Name","duration":"2020-2023","description":"What you did"}]
 [CV:education={"degree":"Degree","institution":"University","year":"2020"}]
-[CV:skills=skill1, skill2, skill3]`;
+[CV:skills=skill1, skill2, skill3]
+
+If user is preparing for interview (intent: interview_prep):
+[INTERVIEW:question=What is your greatest strength?]
+[INTERVIEW:tip=Focus on skills relevant to the role]`;
 
     const res = await base44.integrations.Core.InvokeLLM({ prompt });
 
     let content = res;
+    
+    // Extract intent
+    const intentMatch = content.match(/\[INTENT:(\w+)\]/);
+    if (intentMatch) {
+      const [, intent] = intentMatch;
+      content = content.replace(/\[INTENT:\w+\]/g, "").trim();
+      
+      // Route to appropriate mode
+      if (intent === "cv_building") {
+        setActiveMode("cv");
+      } else if (intent === "interview_prep") {
+        setActiveMode("interview");
+      } else if (activeMode && intent === "general") {
+        // Close mode if conversation shifts to general
+        setActiveMode(null);
+      }
+    }
+    
     const memoryMatches = content.match(/\[MEMORY:(\w+)=([^\]]+)\]/g);
     const cvMatches = content.match(/\[CV:(\w+)=([^\]]+)\]/g);
+    const interviewMatches = content.match(/\[INTERVIEW:(\w+)=([^\]]+)\]/g);
 
     if (memoryMatches) {
       content = content.replace(/\[MEMORY:\w+=[^\]]+\]/g, "").trim();
@@ -189,7 +217,25 @@ Additionally, if the user is building a CV, extract CV data in this format:
       }
       
       setCvData(newCvData);
-      if (!cvMode) setCvMode(true);
+    }
+
+    if (interviewMatches) {
+      content = content.replace(/\[INTERVIEW:\w+=[^\]]+\]/g, "").trim();
+      const newQuestions = [];
+
+      for (const match of interviewMatches) {
+        const [, key, value] = match.match(/\[INTERVIEW:(\w+)=([^\]]+)\]/);
+        
+        if (key === "question") {
+          newQuestions.push({ question: value, tip: "" });
+        } else if (key === "tip" && newQuestions.length > 0) {
+          newQuestions[newQuestions.length - 1].tip = value;
+        }
+      }
+      
+      if (newQuestions.length > 0) {
+        setInterviewQuestions((prev) => [...prev, ...newQuestions]);
+      }
     }
 
     const assistantMsg = {
@@ -311,8 +357,9 @@ Additionally, if the user is building a CV, extract CV data in this format:
                     setHasStarted(false);
                     setMessages([]);
                     setConversationId(null);
-                    setCvMode(false);
+                    setActiveMode(null);
                     setCvData({});
+                    setInterviewQuestions([]);
                   }}
                   className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 flex items-center justify-center hover:opacity-80 transition-opacity cursor-pointer"
                 >
@@ -340,7 +387,7 @@ Additionally, if the user is building a CV, extract CV data in this format:
               />
 
               {/* Chat Column */}
-              <div className={cn("px-6 py-8 space-y-6 transition-all", cvMode ? "w-1/2" : "max-w-3xl mx-auto w-full")}>
+              <div className={cn("px-6 py-8 space-y-6 transition-all", activeMode ? "w-1/2" : "max-w-3xl mx-auto w-full")}>
                 {messages.map((msg, i) => (
                   <MessageBubble key={i} message={msg} isLast={i === messages.length - 1} />
                 ))}
@@ -348,7 +395,7 @@ Additionally, if the user is building a CV, extract CV data in this format:
                 {isLoading && <TypingIndicator persona={persona} />}
 
                 {/* Deliverables surface contextually */}
-                {deliverables.length > 0 && messages.length > 3 && !cvMode && (
+                {deliverables.length > 0 && messages.length > 3 && !activeMode && (
                   <motion.div
                     initial={{ opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -368,16 +415,31 @@ Additionally, if the user is building a CV, extract CV data in this format:
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* CV Preview Column */}
-              <AnimatePresence>
-                {cvMode && (
+              {/* Dynamic Side Panel */}
+              <AnimatePresence mode="wait">
+                {activeMode === "cv" && (
                   <motion.div
+                    key="cv"
                     initial={{ opacity: 0, x: 50 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 50 }}
                     className="w-1/2 p-6 border-l border-neutral-200"
                   >
-                    <LiveCVPreview cvData={cvData} />
+                    <LiveCVPreview cvData={cvData} onDownload={() => {}} />
+                  </motion.div>
+                )}
+                {activeMode === "interview" && (
+                  <motion.div
+                    key="interview"
+                    initial={{ opacity: 0, x: 50 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 50 }}
+                    className="w-1/2 p-6 border-l border-neutral-200"
+                  >
+                    <LiveInterviewPrep 
+                      questions={interviewQuestions} 
+                      onClose={() => setActiveMode(null)} 
+                    />
                   </motion.div>
                 )}
               </AnimatePresence>
