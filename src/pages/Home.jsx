@@ -460,37 +460,18 @@ For mock interview mode, also include:
           )}
         </AnimatePresence>
 
-        {/* Voice Mode State */}
+        {/* Conversation State */}
         <AnimatePresence mode="wait">
           {hasStarted && (
             <motion.div
-              key="voice"
+              key="conversation"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ duration: 0.5 }}
-              className="flex-1 flex flex-col items-center justify-center relative h-full overflow-hidden"
+              transition={{ duration: 0.3 }}
+              className="flex-1 flex flex-col relative h-full"
             >
-              {/* Whisper Response - fading text */}
-              <AnimatePresence>
-                {whisper && (
-                  <WhisperResponse text={whisper} visible={!!whisper} />
-                )}
-              </AnimatePresence>
-
-              {/* Central Avatar with Waves */}
-              <div className="flex-1 flex items-center justify-center">
-                <AvatarWithWaves persona={persona} isActive={isVoiceActive} />
-              </div>
-
-              {/* Memory Panel */}
-              <ContextPanel
-                memories={memories}
-                visible={showMemory}
-                onClose={() => setShowMemory(false)}
-              />
-
               {/* Header - top left */}
-              <div className="absolute top-6 left-6 flex items-center gap-3">
+              <div className="absolute top-6 left-6 z-10">
                 <button
                   onClick={() => {
                     setHasStarted(false);
@@ -509,7 +490,7 @@ For mock interview mode, also include:
               {/* Memory button - top right */}
               <button
                 onClick={() => setShowMemory(!showMemory)}
-                className="absolute top-6 right-6 relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
+                className="absolute top-6 right-6 z-10 relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
               >
                 <Brain className="w-4 h-4 text-neutral-500" />
                 {memories.length > 0 && (
@@ -517,23 +498,20 @@ For mock interview mode, also include:
                 )}
               </button>
 
-              {/* Floating Modules */}
-              <AnimatePresence>
-                {floatingModules.map((module) => (
-                  <FloatingModule
-                    key={module.id}
-                    title={module.type === "cv" ? "Your CV" : module.type === "interview" ? "Interview Prep" : "Module"}
-                    position={module.position}
-                    onClose={() => setFloatingModules((prev) => prev.filter((m) => m.id !== module.id))}
-                  >
-                    {module.type === "cv" && <LiveCVPreview cvData={cvData} onDownload={() => {}} />}
-                    {module.type === "interview" && <LiveInterviewPrep questions={interviewQuestions} onClose={() => setFloatingModules((prev) => prev.filter((m) => m.id !== module.id))} />}
-                  </FloatingModule>
-                ))}
-              </AnimatePresence>
+              {/* Memory Panel */}
+              <ContextPanel
+                memories={memories}
+                visible={showMemory}
+                onClose={() => setShowMemory(false)}
+              />
 
-              {/* Voice Input - bottom */}
-              <VoiceInput onTranscript={handleSend} isListening={isVoiceActive} />
+              {/* Messages */}
+              <ConversationView messages={messages} isLoading={isLoading} whisper={whisper} />
+
+              {/* Input - bottom */}
+              <div className="border-t border-neutral-200 bg-neutral-50 px-6 py-4">
+                <ChatInput onSend={handleSend} disabled={isLoading} />
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
