@@ -260,17 +260,18 @@ For mock interview mode, also include:
 [INTERVIEW:scenario=Brief scenario setup for the mock interview]
 
 If user is asking about career progression or future paths (intent: career_path):
-Generate a visual career roadmap with 4-6 steps showing logical progression from their current role to their target role.
-Format: [PATH:role=Job Title]
+Your chat message should be SHORT and conversational (2-3 lines). Don't explain the whole path in text.
+Then generate structured roadmap data that will display as visual cards:
+[PATH:role=Job Title]
 [PATH:timeframe=Expected timeframe (e.g., "1-2 years", "Next 6 months")]
 [PATH:description=Brief description of this role and why it's a logical step]
 [PATH:skills=skill1, skill2, skill3]
 [PATH:experience=What experience or achievements needed for this step]
 [PATH:isCurrent=true] (only for their current position)
-[PATH:learning_resources={"course": "Recommended course name and platform", "article": "Relevant article or tutorial link", "type": "online_course|book|article|certification"}] (JSON array of 2-3 specific learning resources)
+[PATH:learning_resources=[{"course": "Specific course name", "article": "Platform/link description", "type": "online_course"}]] (JSON array of 2-3 resources)
 [PATH:skill_building_tips=Specific actionable advice for developing the required skills]
 
-Example progression: Current Role → Senior Role → Lead Role → Manager Role → Director Role`;
+Remember: Keep chat response SHORT (2-3 lines max). Let the visual cards show the details.`;
 
     const res = await base44.integrations.Core.InvokeLLM({ prompt });
 
