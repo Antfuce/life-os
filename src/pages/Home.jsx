@@ -459,10 +459,10 @@ GUIDANCE:
             skills: { type: "array", items: { type: "string" } }
           }
         },
-        clarification_probe: {
+        context_used: {
           type: "array",
           items: { type: "string" },
-          description: "Natural clarification questions to deepen incomplete memories (optional)"
+          description: "List of memory keys you actually used to generate this response (transparency)"
         },
         interview_questions: {
           type: "array",
