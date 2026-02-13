@@ -14,6 +14,7 @@ import DeliverableCard from "../components/deliverables/DeliverableCard";
 import AvatarHint from "../components/chat/AvatarHint";
 import LiveCVPreview from "../components/cv/LiveCVPreview";
 import LiveInterviewPrep from "../components/interview/LiveInterviewPrep";
+import CareerPathVisualization from "../components/career/CareerPathVisualization";
 import FloatingHints from "../components/chat/FloatingHints";
 
 const SYSTEM_PROMPTS = {
@@ -39,9 +40,10 @@ export default function Home() {
   const [conversationId, setConversationId] = useState(null);
   const [hasStarted, setHasStarted] = useState(false);
   const [showHint, setShowHint] = useState(false);
-  const [activeMode, setActiveMode] = useState(null); // 'cv', 'interview', 'trip', etc.
+  const [activeMode, setActiveMode] = useState(null); // 'cv', 'interview', 'career_path', etc.
   const [cvData, setCvData] = useState({});
   const [interviewQuestions, setInterviewQuestions] = useState([]);
+  const [careerPathData, setCareerPathData] = useState([]);
   const [agentConversationId, setAgentConversationId] = useState(null);
   const [candidateId, setCandidateId] = useState(null);
   const messagesEndRef = useRef(null);
@@ -215,7 +217,7 @@ ${chatHistory}
 Respond as ${persona === "both" ? "Antonio & Mariana together" : persona}. Be concise. If you detect career details (current role, target role, skills, salary, location), mention them naturally. If you have enough context to help, suggest creating a deliverable (CV, outreach email, cover letter, interview prep).
 
 CRITICAL: At the start of your response, classify the conversation intent:
-[INTENT:category] where category is one of: cv_building, interview_prep, job_search, networking, social, travel, general
+[INTENT:category] where category is one of: cv_building, interview_prep, career_path, job_search, networking, social, travel, general
 
 USER CONTEXT:
 Current Role: ${memories.find(m => m.key === 'current_role')?.value || 'Not specified'}
@@ -250,7 +252,18 @@ Format: [INTERVIEW:question=Your specific question here]
 [INTERVIEW:followup=Potential follow-up question interviewer might ask]
 
 For mock interview mode, also include:
-[INTERVIEW:scenario=Brief scenario setup for the mock interview]`;
+[INTERVIEW:scenario=Brief scenario setup for the mock interview]
+
+If user is asking about career progression or future paths (intent: career_path):
+Generate a visual career roadmap with 4-6 steps showing logical progression from their current role to their target role.
+Format: [PATH:role=Job Title]
+[PATH:timeframe=Expected timeframe (e.g., "1-2 years", "Next 6 months")]
+[PATH:description=Brief description of this role and why it's a logical step]
+[PATH:skills=skill1, skill2, skill3]
+[PATH:experience=What experience or achievements needed for this step]
+[PATH:isCurrent=true] (only for their current position)
+
+Example progression: Current Role → Senior Role → Lead Role → Manager Role → Director Role`;
 
     const res = await base44.integrations.Core.InvokeLLM({ prompt });
 
@@ -262,11 +275,19 @@ For mock interview mode, also include:
       const [, intent] = intentMatch;
       content = content.replace(/\[INTENT:\w+\]/g, "").trim();
       
-      // Route to appropriate mode
+      // Route to appropriate mode with randomization
+      const modes = ["cv", "interview", "career_path"];
+      
       if (intent === "cv_building") {
         setActiveMode("cv");
       } else if (intent === "interview_prep") {
         setActiveMode("interview");
+      } else if (intent === "career_path") {
+        setActiveMode("career_path");
+      } else if (intent === "job_search" || intent === "networking") {
+        // Randomly suggest a helpful mode for job search/networking
+        const randomMode = modes[Math.floor(Math.random() * modes.length)];
+        setActiveMode(randomMode);
       } else if (activeMode && intent === "general") {
         // Close mode if conversation shifts to general
         setActiveMode(null);
@@ -276,6 +297,7 @@ For mock interview mode, also include:
     const memoryMatches = content.match(/\[MEMORY:(\w+)=([^\]]+)\]/g);
     const cvMatches = content.match(/\[CV:(\w+)=([^\]]+)\]/g);
     const interviewMatches = content.match(/\[INTERVIEW:(\w+)=([^\]]+)\]/g);
+    const pathMatches = content.match(/\[PATH:(\w+)=([^\]]+)\]/g);
 
     if (memoryMatches) {
       content = content.replace(/\[MEMORY:\w+=[^\]]+\]/g, "").trim();
@@ -342,6 +364,41 @@ For mock interview mode, also include:
       
       if (newQuestions.length > 0) {
         setInterviewQuestions((prev) => [...prev, ...newQuestions]);
+      }
+    }
+
+    if (pathMatches) {
+      content = content.replace(/\[PATH:\w+=[^\]]+\]/g, "").trim();
+      const pathSteps = [];
+      let currentStep = {};
+
+      for (const match of pathMatches) {
+        const [, key, value] = match.match(/\[PATH:(\w+)=([^\]]+)\]/);
+        
+        if (key === "role" && Object.keys(currentStep).length > 0) {
+          pathSteps.push(currentStep);
+          currentStep = { role: value };
+        } else if (key === "role") {
+          currentStep.role = value;
+        } else if (key === "timeframe") {
+          currentStep.timeframe = value;
+        } else if (key === "description") {
+          currentStep.description = value;
+        } else if (key === "skills") {
+          currentStep.skills = value.split(",").map((s) => s.trim());
+        } else if (key === "experience") {
+          currentStep.experience = value;
+        } else if (key === "isCurrent") {
+          currentStep.isCurrent = value === "true";
+        }
+      }
+      
+      if (Object.keys(currentStep).length > 0) {
+        pathSteps.push(currentStep);
+      }
+      
+      if (pathSteps.length > 0) {
+        setCareerPathData(pathSteps);
       }
     }
 
@@ -553,6 +610,20 @@ For mock interview mode, also include:
                   >
                     <LiveInterviewPrep 
                       questions={interviewQuestions} 
+                      onClose={() => setActiveMode(null)} 
+                    />
+                  </motion.div>
+                )}
+                {activeMode === "career_path" && (
+                  <motion.div
+                    key="career_path"
+                    initial={{ opacity: 0, x: 50 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 50 }}
+                    className="w-1/2 border-l border-neutral-200 flex-shrink-0"
+                  >
+                    <CareerPathVisualization 
+                      pathData={careerPathData} 
                       onClose={() => setActiveMode(null)} 
                     />
                   </motion.div>
