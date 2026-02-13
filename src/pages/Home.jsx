@@ -406,9 +406,7 @@ CRITICAL RULES:
     const intent = response.intent;
     const content = response.chat_message;
 
-    // Route to appropriate mode
-    const modes = ["cv", "interview", "career_path"];
-    
+    // Route to appropriate mode — STAY in the current mode unless explicitly changing
     if (intent === "cv_building") {
       setActiveMode("cv");
     } else if (intent === "interview_prep") {
@@ -416,11 +414,9 @@ CRITICAL RULES:
     } else if (intent === "career_path") {
       setActiveMode("career_path");
     } else if (intent === "job_search" || intent === "networking") {
-      const randomMode = modes[Math.floor(Math.random() * modes.length)];
-      setActiveMode(randomMode);
-    } else if (activeMode && intent === "general") {
-      setActiveMode(null);
+      if (activeMode !== "cv") setActiveMode("interview");
     }
+    // Don't exit mode unless user explicitly asks
 
     // Save memories
     if (response.memories && response.memories.length > 0) {
