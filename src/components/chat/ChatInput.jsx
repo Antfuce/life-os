@@ -6,7 +6,7 @@ export default function ChatInput({ onSend, disabled }) {
   const [isListening, setIsListening] = useState(false);
 
   return (
-    <div className="relative w-full flex items-center justify-center py-8">
+    <div className="relative w-full flex items-center justify-center py-2">
       {/* Central Microphone Button */}
       <button
         onClick={() => setIsListening(!isListening)}
