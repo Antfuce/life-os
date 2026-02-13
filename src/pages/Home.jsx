@@ -19,11 +19,7 @@ import FloatingHints from "../components/chat/FloatingHints";
 
 
 
-const WELCOME_MESSAGES = {
-  antonio: "What's the move? Career, connections, whatever — tell me where you are and where you want to be. I'll map the fastest route there.",
-  mariana: "Welcome. Take a breath. Tell me what's been on your mind — career, relationships, life. I'm here to listen and help you find clarity.",
-  both: "Hey — we're Antonio & Mariana. Think of us as your matchmakers for work and life. Tell us what's going on, and we'll figure out the best move together.",
-};
+
 
 export default function Home() {
   const [messages, setMessages] = useState([]);
