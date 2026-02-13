@@ -527,13 +527,65 @@ CRITICAL RULES:
               </motion.div>
               
               <motion.button
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
                 transition={{ duration: 0.8, delay: 0.6 }}
                 onClick={() => setVoiceMode(!voiceMode)}
-                className="mt-4 text-xs text-neutral-400 hover:text-neutral-600 transition-colors"
+                className="mt-8 flex flex-col items-center gap-3 group cursor-pointer"
               >
-                {voiceMode ? "Switch to typing" : "Switch to voice mode"}
+                {/* Animated Wave Symbol */}
+                <div className="relative w-12 h-12 flex items-center justify-center">
+                  {/* Wave animation - right to left */}
+                  <motion.svg
+                    width="48"
+                    height="48"
+                    viewBox="0 0 48 48"
+                    fill="none"
+                    className="absolute"
+                  >
+                    {/* Wave 1 - Far right */}
+                    <motion.path
+                      d="M 36 24 Q 40 20 44 24 Q 40 28 36 24"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      className="text-violet-400"
+                      initial={{ opacity: 0, x: 0 }}
+                      animate={{ opacity: [0, 1, 0], x: -20 }}
+                      transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+                    />
+                    {/* Wave 2 - Middle */}
+                    <motion.path
+                      d="M 28 24 Q 32 20 36 24 Q 32 28 28 24"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      className="text-rose-400"
+                      initial={{ opacity: 0, x: 0 }}
+                      animate={{ opacity: [0, 1, 0], x: -20 }}
+                      transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut", delay: 0.3 }}
+                    />
+                    {/* Wave 3 - Left */}
+                    <motion.path
+                      d="M 20 24 Q 24 20 28 24 Q 24 28 20 24"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      className="text-amber-400"
+                      initial={{ opacity: 0, x: 0 }}
+                      animate={{ opacity: [0, 1, 0], x: -20 }}
+                      transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut", delay: 0.6 }}
+                    />
+                  </motion.svg>
+                  
+                  {/* Glow effect */}
+                  <motion.div
+                    className="absolute inset-0 rounded-full bg-gradient-to-r from-violet-400 via-rose-400 to-amber-400 opacity-0 blur-lg"
+                    animate={{ opacity: [0.2, 0.4, 0.2] }}
+                    transition={{ duration: 2, repeat: Infinity }}
+                  />
+                </div>
+                
+                <span className="text-xs text-neutral-400 group-hover:text-neutral-600 transition-colors font-medium">
+                  {voiceMode ? "Click to mute" : "Click to speak"}
+                </span>
               </motion.button>
 
               <motion.div
