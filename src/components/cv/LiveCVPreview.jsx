@@ -18,6 +18,13 @@ export default function LiveCVPreview({ cvData, onDownload }) {
 
   const hasContent = name || email || experience.length > 0 || education.length > 0;
 
+  const formatDateRange = (startDate, endDate, isCurrent) => {
+    if (!startDate) return "";
+    if (isCurrent) return `${startDate} — Present`;
+    if (endDate) return `${startDate} — ${endDate}`;
+    return startDate;
+  };
+
   const handleDownload = () => {
     const doc = new jsPDF();
     let y = 20;
