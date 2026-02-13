@@ -306,9 +306,16 @@ Keep it SHORT and factual (2-3 sentences max).`;
       .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
       .join("\n\n");
 
+    // Format memories with clarity flags
     const memoryContext = relevantMemories.length > 0
-      ? relevantMemories.map(m => `${m.key}: ${m.value}`).join("\n")
+      ? relevantMemories.map(m => {
+          const flag = m.is_incomplete ? " [INCOMPLETE - probe for details]" : "";
+          return `${m.key}: ${m.value}${flag}`;
+        }).join("\n")
       : "No prior context available";
+
+    // Identify ambiguous/incomplete memories to probe
+    const incompleteMemories = relevantMemories.filter(m => m.is_incomplete);
 
     const lastConvContext = lastConvSummary 
       ? `\n\nLAST CONVERSATION (${new Date(lastConvSummary.timestamp).toLocaleDateString()}):\nSummary: ${lastConvSummary.summary}${lastConvSummary.keyDecisions.length > 0 ? `\nKey decisions: ${lastConvSummary.keyDecisions.join(", ")}` : ""}\nContext: ${JSON.stringify(lastConvSummary.context)}`
