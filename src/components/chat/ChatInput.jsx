@@ -45,50 +45,113 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
   return (
     <div className="relative">
       {/* Animated wave overlay - flows right to left */}
-      <div className="flex items-end gap-3 bg-white/60 backdrop-blur-xl border border-white/40 rounded-2xl px-4 py-3 shadow-lg shadow-black/[0.03] relative z-10 overflow-hidden">
-        {/* Animated wave overlay - flows right to left */}
+      <div className="flex items-end gap-3 bg-white/60 backdrop-blur-xl border border-white/40 rounded-2xl px-4 py-3 shadow-lg shadow-black/[0.03] relative z-10 overflow-hidden group hover:shadow-xl hover:shadow-violet-500/20 transition-all duration-300">
+        {/* Glow backdrop layer */}
+        <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-amber-500/0 via-rose-500/5 to-violet-600/0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
+
+        {/* Animated wave overlay - flows left to right with luxury glow */}
         <motion.div
           className="absolute inset-0 rounded-2xl overflow-hidden pointer-events-none"
         >
           <svg
-            className="absolute inset-0 w-full h-full"
+            className="absolute inset-0 w-full h-full filter drop-shadow-xl"
             viewBox="0 0 600 60"
             preserveAspectRatio="none"
           >
             <defs>
-              <linearGradient id="waveGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="rgba(168, 85, 247, 0.15)" />
-                <stop offset="50%" stopColor="rgba(244, 63, 94, 0.15)" />
-                <stop offset="100%" stopColor="rgba(251, 191, 36, 0.15)" />
+              {/* Primary gradient - orange to purple */}
+              <linearGradient id="waveGradientPrimary" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="rgba(251, 146, 60, 0.6)" />
+                <stop offset="25%" stopColor="rgba(251, 146, 60, 0.4)" />
+                <stop offset="50%" stopColor="rgba(244, 63, 94, 0.5)" />
+                <stop offset="75%" stopColor="rgba(168, 85, 247, 0.4)" />
+                <stop offset="100%" stopColor="rgba(168, 85, 247, 0.6)" />
               </linearGradient>
+              
+              {/* Glow gradient for secondary wave */}
+              <linearGradient id="waveGradientGlow" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="rgba(251, 146, 60, 0.3)" />
+                <stop offset="50%" stopColor="rgba(168, 85, 247, 0.3)" />
+                <stop offset="100%" stopColor="rgba(168, 85, 247, 0.15)" />
+              </linearGradient>
+
+              {/* Blur filter for glow effect */}
+              <filter id="glow">
+                <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+                <feMerge>
+                  <feMergeNode in="coloredBlur"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
             </defs>
+
+            {/* Glow layer waves */}
             <motion.path
-              d="M0,30 Q150,10 300,30 T600,30"
-              stroke="url(#waveGradient)"
-              strokeWidth="1.5"
+              d="M0,30 Q150,15 300,30 T600,30"
+              stroke="url(#waveGradientGlow)"
+              strokeWidth="3"
               fill="none"
               vectorEffect="non-scaling-stroke"
+              filter="url(#glow)"
+              initial={{ strokeDashoffset: 0 }}
+              animate={{ strokeDashoffset: -300 }}
+              transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
+              strokeDasharray="300"
+              opacity="0.8"
+            />
+
+            {/* Primary wave layer 1 */}
+            <motion.path
+              d="M0,30 Q150,12 300,30 T600,30"
+              stroke="url(#waveGradientPrimary)"
+              strokeWidth="2"
+              fill="none"
+              vectorEffect="non-scaling-stroke"
+              filter="url(#glow)"
               initial={{ strokeDashoffset: 0 }}
               animate={{ strokeDashoffset: -300 }}
               transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
               strokeDasharray="300"
             />
+
+            {/* Primary wave layer 2 */}
             <motion.path
-              d="M0,30 Q150,50 300,30 T600,30"
-              stroke="url(#waveGradient)"
-              strokeWidth="1.5"
+              d="M0,30 Q150,48 300,30 T600,30"
+              stroke="url(#waveGradientPrimary)"
+              strokeWidth="2"
               fill="none"
               vectorEffect="non-scaling-stroke"
+              filter="url(#glow)"
               initial={{ strokeDashoffset: 0 }}
               animate={{ strokeDashoffset: -300 }}
               transition={{ duration: 2.5, repeat: Infinity, ease: "linear", delay: 0.3 }}
               strokeDasharray="300"
             />
+
+            {/* Accent shimmer wave */}
+            <motion.path
+              d="M0,30 Q150,25 300,30 T600,30"
+              stroke="url(#waveGradientGlow)"
+              strokeWidth="1"
+              fill="none"
+              vectorEffect="non-scaling-stroke"
+              initial={{ strokeDashoffset: 0, opacity: 0.3 }}
+              animate={{ strokeDashoffset: -300, opacity: [0.3, 0.8, 0.3] }}
+              transition={{ duration: 1.5, repeat: Infinity, ease: "linear", delay: 0.1 }}
+              strokeDasharray="300"
+            />
           </svg>
         </motion.div>
 
-        <div className="relative z-10 flex items-center justify-center w-full text-neutral-400 pointer-events-none">
-          <span className="text-[15px]">Click to start talking...</span>
+        {/* Text label with glow on hover */}
+        <div className="relative z-10 flex items-center justify-center w-full pointer-events-none">
+          <motion.span 
+            className="text-[15px] bg-gradient-to-r from-amber-600 via-rose-600 to-violet-600 bg-clip-text text-transparent font-medium tracking-wide"
+            animate={{ opacity: [0.6, 1, 0.6] }}
+            transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+          >
+            Click to start talking...
+          </motion.span>
         </div>
 
         <VoiceInput 
