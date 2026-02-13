@@ -405,6 +405,11 @@ GUIDANCE:
             skills: { type: "array", items: { type: "string" } }
           }
         },
+        clarification_probe: {
+          type: "array",
+          items: { type: "string" },
+          description: "Natural clarification questions to deepen incomplete memories (optional)"
+        },
         interview_questions: {
           type: "array",
           items: {
