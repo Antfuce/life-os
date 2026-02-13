@@ -338,6 +338,11 @@ Keep it SHORT and factual (2-3 sentences max).`;
     setIsLoading(true);
     setWhisper("thinking...");
 
+    // DETERMINISTIC: Detect intent from keywords (NOT from LLM)
+    const intent = detectIntent(text);
+    const selectedPersona = selectPersona(intent);
+    const newMode = selectMode(intent);
+
     // Get data from service
     const relevantMemories = await conversationService.getRelevantMemories(text);
     const userHistory = await conversationService.getUserHistoryContext();
@@ -348,23 +353,17 @@ Keep it SHORT and factual (2-3 sentences max).`;
       .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
       .join("\n\n");
 
-    // Format memories
-    const contextConfidence = conversationService.assessContextConfidence(relevantMemories);
-    const highConfidenceKeys = Object.keys(contextConfidence);
     const memoryContext = relevantMemories.length > 0
-      ? relevantMemories.map(m => {
-          const confidence = m.confidence || 30;
-          const confidenceFlag = confidence > 90 ? "✓" : confidence > 60 ? "~" : "?";
-          const completenessNote = m.is_incomplete ? " [needs detail]" : "";
-          return `[${confidenceFlag}] ${m.key}: ${m.value}${completenessNote}`;
-        }).join("\n")
+      ? relevantMemories
+          .map(m => `${m.key}: ${m.value}`)
+          .join("\n")
       : "No prior context available";
 
     const userHistoryContext = userHistory 
       ? `\n\nUSER HISTORY:\n${userHistory.history}`
       : "";
 
-    // Build prompt using service
+    // Build simplified prompt
     const systemPromptToUse = conversationService.buildSystemPrompt(
       userName,
       memoryContext,
@@ -380,38 +379,18 @@ Keep it SHORT and factual (2-3 sentences max).`;
       response_json_schema: responseSchema
     });
 
-    const response = res;
-    const intent = response.intent;
+    // VALIDATE AND FIX LLM response
+    const response = validateAndFixResponse(res);
     const content = response.chat_message;
-    const selectedPersona = response.persona || "both";
-    
-    // Track what context was used (for transparency/debugging)
-    if (response.context_used) {
-      setContextUsedList(response.context_used);
-    }
 
-    // Route to appropriate mode
-    let newMode = activeMode;
-    if (intent === "cv_building") {
-      newMode = "cv";
-    } else if (intent === "interview_prep") {
-      newMode = "interview";
-    } else if (intent === "career_path") {
-      newMode = "career_path";
-    } else if (intent === "job_search" || intent === "networking") {
-      const modes = ["cv", "interview", "career_path"];
-      newMode = modes[Math.floor(Math.random() * modes.length)];
-    } else if (activeMode && intent === "general") {
-      newMode = null;
-    }
-    
+    // Update UI state with DETERMINISTIC intent/persona (not from LLM)
     setActiveMode(newMode);
     setPersona(selectedPersona);
 
     // Save memories
     if (response.memories && response.memories.length > 0) {
       for (const mem of response.memories) {
-        const existing = relevantMemories.find((m) => m.key === mem.key);
+        const existing = memories.find((m) => m.key === mem.key);
         if (!existing || existing.value !== mem.value) {
           await base44.entities.UserMemory.create({
             category: mem.category,
@@ -424,21 +403,18 @@ Keep it SHORT and factual (2-3 sentences max).`;
       loadMemories();
     }
 
-    // Update CV data and persist to database
-    if (response.cv_data && Object.keys(response.cv_data).length > 0) {
-      const cleaned = sanitizeCvData(response.cv_data);
-      const updatedCvData = { ...cvData, ...cleaned };
+    // Update CV data
+    if (response.cv_data) {
+      const updatedCvData = { ...cvData, ...response.cv_data };
       setCvData(updatedCvData);
       await saveCandidateData(updatedCvData);
     }
 
-    // Add interview questions
-    if (response.interview_questions && response.interview_questions.length > 0) {
-      setInterviewQuestions((prev) => [...prev, ...response.interview_questions]);
+    // Add interview questions / career path
+    if (response.interview_questions?.length > 0) {
+      setInterviewQuestions(response.interview_questions);
     }
-
-    // Update career path
-    if (response.career_path && response.career_path.length > 0) {
+    if (response.career_path?.length > 0) {
       setCareerPathData(response.career_path);
     }
 
@@ -460,7 +436,6 @@ Keep it SHORT and factual (2-3 sentences max).`;
         persona: selectedPersona,
       });
 
-      // Generate summary after every 6 messages (3 exchanges)
       if (updatedMessages.length % 6 === 0) {
         generateConversationSummary(updatedMessages, convId);
       }
