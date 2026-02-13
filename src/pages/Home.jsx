@@ -431,7 +431,7 @@ ${incompleteMemories.length > 0 ? `\nYou should DEEPEN these incomplete memories
 5. Examples of BAD probes: "Tell me more" / "Any other details?" / "Anything else?"
 
 ## CONVERSATION SO FAR
-${chatHistory}${lastConvContext}
+${chatHistory}${userHistoryContext}
 
 ## RESPONSE FORMAT
 Return ONLY valid JSON (no markdown, no extra text) with this exact structure:
