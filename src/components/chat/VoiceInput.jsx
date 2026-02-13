@@ -67,14 +67,7 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, disabled
       };
 
       recognitionInstance.onend = () => {
-        // Auto-restart if still in listening mode and not paused
-        if (isListening && !pauseRef.current) {
-          try {
-            recognitionInstance.start();
-          } catch (e) {
-            // Already started
-          }
-        }
+       // DON'T auto-restart — user must manually click send
       };
 
       setRecognition(recognitionInstance);
