@@ -10,17 +10,18 @@ import PersonaSelector from "../components/chat/PersonaSelector";
 import WhisperCaption from "../components/chat/WhisperCaption";
 import ContextPanel from "../components/chat/ContextPanel";
 import DeliverableCard from "../components/deliverables/DeliverableCard";
+import AvatarHint from "../components/chat/AvatarHint";
 
 const SYSTEM_PROMPTS = {
-  antonio: `You are Antonio — a sharp, strategic, direct career advisor and matchmaker. You speak with high energy and confidence. You help users identify their strengths, build positioning, and execute career moves. You ask pointed questions, push for clarity, and drive action. Keep responses concise but powerful. When you have enough context about the user's career situation, offer to create deliverables like CVs, outreach emails, or interview prep. Always extract and remember key details: current role, target role, skills, salary expectations, location preferences.`,
-  mariana: `You are Mariana — a calm, structured, thoughtful career guide and life strategist. You speak with warmth and support. You help users explore their deeper motivations, overcome fears, and plan long-term. You listen carefully and reflect back insights. Keep responses supportive but substantive. When you have enough context, offer to create deliverables. Always extract and remember key details: current role, target role, skills, salary expectations, location preferences.`,
-  both: `You are Antonio & Mariana — dual career advisors working together. Antonio is sharp, strategic, and action-oriented. Mariana is calm, thoughtful, and supportive. Blend both energies in your responses — be direct yet empathetic, strategic yet caring. Help users with career transitions by understanding their situation deeply, then driving toward execution. When you have enough context, offer to create deliverables like CVs, outreach emails, cover letters, or interview prep. Always extract and remember key details about the user.`,
+  antonio: `You are Antonio — a sharp, strategic, direct career advisor and life matchmaker. You speak with high energy and confidence. You help users with career moves AND social connections — whether that's making friends, finding communities, networking events, or social opportunities. You ask pointed questions, push for clarity, and drive action. Keep responses concise but powerful. When you have enough context, offer to create deliverables like CVs, outreach emails, interview prep, OR social matches (friend introductions, event recommendations, community suggestions). Always extract and remember key details: career (current role, target role, skills, salary, location) AND social (interests, hobbies, desired connections, social goals).`,
+  mariana: `You are Mariana — a calm, structured, thoughtful career guide and life strategist. You speak with warmth and support. You help users explore their deeper motivations in BOTH career and social life — finding meaningful work AND meaningful connections. You listen carefully and reflect back insights. Keep responses supportive but substantive. When you have enough context, offer to create deliverables (career-related OR social matches). Always extract and remember key details about career AND social preferences (what kind of people they want to meet, communities they're interested in, social goals).`,
+  both: `You are Antonio & Mariana — dual advisors for career AND life. Antonio is sharp, strategic, and action-oriented. Mariana is calm, thoughtful, and supportive. Blend both energies in your responses — be direct yet empathetic, strategic yet caring. Help users with career transitions AND social connections. You're matchmakers for work and life. When you have enough context, offer to create deliverables like CVs, outreach emails, cover letters, interview prep, OR social matches (friend introductions, networking events, communities, social opportunities). Always extract and remember key details about BOTH career and social life.`,
 };
 
 const WELCOME_MESSAGES = {
-  antonio: "What's the move? Tell me where you are and where you want to be — I'll map the fastest route there.",
-  mariana: "Welcome. Take a breath. Tell me what's been on your mind about your career — I'm here to listen and help you find clarity.",
-  both: "Hey — we're Antonio & Mariana. Think of us as your career matchmakers. Tell us what's going on, and we'll figure out the best move together.",
+  antonio: "What's the move? Career, connections, whatever — tell me where you are and where you want to be. I'll map the fastest route there.",
+  mariana: "Welcome. Take a breath. Tell me what's been on your mind — career, relationships, life. I'm here to listen and help you find clarity.",
+  both: "Hey — we're Antonio & Mariana. Think of us as your matchmakers for work and life. Tell us what's going on, and we'll figure out the best move together.",
 };
 
 export default function Home() {
@@ -33,6 +34,7 @@ export default function Home() {
   const [whisper, setWhisper] = useState("");
   const [conversationId, setConversationId] = useState(null);
   const [hasStarted, setHasStarted] = useState(false);
+  const [showHint, setShowHint] = useState(false);
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -42,6 +44,10 @@ export default function Home() {
   useEffect(() => {
     loadMemories();
     loadDeliverables();
+    
+    // Show hint after a few seconds
+    const hintTimer = setTimeout(() => setShowHint(true), 8000);
+    return () => clearTimeout(hintTimer);
   }, []);
 
   const loadMemories = async () => {
@@ -109,12 +115,16 @@ ${chatHistory}
 
 Respond as ${persona === "both" ? "Antonio & Mariana together" : persona}. Be concise. If you detect career details (current role, target role, skills, salary, location), mention them naturally. If you have enough context to help, suggest creating a deliverable (CV, outreach email, cover letter, interview prep).
 
-Also, at the end of your response, on a new line, output any extracted career data in this exact format (only include lines where you found new info):
+Also, at the end of your response, on a new line, output any extracted data in this exact format (only include lines where you found new info):
 [MEMORY:current_role=value]
 [MEMORY:target_role=value]
 [MEMORY:skills=value1, value2]
 [MEMORY:salary_range=value]
-[MEMORY:location_preference=value]`;
+[MEMORY:location_preference=value]
+[MEMORY:social_interests=value]
+[MEMORY:social_goals=value]
+[MEMORY:desired_connections=value]
+[MEMORY:preferred_communities=value]`;
 
     const res = await base44.integrations.Core.InvokeLLM({ prompt });
 
@@ -128,8 +138,9 @@ Also, at the end of your response, on a new line, output any extracted career da
         const [, key, value] = match.match(/\[MEMORY:(\w+)=([^\]]+)\]/);
         const existing = memories.find((m) => m.key === key);
         if (!existing || existing.value !== value) {
+          const isSocial = ["social_interests", "social_goals", "desired_connections", "preferred_communities"].includes(key);
           await base44.entities.UserMemory.create({
-            category: "career",
+            category: isSocial ? "social" : "career",
             key,
             value,
             source_conversation_id: conversationId,
@@ -192,7 +203,7 @@ Also, at the end of your response, on a new line, output any extracted career da
                   Antonio & Mariana
                 </h1>
                 <p className="text-neutral-400 text-sm tracking-[0.15em] uppercase font-medium">
-                  Matchmakers for your career
+                  Matchmakers for work & life
                 </p>
               </motion.div>
 
@@ -222,6 +233,24 @@ Also, at the end of your response, on a new line, output any extracted career da
               >
                 <WhisperCaption text="your next chapter starts with a conversation" visible={true} />
               </motion.div>
+
+              <AnimatePresence>
+                {showHint && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.6 }}
+                    className="mt-12 max-w-md mx-auto"
+                  >
+                    <AvatarHint
+                      persona="both"
+                      text="We can help with career moves, but also social life — making friends, finding communities, networking events. Just ask."
+                      visible={true}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </motion.div>
           )}
         </AnimatePresence>

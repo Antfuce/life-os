@@ -10,6 +10,10 @@ const typeConfig = {
   outreach_email: { icon: Mail, label: "Outreach Email", color: "text-amber-600 bg-amber-50" },
   interview_prep: { icon: Video, label: "Interview Prep", color: "text-violet-600 bg-violet-50" },
   intro_request: { icon: UserPlus, label: "Intro Request", color: "text-rose-600 bg-rose-50" },
+  social_event: { icon: Sparkles, label: "Social Event", color: "text-purple-600 bg-purple-50" },
+  networking_intro: { icon: UserPlus, label: "Networking Intro", color: "text-indigo-600 bg-indigo-50" },
+  friend_match: { icon: UserPlus, label: "Friend Match", color: "text-pink-600 bg-pink-50" },
+  community_suggestion: { icon: UserPlus, label: "Community", color: "text-cyan-600 bg-cyan-50" },
 };
 
 const statusColors = {
