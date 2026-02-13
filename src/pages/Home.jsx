@@ -46,6 +46,7 @@ export default function Home() {
   const [careerPathData, setCareerPathData] = useState([]);
   const [agentConversationId, setAgentConversationId] = useState(null);
   const [candidateId, setCandidateId] = useState(null);
+  const [voiceMode, setVoiceMode] = useState(true); // Voice-first by default
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -494,8 +495,18 @@ Remember: Keep chat response SHORT (2-3 lines max). Let the visual cards show th
                 transition={{ duration: 0.8, delay: 0.5 }}
                 className="w-full max-w-lg"
               >
-                <ChatInput onSend={handleSend} />
+                <ChatInput onSend={handleSend} voiceMode={voiceMode} />
               </motion.div>
+              
+              <motion.button
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.8, delay: 0.6 }}
+                onClick={() => setVoiceMode(!voiceMode)}
+                className="mt-4 text-xs text-neutral-400 hover:text-neutral-600 transition-colors"
+              >
+                {voiceMode ? "Switch to typing" : "Switch to voice mode"}
+              </motion.button>
 
               <motion.div
                 initial={{ opacity: 0 }}
@@ -651,7 +662,7 @@ Remember: Keep chat response SHORT (2-3 lines max). Let the visual cards show th
             <div className="flex-shrink-0 px-6 pb-6 pt-2">
               <WhisperCaption text={whisper} visible={!!whisper} />
               <div className="max-w-3xl mx-auto mt-2">
-                <ChatInput onSend={handleSend} disabled={isLoading} />
+                <ChatInput onSend={handleSend} disabled={isLoading} voiceMode={voiceMode} />
               </div>
             </div>
           </motion.div>
