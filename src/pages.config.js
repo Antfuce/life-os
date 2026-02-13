@@ -50,6 +50,7 @@
 import Home from './pages/Home';
 import Deliverables from './pages/Deliverables';
 import Memory from './pages/Memory';
+import Social from './pages/Social';
 import __Layout from './Layout.jsx';
 
 
@@ -57,6 +58,7 @@ export const PAGES = {
     "Home": Home,
     "Deliverables": Deliverables,
     "Memory": Memory,
+    "Social": Social,
 }
 
 export const pagesConfig = {
