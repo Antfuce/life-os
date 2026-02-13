@@ -183,6 +183,24 @@ export default function Home() {
     setWhisper("");
   };
 
+  const getRelevantMemories = async (userMessage) => {
+    const allMemories = await base44.entities.UserMemory.list("-created_date", 50);
+    
+    // Simple keyword-based filtering for relevant memories
+    const keywords = userMessage.toLowerCase();
+    const isCareerTopic = /career|job|work|role|salary|skill|interview|cv|resume/.test(keywords);
+    const isSocialTopic = /friend|social|community|network|event|meet/.test(keywords);
+    
+    if (isCareerTopic) {
+      return allMemories.filter(m => m.category === 'career');
+    } else if (isSocialTopic) {
+      return allMemories.filter(m => m.category === 'social');
+    }
+    
+    // Return all if unclear
+    return allMemories.slice(0, 10);
+  };
+
   const handleSendInner = async (currentMessages, text, convId) => {
     const userMsg = {
       role: "user",
@@ -195,217 +213,156 @@ export default function Home() {
     setIsLoading(true);
     setWhisper("thinking...");
 
-    const chatHistory = newMessages
+    // Get relevant memories dynamically
+    const relevantMemories = await getRelevantMemories(text);
+
+    // Build condensed chat history (last 10 messages max)
+    const recentMessages = newMessages.slice(-10);
+    const chatHistory = recentMessages
       .map((m) => `${m.role === "user" ? "User" : persona === "both" ? "Antonio & Mariana" : persona}: ${m.content}`)
       .join("\n\n");
+
+    const memoryContext = relevantMemories.length > 0
+      ? relevantMemories.map(m => `${m.key}: ${m.value}`).join("\n")
+      : "No prior context available";
 
     const prompt = `${SYSTEM_PROMPTS[persona]}
 
 CONVERSATION SO FAR:
 ${chatHistory}
 
+WHAT YOU KNOW ABOUT THE USER:
+${memoryContext}
+
 Respond as ${persona === "both" ? "Antonio & Mariana together" : persona}.
 
 CRITICAL RULES:
 1. Chat message must be MAX 2-3 LINES. Short, conversational, human. Like texting. NO long explanations.
 2. Don't describe what the cards will show — just have a natural conversation.
-3. Generate structured data separately using the format tags below.
+3. Use what you know about the user to personalize your response.
+4. Return structured data in the JSON format specified below.`;
 
-At the start of your response, classify the conversation intent:
-[INTENT:category] where category is one of: cv_building, interview_prep, career_path, job_search, networking, social, travel, general
+    const responseSchema = {
+      type: "object",
+      properties: {
+        chat_message: {
+          type: "string",
+          description: "Short conversational response (2-3 lines max)"
+        },
+        intent: {
+          type: "string",
+          enum: ["cv_building", "interview_prep", "career_path", "job_search", "networking", "social", "travel", "general"]
+        },
+        memories: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              category: { type: "string", enum: ["career", "lifestyle", "travel", "social"] },
+              key: { type: "string" },
+              value: { type: "string" }
+            }
+          }
+        },
+        cv_data: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            email: { type: "string" },
+            phone: { type: "string" },
+            location: { type: "string" },
+            summary: { type: "string" },
+            experience: { type: "array", items: { type: "object" } },
+            education: { type: "array", items: { type: "object" } },
+            skills: { type: "array", items: { type: "string" } }
+          }
+        },
+        interview_questions: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              question: { type: "string" },
+              tip: { type: "string" },
+              followup: { type: "string" }
+            }
+          }
+        },
+        career_path: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              role: { type: "string" },
+              timeframe: { type: "string" },
+              description: { type: "string" },
+              skills: { type: "array", items: { type: "string" } },
+              experience: { type: "string" },
+              isCurrent: { type: "boolean" },
+              learningResources: { type: "array", items: { type: "object" } },
+              skillBuildingTips: { type: "string" }
+            }
+          }
+        }
+      },
+      required: ["chat_message", "intent"]
+    };
 
-USER CONTEXT:
-Current Role: ${memories.find(m => m.key === 'current_role')?.value || 'Not specified'}
-Target Role: ${memories.find(m => m.key === 'target_role')?.value || 'Not specified'}
-Key Skills: ${memories.find(m => m.key === 'skills')?.value || 'Not specified'}
+    const res = await base44.integrations.Core.InvokeLLM({ 
+      prompt,
+      response_json_schema: responseSchema
+    });
 
-Then, at the end of your response, output any extracted data in this exact format (only include lines where you found new info):
-[MEMORY:current_role=value]
-[MEMORY:target_role=value]
-[MEMORY:skills=value1, value2]
-[MEMORY:salary_range=value]
-[MEMORY:location_preference=value]
-[MEMORY:social_interests=value]
-[MEMORY:social_goals=value]
-[MEMORY:desired_connections=value]
-[MEMORY:preferred_communities=value]
+    const response = res;
+    // Process structured response
+    const intent = response.intent;
+    const content = response.chat_message;
 
-If user is building a CV (intent: cv_building):
-[CV:name=value]
-[CV:email=value]
-[CV:phone=value]
-[CV:location=value]
-[CV:summary=value]
-[CV:experience={"title":"Job Title","company":"Company Name","duration":"2020-2023","description":"What you did"}]
-[CV:education={"degree":"Degree","institution":"University","year":"2020"}]
-[CV:skills=skill1, skill2, skill3]
-
-If user is preparing for interview (intent: interview_prep):
-Generate 3-5 tailored interview questions based on their CV and target role. Include behavioral, technical, and situational questions.
-Format: [INTERVIEW:question=Your specific question here]
-[INTERVIEW:tip=Specific tip for answering this question based on their background]
-[INTERVIEW:followup=Potential follow-up question interviewer might ask]
-
-For mock interview mode, also include:
-[INTERVIEW:scenario=Brief scenario setup for the mock interview]
-
-If user is asking about career progression or future paths (intent: career_path):
-Your chat message should be SHORT and conversational (2-3 lines). Don't explain the whole path in text.
-Then generate structured roadmap data that will display as visual cards:
-[PATH:role=Job Title]
-[PATH:timeframe=Expected timeframe (e.g., "1-2 years", "Next 6 months")]
-[PATH:description=Brief description of this role and why it's a logical step]
-[PATH:skills=skill1, skill2, skill3]
-[PATH:experience=What experience or achievements needed for this step]
-[PATH:isCurrent=true] (only for their current position)
-[PATH:learning_resources=[{"course": "Specific course name", "article": "Platform/link description", "type": "online_course"}]] (JSON array of 2-3 resources)
-[PATH:skill_building_tips=Specific actionable advice for developing the required skills]
-
-Remember: Keep chat response SHORT (2-3 lines max). Let the visual cards show the details.`;
-
-    const res = await base44.integrations.Core.InvokeLLM({ prompt });
-
-    let content = res;
+    // Route to appropriate mode
+    const modes = ["cv", "interview", "career_path"];
     
-    // Extract intent
-    const intentMatch = content.match(/\[INTENT:(\w+)\]/);
-    if (intentMatch) {
-      const [, intent] = intentMatch;
-      content = content.replace(/\[INTENT:\w+\]/g, "").trim();
-      
-      // Route to appropriate mode with randomization
-      const modes = ["cv", "interview", "career_path"];
-      
-      if (intent === "cv_building") {
-        setActiveMode("cv");
-      } else if (intent === "interview_prep") {
-        setActiveMode("interview");
-      } else if (intent === "career_path") {
-        setActiveMode("career_path");
-      } else if (intent === "job_search" || intent === "networking") {
-        // Randomly suggest a helpful mode for job search/networking
-        const randomMode = modes[Math.floor(Math.random() * modes.length)];
-        setActiveMode(randomMode);
-      } else if (activeMode && intent === "general") {
-        // Close mode if conversation shifts to general
-        setActiveMode(null);
-      }
+    if (intent === "cv_building") {
+      setActiveMode("cv");
+    } else if (intent === "interview_prep") {
+      setActiveMode("interview");
+    } else if (intent === "career_path") {
+      setActiveMode("career_path");
+    } else if (intent === "job_search" || intent === "networking") {
+      const randomMode = modes[Math.floor(Math.random() * modes.length)];
+      setActiveMode(randomMode);
+    } else if (activeMode && intent === "general") {
+      setActiveMode(null);
     }
-    
-    const memoryMatches = content.match(/\[MEMORY:(\w+)=([^\]]+)\]/g);
-    const cvMatches = content.match(/\[CV:(\w+)=([^\]]+)\]/g);
-    const interviewMatches = content.match(/\[INTERVIEW:(\w+)=([^\]]+)\]/g);
-    const pathMatches = content.match(/\[PATH:(\w+)=([^\]]+)\]/g);
 
-    if (memoryMatches) {
-      content = content.replace(/\[MEMORY:\w+=[^\]]+\]/g, "").trim();
-
-      for (const match of memoryMatches) {
-        const [, key, value] = match.match(/\[MEMORY:(\w+)=([^\]]+)\]/);
-        const existing = memories.find((m) => m.key === key);
-        if (!existing || existing.value !== value) {
-          const isSocial = ["social_interests", "social_goals", "desired_connections", "preferred_communities"].includes(key);
+    // Save memories
+    if (response.memories && response.memories.length > 0) {
+      for (const mem of response.memories) {
+        const existing = relevantMemories.find((m) => m.key === mem.key);
+        if (!existing || existing.value !== mem.value) {
           await base44.entities.UserMemory.create({
-            category: isSocial ? "social" : "career",
-            key,
-            value,
-            source_conversation_id: conversationId,
+            category: mem.category,
+            key: mem.key,
+            value: mem.value,
+            source_conversation_id: convId,
           });
         }
       }
       loadMemories();
     }
 
-    if (cvMatches) {
-      content = content.replace(/\[CV:\w+=[^\]]+\]/g, "").trim();
-      const newCvData = { ...cvData };
-
-      for (const match of cvMatches) {
-        const [, key, value] = match.match(/\[CV:(\w+)=([^\]]+)\]/);
-        
-        if (key === "experience" || key === "education") {
-          try {
-            const parsed = JSON.parse(value);
-            newCvData[key] = newCvData[key] ? [...newCvData[key], parsed] : [parsed];
-          } catch {
-            // Skip invalid JSON
-          }
-        } else if (key === "skills") {
-          const skillsArray = value.split(",").map((s) => s.trim());
-          newCvData.skills = [...new Set([...(newCvData.skills || []), ...skillsArray])];
-        } else {
-          newCvData[key] = value;
-        }
-      }
-      
-      setCvData(newCvData);
+    // Update CV data
+    if (response.cv_data && Object.keys(response.cv_data).length > 0) {
+      setCvData(prev => ({ ...prev, ...response.cv_data }));
     }
 
-    if (interviewMatches) {
-      content = content.replace(/\[INTERVIEW:\w+=[^\]]+\]/g, "").trim();
-      const newQuestions = [];
-      let scenario = "";
-
-      for (const match of interviewMatches) {
-        const [, key, value] = match.match(/\[INTERVIEW:(\w+)=([^\]]+)\]/);
-        
-        if (key === "question") {
-          newQuestions.push({ question: value, tip: "", followup: "" });
-        } else if (key === "tip" && newQuestions.length > 0) {
-          newQuestions[newQuestions.length - 1].tip = value;
-        } else if (key === "followup" && newQuestions.length > 0) {
-          newQuestions[newQuestions.length - 1].followup = value;
-        } else if (key === "scenario") {
-          scenario = value;
-        }
-      }
-      
-      if (newQuestions.length > 0) {
-        setInterviewQuestions((prev) => [...prev, ...newQuestions]);
-      }
+    // Add interview questions
+    if (response.interview_questions && response.interview_questions.length > 0) {
+      setInterviewQuestions((prev) => [...prev, ...response.interview_questions]);
     }
 
-    if (pathMatches) {
-      content = content.replace(/\[PATH:\w+=[^\]]+\]/g, "").trim();
-      const pathSteps = [];
-      let currentStep = {};
-
-      for (const match of pathMatches) {
-        const [, key, value] = match.match(/\[PATH:(\w+)=([^\]]+)\]/);
-        
-        if (key === "role" && Object.keys(currentStep).length > 0) {
-          pathSteps.push(currentStep);
-          currentStep = { role: value };
-        } else if (key === "role") {
-          currentStep.role = value;
-        } else if (key === "timeframe") {
-          currentStep.timeframe = value;
-        } else if (key === "description") {
-          currentStep.description = value;
-        } else if (key === "skills") {
-          currentStep.skills = value.split(",").map((s) => s.trim());
-        } else if (key === "experience") {
-          currentStep.experience = value;
-        } else if (key === "isCurrent") {
-          currentStep.isCurrent = value === "true";
-        } else if (key === "learning_resources") {
-          try {
-            currentStep.learningResources = JSON.parse(value);
-          } catch {
-            currentStep.learningResources = [];
-          }
-        } else if (key === "skill_building_tips") {
-          currentStep.skillBuildingTips = value;
-        }
-      }
-      
-      if (Object.keys(currentStep).length > 0) {
-        pathSteps.push(currentStep);
-      }
-      
-      if (pathSteps.length > 0) {
-        setCareerPathData(pathSteps);
-      }
+    // Update career path
+    if (response.career_path && response.career_path.length > 0) {
+      setCareerPathData(response.career_path);
     }
 
     const assistantMsg = {
