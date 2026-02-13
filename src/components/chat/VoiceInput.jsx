@@ -186,15 +186,13 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, disabled
           <Mic className="w-5 h-5" />
         )}
       </Button>
-      {isListening && (
-        <motion.span
-          initial={{ opacity: 0, y: -8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-medium text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap"
-        >
-          🎤 Listening...
-        </motion.span>
-      )}
+      <motion.span
+        initial={{ opacity: 0, y: -8 }}
+        animate={{ opacity: isListening ? 1 : 0, y: isListening ? 0 : -8 }}
+        className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-medium text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap pointer-events-none"
+      >
+        {isListening ? "🎤 Listening..." : "🎤 Click to talk"}
+      </motion.span>
     </div>
   );
 }
