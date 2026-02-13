@@ -4,7 +4,7 @@ import { Mic, MicOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-export default function VoiceInput({ onTranscript, onInterimTranscript, disabled, autoStart = false, pauseListening = false }) {
+export default function VoiceInput({ onTranscript, onInterimTranscript, disabled, autoStart = false, pauseListening = false, isRecording = false, onRecordingChange }) {
   const [isListening, setIsListening] = useState(false);
   const [recognition, setRecognition] = useState(null);
   const pauseRef = React.useRef(pauseListening);
