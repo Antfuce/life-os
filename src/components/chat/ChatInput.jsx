@@ -4,43 +4,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import VoiceInput from "./VoiceInput";
 
 export default function ChatInput({ onSend, disabled, voiceMode = false, pauseListening = false }) {
-  const [text, setText] = useState("");
   const [interimText, setInterimText] = useState("");
-  const textareaRef = useRef(null);
-
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height =
-        Math.min(textareaRef.current.scrollHeight, 120) + "px";
-    }
-  }, [text, interimText]);
-
-  const handleSubmit = () => {
-    if (!text.trim() || disabled) return;
-    onSend(text.trim());
-    setText("");
-    setInterimText("");
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit();
-    }
-  };
 
   const handleVoiceTranscript = (transcript) => {
-    setText(prev => (prev + " " + transcript).trim());
-    setInterimText("");
-    
     // Auto-send after voice input
-    if (voiceMode) {
-      setTimeout(() => {
-        onSend(transcript.trim());
-        setText("");
-      }, 100);
-    }
+    onSend(transcript.trim());
   };
 
   const handleInterimTranscript = (interim) => {
