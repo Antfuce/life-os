@@ -127,10 +127,61 @@ export default function Home() {
     }
   };
 
+  const sanitizeCvData = (cvData) => {
+    // Only keep non-empty, valid string/array values
+    const sanitized = {};
+    
+    if (cvData.personal && typeof cvData.personal === 'object') {
+      sanitized.personal = {};
+      Object.entries(cvData.personal).forEach(([key, val]) => {
+        if (typeof val === 'string' && val.trim()) sanitized.personal[key] = val;
+      });
+    }
+    
+    if (typeof cvData.summary === 'string' && cvData.summary.trim()) {
+      sanitized.summary = cvData.summary;
+    }
+    
+    if (Array.isArray(cvData.experience)) {
+      sanitized.experience = cvData.experience.filter(exp => 
+        exp && 
+        typeof exp.title === 'string' && exp.title.trim() &&
+        typeof exp.company === 'string' && exp.company.trim() &&
+        typeof exp.start_date === 'string' && exp.start_date.trim()
+      );
+    }
+    
+    if (Array.isArray(cvData.education)) {
+      sanitized.education = cvData.education.filter(edu =>
+        edu &&
+        typeof edu.degree === 'string' && edu.degree.trim() &&
+        typeof edu.institution === 'string' && edu.institution.trim() &&
+        typeof edu.graduation_date === 'string' && edu.graduation_date.trim()
+      );
+    }
+    
+    if (Array.isArray(cvData.skills)) {
+      sanitized.skills = cvData.skills.filter(skill => typeof skill === 'string' && skill.trim());
+    }
+    
+    if (Array.isArray(cvData.certifications)) {
+      sanitized.certifications = cvData.certifications.filter(cert => typeof cert === 'string' && cert.trim());
+    }
+    
+    if (Array.isArray(cvData.languages)) {
+      sanitized.languages = cvData.languages.filter(lang => 
+        lang && typeof lang.language === 'string' && lang.language.trim()
+      );
+    }
+    
+    return sanitized;
+  };
+
   const saveCandidateData = async (updatedCvData) => {
     if (!candidateId) return;
+    const sanitized = sanitizeCvData(updatedCvData);
     await base44.entities.Candidate.update(candidateId, {
-      cv_data: updatedCvData,
+      cv_data: sanitized,
       last_updated: new Date().toISOString(),
     });
   };
