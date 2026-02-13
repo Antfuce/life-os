@@ -112,25 +112,26 @@ export default function Home() {
   };
 
   const startConversation = async (initialText) => {
-    setHasStarted(true);
-
     // Check if this is CV building mode based on initial text
     const isCVMode = initialText && /\b(cv|resume|curriculum|experience|job|career)\b/i.test(initialText);
 
     if (isCVMode) {
       // Use agent for CV building
-      setActiveMode("cv");
       const agentConv = await base44.agents.createConversation({
         agent_name: "antonio_mariana_cv",
         metadata: { name: "CV Building Session" },
       });
-      setAgentConversationId(agentConv.id);
       
       const welcomeMsg = {
         role: "assistant",
         content: "Let's build your CV together. First things first — what's your full name and current role?",
       };
+
+      // Set all state at once, then trigger transition
+      setAgentConversationId(agentConv.id);
       setMessages([welcomeMsg]);
+      setActiveMode("cv");
+      setHasStarted(true);
 
       if (initialText) {
         setTimeout(() => handleAgentSend(agentConv, initialText), 100);
@@ -143,7 +144,6 @@ export default function Home() {
         status: "active",
         messages: [],
       });
-      setConversationId(conv.id);
 
       const welcomeMsg = {
         role: "assistant",
@@ -151,7 +151,11 @@ export default function Home() {
         persona,
         timestamp: new Date().toISOString(),
       };
+
+      // Set all state at once, then trigger transition
+      setConversationId(conv.id);
       setMessages([welcomeMsg]);
+      setHasStarted(true);
 
       if (initialText) {
         setTimeout(() => handleSendInner([welcomeMsg], initialText, conv.id), 100);
