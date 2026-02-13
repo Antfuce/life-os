@@ -48,17 +48,17 @@
  * The mainPage value must match a key in the PAGES object exactly.
  */
 import Deliverables from './pages/Deliverables';
-import Home from './pages/Home';
 import Memory from './pages/Memory';
 import Social from './pages/Social';
+import Home from './pages/Home';
 import __Layout from './Layout.jsx';
 
 
 export const PAGES = {
     "Deliverables": Deliverables,
-    "Home": Home,
     "Memory": Memory,
     "Social": Social,
+    "Home": Home,
 }
 
 export const pagesConfig = {

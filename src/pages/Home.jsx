@@ -584,6 +584,7 @@ CRITICAL RULES:
                     setHasStarted(false);
                     setMessages([]);
                     setConversationId(null);
+                    setAgentConversationId(null);
                     setActiveMode(null);
                     setCvData({});
                     setInterviewQuestions([]);
@@ -592,7 +593,9 @@ CRITICAL RULES:
                 >
                   <span className="text-white text-[10px] font-bold">A·M</span>
                 </button>
-                <PersonaSelector active={persona} onChange={setPersona} />
+                <div className="text-xs text-neutral-600 font-medium px-3 py-1.5 rounded-lg bg-white/50">
+                  {persona === "both" ? "Antonio & Mariana" : persona.charAt(0).toUpperCase() + persona.slice(1)}
+                </div>
               </div>
               <button
                 onClick={() => setShowMemory(!showMemory)}
