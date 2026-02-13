@@ -248,18 +248,23 @@ export default function Home() {
 
 
 
-  const getLastConversationSummary = async () => {
-    const conversations = await base44.entities.Conversation.list("-updated_date", 5);
+  const getUserHistoryContext = async () => {
+    const conversations = await base44.entities.Conversation.list("-updated_date", 10);
     if (conversations.length === 0) return null;
     
-    const lastConv = conversations[0];
-    if (!lastConv.messages || lastConv.messages.length === 0) return null;
+    // Get summaries from last 5 conversations for broader context
+    const recentConvs = conversations.slice(0, 5).filter(c => c.summary && c.summary.length > 5);
+    if (recentConvs.length === 0) return null;
+    
+    // Condense into coherent history
+    const historyItems = recentConvs.map((conv, idx) => {
+      const date = new Date(conv.updated_date).toLocaleDateString();
+      return `${date}: ${conv.summary}${conv.key_decisions?.length > 0 ? ` [Decisions: ${conv.key_decisions.join(", ")}]` : ""}`;
+    });
     
     return {
-      summary: lastConv.summary || "Previous conversation (no summary available)",
-      keyDecisions: lastConv.key_decisions || [],
-      timestamp: lastConv.updated_date,
-      context: lastConv.context_extracted || {}
+      history: historyItems.join("\n"),
+      extractedContext: recentConvs[0].context_extracted || {}
     };
   };
 
