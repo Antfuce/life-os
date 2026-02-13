@@ -34,14 +34,7 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
   const handleVoiceTranscript = (transcript) => {
     setText(prev => (prev + " " + transcript).trim());
     setInterimText("");
-    
-    // Auto-send after voice input
-    if (voiceMode) {
-      setTimeout(() => {
-        onSend(transcript.trim());
-        setText("");
-      }, 100);
-    }
+    // In continuous voice mode, DON'T auto-send — wait for manual send
   };
 
   const handleInterimTranscript = (interim) => {
