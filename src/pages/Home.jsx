@@ -262,6 +262,8 @@ Format: [PATH:role=Job Title]
 [PATH:skills=skill1, skill2, skill3]
 [PATH:experience=What experience or achievements needed for this step]
 [PATH:isCurrent=true] (only for their current position)
+[PATH:learning_resources={"course": "Recommended course name and platform", "article": "Relevant article or tutorial link", "type": "online_course|book|article|certification"}] (JSON array of 2-3 specific learning resources)
+[PATH:skill_building_tips=Specific actionable advice for developing the required skills]
 
 Example progression: Current Role → Senior Role → Lead Role → Manager Role → Director Role`;
 
@@ -390,6 +392,14 @@ Example progression: Current Role → Senior Role → Lead Role → Manager Role
           currentStep.experience = value;
         } else if (key === "isCurrent") {
           currentStep.isCurrent = value === "true";
+        } else if (key === "learning_resources") {
+          try {
+            currentStep.learningResources = JSON.parse(value);
+          } catch {
+            currentStep.learningResources = [];
+          }
+        } else if (key === "skill_building_tips") {
+          currentStep.skillBuildingTips = value;
         }
       }
       

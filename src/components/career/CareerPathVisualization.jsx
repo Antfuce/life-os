@@ -1,11 +1,41 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { TrendingUp, Target, Sparkles, X, ChevronRight, Award, BookOpen } from "lucide-react";
+import { TrendingUp, Target, Sparkles, X, ChevronRight, Award, BookOpen, ExternalLink, Lightbulb, Flag } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { base44 } from "@/api/base44Client";
 
 export default function CareerPathVisualization({ pathData, onClose }) {
   const [selectedNode, setSelectedNode] = useState(null);
+  const [showGoalForm, setShowGoalForm] = useState(false);
+  const [goals, setGoals] = useState([]);
+  const [goalForm, setGoalForm] = useState({
+    target_role: "",
+    target_timeframe: "",
+    skills_to_develop: [],
+    notes: "",
+  });
+
+  useEffect(() => {
+    loadGoals();
+  }, []);
+
+  const loadGoals = async () => {
+    const userGoals = await base44.entities.CareerGoal.list("-created_date", 10);
+    setGoals(userGoals);
+  };
+
+  const saveGoal = async () => {
+    await base44.entities.CareerGoal.create({
+      ...goalForm,
+      current_status: "not_started",
+    });
+    setGoalForm({ target_role: "", target_timeframe: "", skills_to_develop: [], notes: "" });
+    setShowGoalForm(false);
+    loadGoals();
+  };
 
   // Parse path data into structured nodes
   const nodes = pathData.map((item, index) => ({
@@ -16,6 +46,8 @@ export default function CareerPathVisualization({ pathData, onClose }) {
     experience: item.experience,
     description: item.description,
     isCurrent: item.isCurrent || false,
+    learningResources: item.learningResources || [],
+    skillBuildingTips: item.skillBuildingTips || "",
   }));
 
   return (
@@ -37,11 +69,77 @@ export default function CareerPathVisualization({ pathData, onClose }) {
               <p className="text-[10px] text-neutral-400">Your roadmap to success</p>
             </div>
           </div>
-          <Button onClick={onClose} variant="ghost" size="sm">
-            <X className="w-4 h-4" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button onClick={() => setShowGoalForm(!showGoalForm)} size="sm" variant="outline" className="text-xs">
+              <Flag className="w-3 h-3 mr-1" />
+              {showGoalForm ? "Cancel" : "Set Goal"}
+            </Button>
+            <Button onClick={onClose} variant="ghost" size="sm">
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
         </div>
       </div>
+
+      {/* Goal Setting Form */}
+      <AnimatePresence>
+        {showGoalForm && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="border-b border-neutral-200 bg-gradient-to-r from-violet-50 to-purple-50 px-6 py-4"
+          >
+            <h4 className="text-sm font-semibold text-neutral-800 mb-3">Set Your Career Goal</h4>
+            <div className="space-y-3">
+              <Input
+                placeholder="Target role (e.g., Senior Product Manager)"
+                value={goalForm.target_role}
+                onChange={(e) => setGoalForm({ ...goalForm, target_role: e.target.value })}
+                className="text-sm"
+              />
+              <Input
+                placeholder="Timeframe (e.g., 18 months)"
+                value={goalForm.target_timeframe}
+                onChange={(e) => setGoalForm({ ...goalForm, target_timeframe: e.target.value })}
+                className="text-sm"
+              />
+              <Textarea
+                placeholder="Skills you want to develop..."
+                value={goalForm.skills_to_develop.join(", ")}
+                onChange={(e) => setGoalForm({ ...goalForm, skills_to_develop: e.target.value.split(",").map(s => s.trim()) })}
+                className="text-sm h-20"
+              />
+              <Textarea
+                placeholder="Additional notes..."
+                value={goalForm.notes}
+                onChange={(e) => setGoalForm({ ...goalForm, notes: e.target.value })}
+                className="text-sm h-16"
+              />
+              <Button onClick={saveGoal} disabled={!goalForm.target_role} className="w-full bg-gradient-to-r from-violet-500 to-purple-600 text-sm">
+                Save Goal
+              </Button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Active Goals Display */}
+      {goals.length > 0 && !showGoalForm && (
+        <div className="border-b border-neutral-200 bg-white/50 px-6 py-3">
+          <div className="flex items-center gap-2 text-xs text-neutral-600">
+            <Flag className="w-3 h-3 text-violet-500" />
+            <span className="font-medium">Your Goals:</span>
+            <div className="flex flex-wrap gap-2">
+              {goals.filter(g => g.current_status !== "achieved").slice(0, 3).map((goal) => (
+                <span key={goal.id} className="px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 text-[10px]">
+                  {goal.target_role} ({goal.target_timeframe})
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Visual Roadmap */}
       <div className="flex-1 overflow-y-auto p-6">
