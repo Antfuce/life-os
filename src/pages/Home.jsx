@@ -321,16 +321,24 @@ Keep it SHORT and factual (2-3 sentences max).`;
       .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
       .join("\n\n");
 
-    // Format memories with clarity flags
+    // Assess context confidence to avoid re-asking known facts
+    const contextConfidence = assessContextConfidence(relevantMemories);
+    const highConfidenceKeys = Object.keys(contextConfidence);
+
+    // Format memories with confidence indicators
     const memoryContext = relevantMemories.length > 0
       ? relevantMemories.map(m => {
-          const flag = m.is_incomplete ? " [INCOMPLETE - probe for details]" : "";
-          return `${m.key}: ${m.value}${flag}`;
+          const confidence = m.confidence || 30;
+          const confidenceFlag = confidence > 90 ? "✓" : confidence > 60 ? "~" : "?";
+          const completenessNote = m.is_incomplete ? " [needs detail]" : "";
+          return `[${confidenceFlag}] ${m.key}: ${m.value}${completenessNote}`;
         }).join("\n")
       : "No prior context available";
 
-    // Identify ambiguous/incomplete memories to probe
-    const incompleteMemories = relevantMemories.filter(m => m.is_incomplete);
+    // Only flag incomplete memories for probing if NOT high-confidence + critical facts
+    const incompleteMemories = relevantMemories.filter(m => 
+      m.is_incomplete && !highConfidenceKeys.some(k => m.key.toLowerCase().includes(k))
+    );
 
     const lastConvContext = lastConvSummary 
       ? `\n\nLAST CONVERSATION (${new Date(lastConvSummary.timestamp).toLocaleDateString()}):\nSummary: ${lastConvSummary.summary}${lastConvSummary.keyDecisions.length > 0 ? `\nKey decisions: ${lastConvSummary.keyDecisions.join(", ")}` : ""}\nContext: ${JSON.stringify(lastConvSummary.context)}`
