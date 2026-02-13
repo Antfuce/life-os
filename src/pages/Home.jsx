@@ -184,12 +184,7 @@ export default function Home() {
     return allMemories.slice(0, 10);
   };
 
-  const determinePersonaByMode = (mode) => {
-    if (mode === "cv") return "antonio";
-    if (mode === "interview") return "mariana";
-    if (mode === "career_path") return "mariana";
-    return persona || "both";
-  };
+
 
   const getLastConversationSummary = async () => {
     const conversations = await base44.entities.Conversation.list("-updated_date", 5);
