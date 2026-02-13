@@ -342,6 +342,9 @@ You intelligently choose which persona (or blend of both) based on the conversat
 ## WHAT YOU KNOW ABOUT THE USER
 ${memoryContext}
 
+## MEMORY PROBE INSTRUCTIONS
+${incompleteMemories.length > 0 ? `ATTENTION: The following memories are incomplete or vague. If relevant to the current conversation, naturally ask clarifying questions to enrich them:\n- ${incompleteMemories.map(m => `${m.key} (currently: "${m.value}")`).join("\n- ")}` : "All relevant memories are well-established."}
+
 ## CONVERSATION SO FAR
 ${chatHistory}${lastConvContext}
 
@@ -351,13 +354,17 @@ Return ONLY valid JSON (no markdown, no extra text) with this exact structure:
   "chat_message": "Your short response here (2-3 lines max)",
   "persona": "antonio" | "mariana" | "both",
   "intent": "cv_building" | "interview_prep" | "career_path" | "job_search" | "networking" | "social" | "travel" | "general",
+  "clarification_probe": ["question for incomplete memory 1", "question for incomplete memory 2"],
   "memories": [{"category": "career|lifestyle|travel|social", "key": "memory_key", "value": "memory_value"}],
   "cv_data": {optional CV fields to update},
   "interview_questions": [{question, tip, followup}],
   "career_path": [{role, timeframe, description, skills, experience, isCurrent, learningResources, skillBuildingTips}]
 }
 
-Only include fields you're actually updating. Always include chat_message and intent.`;
+GUIDANCE:
+- chat_message: Keep it 2-3 lines max, natural, conversational
+- clarification_probe: OPTIONAL. Only if you need to deepen understanding of a memory. Keep questions natural and woven into conversation flow, not interrogative
+- Always include chat_message and intent. Weave probe questions into chat_message organically.`;
 
     const responseSchema = {
       type: "object",
