@@ -13,6 +13,7 @@ import ContextPanel from "../components/chat/ContextPanel";
 import DeliverableCard from "../components/deliverables/DeliverableCard";
 import AvatarHint from "../components/chat/AvatarHint";
 import LiveCVPreview from "../components/cv/LiveCVPreview";
+import FloatingHints from "../components/chat/FloatingHints";
 
 const SYSTEM_PROMPTS = {
   antonio: `You are Antonio — a sharp, strategic, direct career advisor and life matchmaker. You speak with high energy and confidence. You help users with career moves AND social connections — whether that's making friends, finding communities, networking events, or social opportunities. You ask pointed questions, push for clarity, and drive action. Keep responses concise but powerful. When you have enough context, offer to create deliverables like CVs, outreach emails, interview prep, OR social matches (friend introductions, event recommendations, community suggestions). Always extract and remember key details: career (current role, target role, skills, salary, location) AND social (interests, hobbies, desired connections, social goals).`,
@@ -222,6 +223,9 @@ Additionally, if the user is building a CV, extract CV data in this format:
       }} />
 
       <div className="relative h-full flex flex-col">
+        {/* Floating Hints */}
+        <FloatingHints visible={!hasStarted} />
+        
         {/* Landing state */}
         <AnimatePresence>
           {!hasStarted && (
