@@ -208,17 +208,63 @@ export default function Home() {
     const lastConv = conversations[0];
     if (!lastConv.messages || lastConv.messages.length === 0) return null;
     
-    // Get last 3-5 messages to understand what was discussed
-    const recentMsgs = lastConv.messages.slice(-5);
-    const summary = recentMsgs
-      .map(m => `${m.role}: ${m.content}`)
-      .join("\n");
-    
     return {
-      summary,
+      summary: lastConv.summary || "Previous conversation (no summary available)",
+      keyDecisions: lastConv.key_decisions || [],
       timestamp: lastConv.updated_date,
       context: lastConv.context_extracted || {}
     };
+  };
+
+  const generateConversationSummary = async (messages, convId) => {
+    if (messages.length < 4) return; // Only summarize after meaningful exchange
+    
+    const conversationText = messages
+      .map(m => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+      .join("\n");
+
+    const summaryPrompt = `Analyze this conversation and create a concise summary.
+
+CONVERSATION:
+${conversationText}
+
+Generate a summary that captures:
+1. Main topic discussed
+2. Key decisions or agreements made
+3. Any pending actions or next steps
+4. Important context to remember for next time
+
+Keep it SHORT and factual (2-3 sentences max).`;
+
+    const summarySchema = {
+      type: "object",
+      properties: {
+        summary: {
+          type: "string",
+          description: "Concise summary of conversation (2-3 sentences)"
+        },
+        key_decisions: {
+          type: "array",
+          items: { type: "string" },
+          description: "List of key decisions or action items"
+        }
+      },
+      required: ["summary"]
+    };
+
+    try {
+      const result = await base44.integrations.Core.InvokeLLM({
+        prompt: summaryPrompt,
+        response_json_schema: summarySchema
+      });
+
+      await base44.entities.Conversation.update(convId, {
+        summary: result.summary,
+        key_decisions: result.key_decisions || []
+      });
+    } catch (error) {
+      console.error("Failed to generate summary:", error);
+    }
   };
 
   const handleSendInner = async (currentMessages, text, convId) => {
@@ -251,7 +297,7 @@ export default function Home() {
       : "No prior context available";
 
     const lastConvContext = lastConvSummary 
-      ? `\n\nLAST CONVERSATION (${new Date(lastConvSummary.timestamp).toLocaleDateString()}):\n${lastConvSummary.summary}\n\nContext from last time: ${JSON.stringify(lastConvSummary.context)}`
+      ? `\n\nLAST CONVERSATION (${new Date(lastConvSummary.timestamp).toLocaleDateString()}):\nSummary: ${lastConvSummary.summary}${lastConvSummary.keyDecisions.length > 0 ? `\nKey decisions: ${lastConvSummary.keyDecisions.join(", ")}` : ""}\nContext: ${JSON.stringify(lastConvSummary.context)}`
       : "";
 
     const prompt = `${SYSTEM_PROMPTS[persona]}
@@ -402,14 +448,20 @@ CRITICAL RULES:
       timestamp: new Date().toISOString(),
     };
 
-    setMessages((prev) => [...prev, assistantMsg]);
+    const updatedMessages = [...newMessages, assistantMsg];
+    setMessages(updatedMessages);
     setIsLoading(false);
     setWhisper("");
 
     if (convId) {
       await base44.entities.Conversation.update(convId, {
-        messages: [...newMessages, assistantMsg],
+        messages: updatedMessages,
       });
+
+      // Generate summary after every 6 messages (3 exchanges)
+      if (updatedMessages.length % 6 === 0) {
+        generateConversationSummary(updatedMessages, convId);
+      }
     }
   };
 
