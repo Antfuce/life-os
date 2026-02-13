@@ -187,11 +187,11 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, disabled
         )}
       </Button>
       <motion.span
-        initial={{ opacity: 0, y: -8 }}
-        animate={{ opacity: isListening ? 1 : 0, y: isListening ? 0 : -8 }}
-        className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-medium text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap pointer-events-none"
+        initial={{ opacity: 1, y: 0 }}
+        animate={{ opacity: isListening ? 0 : 1, y: isListening ? -8 : 0 }}
+        className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-medium text-neutral-600 bg-neutral-100 px-2 py-1 rounded whitespace-nowrap pointer-events-none"
       >
-        {isListening ? "🎤 Listening..." : "🎤 Click to talk"}
+        🎤 Click to talk
       </motion.span>
     </div>
   );
