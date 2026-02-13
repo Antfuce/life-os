@@ -409,6 +409,7 @@ ${memoryContext}
 
 ## CONTEXT CONFIDENCE & MEMORY INJECTION
 You have HIGH CONFIDENCE in these facts (do NOT re-ask): ${highConfidenceKeys.length > 0 ? highConfidenceKeys.join(", ") : "none yet"}
+You ALSO have the user's existing CV data (${Object.keys(cvData).length > 0 ? `name, email, experience, education, skills already provided` : "no CV yet"})
 ${incompleteMemories.length > 0 ? `\nYou should DEEPEN these incomplete memories ONLY IF relevant to current message:\n${incompleteMemories.map(m => `- ${m.key}: "${m.value}" → need specifics like: ${getProbeHint(m.key)}`).join("\n")}` : "\nAll relevant memories are well-established. Do NOT re-ask basic facts."}
 
 ## CRITICAL: INTELLIGENT FOLLOW-UP RULES
