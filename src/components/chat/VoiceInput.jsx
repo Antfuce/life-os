@@ -119,19 +119,28 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, disabled
 
   const toggleListening = () => {
     if (!recognition) {
+      console.error('Voice API not supported');
       alert('Voice input is not supported in your browser. Please use Chrome, Edge, or Safari.');
       return;
     }
 
     if (isListening) {
-      recognition.stop();
-      setIsListening(false);
+      try {
+        recognition.stop();
+        setIsListening(false);
+        console.log('✓ Stopped listening');
+      } catch (e) {
+        console.error("Stop failed:", e);
+      }
     } else {
       try {
+        recognition.abort(); // Reset any pending state
         recognition.start();
         setIsListening(true);
+        console.log('✓ Started listening...');
       } catch (e) {
         console.error("Start failed:", e);
+        setIsListening(false);
       }
     }
   };
