@@ -628,8 +628,14 @@ GUIDANCE:
       required: ["chat_message", "persona", "intent"]
     };
 
+    // Detect if discussing CV/resume and use specialized prompt
+    const isCVDiscussion = /cv|resume|experience|achievement|skill|education|background|qualification|career|job\s+title/i.test(text);
+    const systemPromptToUse = isCVDiscussion 
+      ? buildCVExpertPrompt("cv_building", cvData, relevantMemories, userHistoryContext, userName, memoryContext, highConfidenceKeys, incompleteMemories, chatHistory)
+      : unifiedSystemPrompt;
+
     const res = await base44.integrations.Core.InvokeLLM({ 
-      prompt: unifiedSystemPrompt,
+      prompt: systemPromptToUse,
       response_json_schema: responseSchema
     });
 
