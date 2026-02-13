@@ -582,13 +582,46 @@ GUIDANCE:
         cv_data: {
           type: "object",
           properties: {
-            name: { type: "string" },
-            email: { type: "string" },
-            phone: { type: "string" },
-            location: { type: "string" },
+            personal: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                email: { type: "string" },
+                phone: { type: "string" },
+                location: { type: "string" }
+              }
+            },
             summary: { type: "string" },
-            experience: { type: "array", items: { type: "object" } },
-            education: { type: "array", items: { type: "object" } },
+            experience: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  title: { type: "string" },
+                  company: { type: "string" },
+                  location: { type: "string" },
+                  start_date: { type: "string" },
+                  end_date: { type: "string" },
+                  current: { type: "boolean" },
+                  description: { type: "string" },
+                  achievements: { type: "array", items: { type: "string" } }
+                },
+                required: ["title", "company"]
+              }
+            },
+            education: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  degree: { type: "string" },
+                  institution: { type: "string" },
+                  location: { type: "string" },
+                  graduation_date: { type: "string" }
+                },
+                required: ["degree", "institution"]
+              }
+            },
             skills: { type: "array", items: { type: "string" } }
           }
         },
