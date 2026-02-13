@@ -212,7 +212,18 @@ export default function LiveCVPreview({ cvData, onDownload }) {
               key="content"
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="max-w-2xl mx-auto bg-white shadow-lg p-12 rounded-lg"
+            >
+              {React.createElement(TEMPLATES[selectedTemplate] || ModernTemplate, { cvData })}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </motion.div>
+  );
+
+  // Old single-template rendering code (commented out for reference)
+  /*
+            <div className="max-w-2xl mx-auto bg-white shadow-lg p-12 rounded-lg"
             >
               {/* Name & Contact */}
               {name && (
