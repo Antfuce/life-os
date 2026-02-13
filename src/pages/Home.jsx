@@ -56,9 +56,17 @@ export default function Home() {
   }, [messages]);
 
   useEffect(() => {
-    loadMemories();
-    loadDeliverables();
-    initializeCandidate();
+    const initializeApp = async () => {
+      const user = await base44.auth.me();
+      if (user) {
+        setUserName(user.full_name);
+      }
+      loadMemories();
+      loadDeliverables();
+      initializeCandidate();
+    };
+    
+    initializeApp();
     
     // Show hint after a few seconds
     const hintTimer = setTimeout(() => setShowHint(true), 8000);
