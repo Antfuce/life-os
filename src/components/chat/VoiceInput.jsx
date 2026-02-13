@@ -32,12 +32,19 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, disabled
           }
         }
 
-        if (onInterimTranscript && interimTranscript) {
-          onInterimTranscript(interimTranscript);
+        if (interimTranscript) {
+          console.log('📝 You said:', interimTranscript);
+          if (onInterimTranscript) {
+            onInterimTranscript(interimTranscript);
+          }
         }
 
         if (finalTranscript) {
-          onTranscript(finalTranscript.trim());
+          const trimmed = finalTranscript.trim();
+          console.log('✓ Final:', trimmed);
+          if (onTranscript) {
+            onTranscript(trimmed);
+          }
         }
       };
 
