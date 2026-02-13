@@ -353,9 +353,9 @@ Keep it SHORT and factual (2-3 sentences max).`;
     // Get relevant memories dynamically
     const relevantMemories = await getRelevantMemories(text);
 
-    // Get last conversation summary (only for first message in new conversation)
+    // Get comprehensive user history context (for ALL messages, not just first)
+    const userHistory = await getUserHistoryContext();
     const isFirstMessage = newMessages.length === 1;
-    const lastConvSummary = isFirstMessage ? await getLastConversationSummary() : null;
 
     // Build condensed chat history (last 10 messages max)
     const recentMessages = newMessages.slice(-10);
