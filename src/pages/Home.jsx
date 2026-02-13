@@ -166,6 +166,21 @@ export default function Home() {
     setWhisper("");
   };
 
+  // Calculate context confidence for key facts to avoid re-asking
+  const assessContextConfidence = (memories) => {
+    const criticalKeys = ["name", "age", "current_role", "company", "years_experience"];
+    const confidence = {};
+    
+    criticalKeys.forEach(key => {
+      const mem = memories.find(m => m.key.toLowerCase().includes(key.toLowerCase()));
+      if (mem && mem.value && mem.value.length > 5) {
+        confidence[key] = { value: mem.value, confidence: 95 };
+      }
+    });
+    
+    return confidence;
+  };
+
   const getRelevantMemories = async (userMessage) => {
     const allMemories = await base44.entities.UserMemory.list("-created_date", 100);
     
@@ -198,10 +213,10 @@ export default function Home() {
       if (msg.includes(keyLower)) score += 30;
       if (valueLower.split(' ').some(word => msg.includes(word) && word.length > 3)) score += 15;
       
-      // Completeness penalty (track if value is vague/incomplete)
-      if (valueLower.length < 10 || /^(yes|no|maybe|unknown|not.sure|to.be.determined|tbd)/i.test(valueLower)) {
-        memory.is_incomplete = true;
-      }
+      // Completeness check (full & specific = high confidence)
+      const isComplete = valueLower.length > 10 && !/^(yes|no|maybe|unknown|not.sure|to.be.determined|tbd|n\/a|-|_)$/i.test(valueLower);
+      memory.is_incomplete = !isComplete;
+      memory.confidence = isComplete ? 95 : 30;
       
       return { ...memory, relevance_score: score };
     });
