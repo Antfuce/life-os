@@ -385,30 +385,56 @@ Return ONLY valid JSON (no markdown, no extra text):
   }
 }
 
-CRITICAL: When extracting CV data, always include:
-- Quantified achievements with numbers (e.g., "1,000+ candidates placed", "€10M revenue")
-- Clear date ranges (start_date, end_date or current:true)
-- Bullet points as separate achievement items
-- Impact metrics and scope (team size, revenue, placements, metrics)
+## CV DATA EXTRACTION RULES (matches entity schema exactly)
 
-Example extraction for an experience entry:
-{
-  "title": "Managing Director",
-  "company": "Atlas Recruitment",
-  "location": "Ireland",
-  "start_date": "Aug 2019",
-  "end_date": null,
-  "current": true,
-  "description": "Founded and scaled boutique recruitment agency specializing in luxury hospitality staffing",
-  "achievements": [
-    "Placed 1,000+ candidates across all levels",
-    "Built partnerships with 350+ luxury hotels (Radisson Blu, Four Seasons, Hilton)",
-    "Scaled employee LinkedIn networks to 15K–30K followers, generating 100+ inbound leads/day",
-    "Launched Job Search Service generating €4K/month additional revenue"
-  ]
-}
+CRITICAL extraction requirements:
 
-Extract ALL experiences, education, and skills from what the user shares.`;
+**Personal Information:**
+- name: Full name (required)
+- email: Valid email (required)
+- phone: With country code (e.g., "+385998457215")
+- location: City, Country
+- linkedin: Full profile URL
+- portfolio: Website or portfolio URL
+
+**Summary:** Professional overview (2-3 sentences max, punchy & specific)
+
+**Experience:** Most recent first
+- title: Exact job title
+- company: Company name
+- location: Job location (city/country)
+- start_date: Format as "Month Year" (e.g., "Aug 2019")
+- end_date: "Month Year" or "Present" for current roles
+- current: true if still employed there, false otherwise
+- description: 1-2 sentence role overview
+- achievements: ARRAY of bullet points with quantified impact
+  ✓ "Placed 1,000+ candidates, generating €5M+ revenue"
+  ✓ "Scaled team from 1 to 10 people in 6 months"
+  ✓ "Grew revenue from €5M to €10M (+100% YoY)"
+  ✗ "Responsible for recruitment" (no metrics)
+  ✗ "Worked on projects" (vague)
+
+**Education:** Most recent first
+- degree: Full degree name (e.g., "MSc Digital Product Management")
+- institution: University/school name
+- location: Institution location
+- start_date: "Month Year" format
+- graduation_date: "Month Year" or "Expected 2024" for in-progress
+- gpa: Optional GPA or honors
+- description: Relevant coursework, distinctions, projects
+
+**Skills:** Array of 8-12 key professional skills
+- Examples: "Recruitment operations", "AI automation", "Team leadership", "Revenue scaling"
+- NO generic skills like "Communication" without context
+
+**Certifications:** Professional certifications (optional)
+- Format: "Certification Name – Issuing Body – Year"
+
+**Languages:** Array with language + proficiency
+- Proficiency: "Native", "Fluent", "Intermediate", or "Basic"
+- Example: {"language": "English", "proficiency": "Native"}
+
+Extract ALL data user provides. If dates missing, ask for clarification.`;
   };
 
   const generateConversationSummary = async (messages, convId) => {
