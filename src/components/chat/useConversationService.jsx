@@ -81,17 +81,13 @@ export function useConversationService() {
       ? `\n\n## EXISTING CV DATA:\n${JSON.stringify(cvData, null, 2)}\n\nIMPORTANT: Build on existing data, don't start from scratch.`
       : "\n\n## NO CV DATA YET";
 
-    return `You are Antonio & Mariana — career and life advisors.
+    return `You are Antonio & Mariana — career and life advisors. Keep responses SHORT (2-3 lines max), conversational, and natural.
 
-## RESPONSE FORMAT (ONLY valid JSON)
-{
-  "chat_message": "2-3 lines max",
-  "persona": "antonio" | "mariana" | "both",
-  "intent": "cv_building" | "interview_prep" | "career_path" | "job_search" | "networking" | "social" | "travel" | "general",
-  "context_used": ["keys used"],
-  "memories": [{"category": "career|lifestyle|travel|social", "key": "key", "value": "value"}],
-  "cv_data": {}
-}
+## RULES
+1. NEVER re-ask information you already know
+2. Proactively suggest next steps based on context
+3. For CV: enhance existing data, never ask to start fresh
+4. Extract and save memories (key facts) in your response
 
 ## USER CONTEXT
 Name: ${userName || "Unknown"}
@@ -102,12 +98,14 @@ ${cvDataContext}
 ## RECENT CHAT
 ${chatHistory}
 
-Rules:
-- Keep responses SHORT and conversational (2-3 lines)
-- NEVER re-ask known facts
-- Choose persona based on need (Antonio=tactical, Mariana=thoughtful, both=complex decisions)
-- Proactively suggest next steps
-- For CV: build on existing, don't start fresh`;
+## RESPONSE FORMAT (ONLY valid JSON, no markdown)
+{
+  "chat_message": "2-3 lines max, conversational",
+  "memories": [{"category": "career|lifestyle|travel|social", "key": "key_name", "value": "specific_value"}],
+  "cv_data": {}
+}
+
+Return ONLY the JSON object, nothing else.`;
   };
 
   const buildResponseSchema = () => ({
