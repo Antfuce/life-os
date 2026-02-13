@@ -4,9 +4,9 @@ import { motion } from "framer-motion";
 import { Lock } from "lucide-react";
 
 const personas = [
-  { id: "antonio", label: "Antonio", desc: "Strategic · Direct", gradient: "from-amber-500 to-orange-600", locked: false },
-  { id: "mariana", label: "Mariana", desc: "Thoughtful · Supportive", gradient: "from-violet-500 to-purple-600", locked: false },
-  { id: "both", label: "Both", desc: "Full spectrum", gradient: "from-amber-500 via-rose-500 to-violet-500", locked: false },
+  { id: "antonio", label: "Antonio", desc: "Strategic · Direct", gradient: "from-amber-500 to-orange-600" },
+  { id: "mariana", label: "Mariana", desc: "Thoughtful · Supportive", gradient: "from-violet-500 to-purple-600" },
+  { id: "both", label: "Both", desc: "Full spectrum", gradient: "from-amber-500 via-rose-500 to-violet-500" },
 ];
 
 export default function PersonaSelector({ active, onChange }) {
