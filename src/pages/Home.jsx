@@ -382,8 +382,8 @@ Keep it SHORT and factual (2-3 sentences max).`;
       m.is_incomplete && !highConfidenceKeys.some(k => m.key.toLowerCase().includes(k))
     );
 
-    const lastConvContext = lastConvSummary 
-      ? `\n\nLAST CONVERSATION (${new Date(lastConvSummary.timestamp).toLocaleDateString()}):\nSummary: ${lastConvSummary.summary}${lastConvSummary.keyDecisions.length > 0 ? `\nKey decisions: ${lastConvSummary.keyDecisions.join(", ")}` : ""}\nContext: ${JSON.stringify(lastConvSummary.context)}`
+    const userHistoryContext = userHistory 
+      ? `\n\nUSER HISTORY & CONTEXT:\n${userHistory.history}\n---\nUse this history to understand their journey, avoid re-asking known facts, and anticipate next steps.`
       : "";
 
     const cvDataContext = cvData && Object.keys(cvData).length > 0 
