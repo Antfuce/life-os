@@ -844,7 +844,8 @@ GUIDANCE:
 
     // Update CV data and persist to database
     if (response.cv_data && Object.keys(response.cv_data).length > 0) {
-      const updatedCvData = { ...cvData, ...response.cv_data };
+      const cleaned = sanitizeCvData(response.cv_data);
+      const updatedCvData = { ...cvData, ...cleaned };
       setCvData(updatedCvData);
       await saveCandidateData(updatedCvData);
     }
