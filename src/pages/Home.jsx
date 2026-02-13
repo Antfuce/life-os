@@ -557,23 +557,25 @@ ${incompleteMemories.length > 0 ? `\nYou should DEEPEN these incomplete memories
 ## CONVERSATION SO FAR
 ${chatHistory}${userHistoryContext}
 
-## RESPONSE FORMAT
-Return ONLY valid JSON (no markdown, no extra text) with this exact structure:
+## RESPONSE FORMAT (matches Candidate entity schema)
+Return ONLY valid JSON (no markdown, no extra text):
 {
   "chat_message": "Your short response here (2-3 lines max)",
   "persona": "antonio" | "mariana" | "both",
   "intent": "cv_building" | "interview_prep" | "career_path" | "job_search" | "networking" | "social" | "travel" | "general",
-  "context_used": ["name", "current_role", "company"],
-  "memories": [{"category": "career|lifestyle|travel|social", "key": "memory_key", "value": "memory_value"}],
+  "context_used": ["list of memory keys used"],
+  "memories": [{"category": "career|lifestyle|travel|social", "key": "key", "value": "value"}],
   "cv_data": {
-    "personal": {"name": "string", "email": "string", "phone": "string", "location": "string"},
-    "summary": "string",
-    "experience": [{"title": "string", "company": "string", "location": "string", "start_date": "string", "end_date": "string", "current": "boolean", "description": "string", "achievements": ["string"]}],
-    "education": [{"degree": "string", "institution": "string", "location": "string", "graduation_date": "string"}],
-    "skills": ["string"]
+    "personal": {"name": "string", "email": "string", "phone": "string", "location": "string", "linkedin": "string", "portfolio": "string"},
+    "summary": "string (2-3 sentences)",
+    "experience": [{"title": "string", "company": "string", "location": "string", "start_date": "string", "end_date": "string or Present", "current": "boolean", "description": "string", "achievements": ["string with numbers/metrics"]}],
+    "education": [{"degree": "string", "institution": "string", "location": "string", "start_date": "string", "graduation_date": "string", "gpa": "string", "description": "string"}],
+    "skills": ["string"],
+    "certifications": ["string"],
+    "languages": [{"language": "string", "proficiency": "Native|Fluent|Intermediate|Basic"}]
   },
-  "interview_questions": [{question, tip, followup}],
-  "career_path": [{role, timeframe, description, skills, experience, isCurrent, learningResources, skillBuildingTips}]
+  "interview_questions": [{"question": "string", "tip": "string", "followup": "string"}],
+  "career_path": [{"role": "string", "timeframe": "string", "description": "string", "skills": ["string"], "experience": "string", "isCurrent": "boolean", "learningResources": [{"course": "string", "type": "string"}], "skillBuildingTips": "string"}]
 }
 
 GUIDANCE:
