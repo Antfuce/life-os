@@ -85,59 +85,60 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
               </filter>
             </defs>
 
-            {/* Glow layer waves */}
+            {/* Glow layer waves - fat filled */}
             <motion.path
-              d="M0,30 Q150,15 300,30 T600,30"
+              d="M0,30 Q150,10 300,30 T600,30"
+              stroke="url(#waveGradientGlow)"
+              strokeWidth="8"
+              fill="url(#waveGradientGlow)"
+              vectorEffect="non-scaling-stroke"
+              filter="url(#glow)"
+              initial={{ strokeDashoffset: 0 }}
+              animate={{ strokeDashoffset: -300 }}
+              transition={{ duration: 2.5, repeat: Infinity, ease: "linear" }}
+              strokeDasharray="300"
+              opacity="0.6"
+            />
+
+            {/* Primary wave layer 1 - thick filled */}
+            <motion.path
+              d="M0,30 Q150,8 300,30 T600,30"
+              stroke="url(#waveGradientPrimary)"
+              strokeWidth="6"
+              fill="url(#waveGradientPrimary)"
+              vectorEffect="non-scaling-stroke"
+              filter="url(#glow)"
+              initial={{ strokeDashoffset: 0 }}
+              animate={{ strokeDashoffset: -300 }}
+              transition={{ duration: 1.8, repeat: Infinity, ease: "linear" }}
+              strokeDasharray="300"
+            />
+
+            {/* Primary wave layer 2 - thick filled */}
+            <motion.path
+              d="M0,30 Q150,52 300,30 T600,30"
+              stroke="url(#waveGradientPrimary)"
+              strokeWidth="6"
+              fill="url(#waveGradientPrimary)"
+              vectorEffect="non-scaling-stroke"
+              filter="url(#glow)"
+              initial={{ strokeDashoffset: 0 }}
+              animate={{ strokeDashoffset: -300 }}
+              transition={{ duration: 2.2, repeat: Infinity, ease: "linear", delay: 0.2 }}
+              strokeDasharray="300"
+              opacity="0.9"
+            />
+
+            {/* Accent shimmer wave - bright sparkle */}
+            <motion.path
+              d="M0,30 Q150,20 300,30 T600,30"
               stroke="url(#waveGradientGlow)"
               strokeWidth="3"
-              fill="none"
+              fill="url(#waveGradientGlow)"
               vectorEffect="non-scaling-stroke"
-              filter="url(#glow)"
-              initial={{ strokeDashoffset: 0 }}
-              animate={{ strokeDashoffset: -300 }}
-              transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
-              strokeDasharray="300"
-              opacity="0.8"
-            />
-
-            {/* Primary wave layer 1 */}
-            <motion.path
-              d="M0,30 Q150,12 300,30 T600,30"
-              stroke="url(#waveGradientPrimary)"
-              strokeWidth="2"
-              fill="none"
-              vectorEffect="non-scaling-stroke"
-              filter="url(#glow)"
-              initial={{ strokeDashoffset: 0 }}
-              animate={{ strokeDashoffset: -300 }}
-              transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-              strokeDasharray="300"
-            />
-
-            {/* Primary wave layer 2 */}
-            <motion.path
-              d="M0,30 Q150,48 300,30 T600,30"
-              stroke="url(#waveGradientPrimary)"
-              strokeWidth="2"
-              fill="none"
-              vectorEffect="non-scaling-stroke"
-              filter="url(#glow)"
-              initial={{ strokeDashoffset: 0 }}
-              animate={{ strokeDashoffset: -300 }}
-              transition={{ duration: 2.5, repeat: Infinity, ease: "linear", delay: 0.3 }}
-              strokeDasharray="300"
-            />
-
-            {/* Accent shimmer wave */}
-            <motion.path
-              d="M0,30 Q150,25 300,30 T600,30"
-              stroke="url(#waveGradientGlow)"
-              strokeWidth="1"
-              fill="none"
-              vectorEffect="non-scaling-stroke"
-              initial={{ strokeDashoffset: 0, opacity: 0.3 }}
-              animate={{ strokeDashoffset: -300, opacity: [0.3, 0.8, 0.3] }}
-              transition={{ duration: 1.5, repeat: Infinity, ease: "linear", delay: 0.1 }}
+              initial={{ strokeDashoffset: 0, opacity: 0.5 }}
+              animate={{ strokeDashoffset: -300, opacity: [0.2, 1, 0.2] }}
+              transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut", delay: 0 }}
               strokeDasharray="300"
             />
           </svg>
