@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import MessageBubble from "../components/chat/MessageBubble";
 import ChatInput from "../components/chat/ChatInput";
 import TypingIndicator from "../components/chat/TypingIndicator";
-import PersonaSelector from "../components/chat/PersonaSelector";
+
 import WhisperCaption from "../components/chat/WhisperCaption";
 import ContextPanel from "../components/chat/ContextPanel";
 import DeliverableCard from "../components/deliverables/DeliverableCard";
