@@ -24,29 +24,41 @@ import FloatingHints from "../components/chat/FloatingHints";
 
 
 export default function Home() {
+  // UI state
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [persona, setPersona] = useState(null); // Dynamically set by intent
-  const [memories, setMemories] = useState([]);
-  const [showMemory, setShowMemory] = useState(false);
-  const [deliverables, setDeliverables] = useState([]);
   const [whisper, setWhisper] = useState("");
-  const [conversationId, setConversationId] = useState(null);
-  const [hasStarted, setHasStarted] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   const [showHint, setShowHint] = useState(false);
-  const [activeMode, setActiveMode] = useState(null); // 'cv', 'interview', 'career_path', etc.
+  const [showDebug, setShowDebug] = useState(false);
+  const [hasStarted, setHasStarted] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  // Conversation state
+  const [persona, setPersona] = useState(null);
+  const [conversationId, setConversationId] = useState(null);
+  const [contextUsedList, setContextUsedList] = useState([]);
+
+  // Content state
+  const [activeMode, setActiveMode] = useState(null);
   const [cvData, setCvData] = useState({});
   const [interviewQuestions, setInterviewQuestions] = useState([]);
   const [careerPathData, setCareerPathData] = useState([]);
-  const [agentConversationId, setAgentConversationId] = useState(null);
+
+  // Data state
+  const [memories, setMemories] = useState([]);
+  const [deliverables, setDeliverables] = useState([]);
   const [candidateId, setCandidateId] = useState(null);
-  const [voiceMode, setVoiceMode] = useState(true); // Voice-first by default
-  const [aiVoiceEnabled, setAiVoiceEnabled] = useState(true); // AI speaks back (session-level)
+  const [userName, setUserName] = useState(null);
+
+  // Settings state
+  const [voiceMode, setVoiceMode] = useState(true);
+  const [aiVoiceEnabled, setAiVoiceEnabled] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [userName, setUserName] = useState(null); // User's full name for personalization
-  const [contextUsedList, setContextUsedList] = useState([]);
-  const [showDebug, setShowDebug] = useState(false); // Debug mode toggle
-  const messagesEndRef = useRef(null);
+  const [agentConversationId, setAgentConversationId] = useState(null);
+
+  // Service hook
+  const conversationService = useConversationService();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
