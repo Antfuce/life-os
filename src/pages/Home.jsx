@@ -32,7 +32,7 @@ const WELCOME_MESSAGES = {
 export default function Home() {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [persona, setPersona] = useState("both");
+  const [persona, setPersona] = useState(null); // Dynamically set by intent
   const [memories, setMemories] = useState([]);
   const [showMemory, setShowMemory] = useState(false);
   const [deliverables, setDeliverables] = useState([]);
