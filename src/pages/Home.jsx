@@ -4,8 +4,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Brain } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-import MessageBubble from "../components/chat/MessageBubble";
 import ChatInput from "../components/chat/ChatInput";
+import ConversationView from "../components/chat/ConversationView";
 import TypingIndicator from "../components/chat/TypingIndicator";
 import PersonaSelector from "../components/chat/PersonaSelector";
 import WhisperCaption from "../components/chat/WhisperCaption";
