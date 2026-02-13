@@ -111,16 +111,23 @@ Return ONLY the JSON object, nothing else.`;
   const buildResponseSchema = () => ({
     type: "object",
     properties: {
-      chat_message: { type: "string" },
-      persona: { type: "string", enum: ["antonio", "mariana", "both"] },
-      intent: { type: "string", enum: ["cv_building", "interview_prep", "career_path", "job_search", "networking", "social", "travel", "general"] },
-      memories: { type: "array", items: { type: "object" } },
-      cv_data: { type: "object" },
-      interview_questions: { type: "array" },
-      career_path: { type: "array" },
-      context_used: { type: "array", items: { type: "string" } }
+      chat_message: { type: "string", description: "2-3 lines max" },
+      memories: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            category: { type: "string", enum: ["career", "lifestyle", "travel", "social"] },
+            key: { type: "string" },
+            value: { type: "string" }
+          }
+        }
+      },
+      cv_data: { type: "object", description: "Only if updating CV data" },
+      interview_questions: { type: "array", description: "Only if generating interview questions" },
+      career_path: { type: "array", description: "Only if building career path" }
     },
-    required: ["chat_message", "persona", "intent"]
+    required: ["chat_message"]
   });
 
   return {
