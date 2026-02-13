@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import MessageBubble from "../components/chat/MessageBubble";
 import ChatInput from "../components/chat/ChatInput";
 import TypingIndicator from "../components/chat/TypingIndicator";
+import { useConversationService } from "../components/chat/useConversationService";
 
 import WhisperCaption from "../components/chat/WhisperCaption";
 import ContextPanel from "../components/chat/ContextPanel";
