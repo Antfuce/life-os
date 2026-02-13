@@ -3,7 +3,7 @@ import { Send } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import VoiceInput from "./VoiceInput";
 
-export default function ChatInput({ onSend, disabled, voiceMode = false }) {
+export default function ChatInput({ onSend, disabled, voiceMode = false, pauseListening = false }) {
   const [text, setText] = useState("");
   const [interimText, setInterimText] = useState("");
   const textareaRef = useRef(null);
@@ -66,6 +66,7 @@ export default function ChatInput({ onSend, disabled, voiceMode = false }) {
           onInterimTranscript={handleInterimTranscript}
           disabled={disabled}
           autoStart={voiceMode}
+          pauseListening={pauseListening}
         />
         <AnimatePresence>
           {text.trim() && !voiceMode && (

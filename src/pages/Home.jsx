@@ -47,6 +47,7 @@ export default function Home() {
   const [agentConversationId, setAgentConversationId] = useState(null);
   const [candidateId, setCandidateId] = useState(null);
   const [voiceMode, setVoiceMode] = useState(true); // Voice-first by default
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -495,7 +496,7 @@ Remember: Keep chat response SHORT (2-3 lines max). Let the visual cards show th
                 transition={{ duration: 0.8, delay: 0.5 }}
                 className="w-full max-w-lg"
               >
-                <ChatInput onSend={handleSend} voiceMode={voiceMode} />
+                <ChatInput onSend={handleSend} voiceMode={voiceMode} pauseListening={isSpeaking} />
               </motion.div>
               
               <motion.button
@@ -588,7 +589,12 @@ Remember: Keep chat response SHORT (2-3 lines max). Let the visual cards show th
               {/* Chat Column */}
               <div className={cn("overflow-y-auto px-6 py-8 space-y-6 transition-all", activeMode ? "w-1/2" : "max-w-3xl mx-auto w-full")}>
                 {messages.map((msg, i) => (
-                  <MessageBubble key={i} message={msg} isLast={i === messages.length - 1} />
+                  <MessageBubble 
+                    key={i} 
+                    message={msg} 
+                    isLast={i === messages.length - 1}
+                    onSpeakingChange={setIsSpeaking}
+                  />
                 ))}
 
                 {isLoading && <TypingIndicator persona={persona} />}
@@ -662,7 +668,7 @@ Remember: Keep chat response SHORT (2-3 lines max). Let the visual cards show th
             <div className="flex-shrink-0 px-6 pb-6 pt-2">
               <WhisperCaption text={whisper} visible={!!whisper} />
               <div className="max-w-3xl mx-auto mt-2">
-                <ChatInput onSend={handleSend} disabled={isLoading} voiceMode={voiceMode} />
+                <ChatInput onSend={handleSend} disabled={isLoading || isSpeaking} voiceMode={voiceMode} pauseListening={isSpeaking} />
               </div>
             </div>
           </motion.div>

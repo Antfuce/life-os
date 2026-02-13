@@ -4,9 +4,10 @@ import { Mic, MicOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-export default function VoiceInput({ onTranscript, onInterimTranscript, disabled, autoStart = false }) {
+export default function VoiceInput({ onTranscript, onInterimTranscript, disabled, autoStart = false, pauseListening = false }) {
   const [isListening, setIsListening] = useState(false);
   const [recognition, setRecognition] = useState(null);
+  const pauseRef = React.useRef(pauseListening);
 
   useEffect(() => {
     // Check if browser supports Web Speech API
@@ -57,8 +58,8 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, disabled
       };
 
       recognitionInstance.onend = () => {
-        // Auto-restart if still in listening mode
-        if (isListening) {
+        // Auto-restart if still in listening mode and not paused
+        if (isListening && !pauseRef.current) {
           try {
             recognitionInstance.start();
           } catch (e) {
@@ -92,6 +93,29 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, disabled
       }
     };
   }, [autoStart]);
+
+  // Handle pause/resume when assistant is speaking
+  useEffect(() => {
+    pauseRef.current = pauseListening;
+    
+    if (!recognition) return;
+
+    if (pauseListening && isListening) {
+      // Pause recognition when assistant speaks
+      try {
+        recognition.stop();
+      } catch (e) {
+        // Already stopped
+      }
+    } else if (!pauseListening && isListening) {
+      // Resume recognition when assistant stops
+      try {
+        recognition.start();
+      } catch (e) {
+        // Already started
+      }
+    }
+  }, [pauseListening, recognition, isListening]);
 
   const toggleListening = () => {
     if (!recognition) {

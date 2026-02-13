@@ -6,7 +6,7 @@ import PersonaAvatar from "./PersonaAvatar";
 import ReactMarkdown from "react-markdown";
 import { base44 } from "@/api/base44Client";
 
-export default function MessageBubble({ message, isLast }) {
+export default function MessageBubble({ message, isLast, onSpeakingChange }) {
   const isUser = message.role === "user";
   const persona = message.persona || "both";
   const [isPlaying, setIsPlaying] = useState(false);
@@ -25,12 +25,15 @@ export default function MessageBubble({ message, isLast }) {
       if (audioRef.current) {
         audioRef.current.play();
         setIsPlaying(true);
+        if (onSpeakingChange) onSpeakingChange(true);
       }
       return;
     }
 
     try {
       setIsPlaying(true);
+      if (onSpeakingChange) onSpeakingChange(true);
+      
       const { data } = await base44.functions.invoke('textToSpeech', {
         text: message.content,
         voiceGender: persona === 'mariana' ? 'FEMALE' : persona === 'antonio' ? 'MALE' : 'NEUTRAL',
@@ -43,10 +46,14 @@ export default function MessageBubble({ message, isLast }) {
       const audio = new Audio(url);
       audioRef.current = audio;
       audio.play();
-      audio.onended = () => setIsPlaying(false);
+      audio.onended = () => {
+        setIsPlaying(false);
+        if (onSpeakingChange) onSpeakingChange(false);
+      };
     } catch (error) {
       console.error('TTS error:', error);
       setIsPlaying(false);
+      if (onSpeakingChange) onSpeakingChange(false);
     }
   };
 
@@ -55,6 +62,7 @@ export default function MessageBubble({ message, isLast }) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
       setIsPlaying(false);
+      if (onSpeakingChange) onSpeakingChange(false);
     }
   };
 
