@@ -222,7 +222,7 @@ export default function LiveCVPreview({ cvData, onDownload }) {
                       >
                         <div className="flex justify-between items-start mb-1">
                           <h3 className="text-sm font-semibold text-neutral-900">{exp.title}</h3>
-                          <span className="text-xs text-neutral-500">{exp.duration}</span>
+                          <span className="text-xs text-neutral-500">{formatDateRange(exp.start_date, exp.end_date, exp.current) || exp.duration}</span>
                         </div>
                         <p className="text-sm text-neutral-600 mb-1">{exp.company}</p>
                         {exp.description && (
