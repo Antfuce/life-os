@@ -425,7 +425,7 @@ For mock interview mode, also include:
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.8, delay: 0.5 }}
-                className="w-full max-w-lg"
+                className="w-full max-w-2xl px-6"
               >
                 <ChatInput onSend={handleSend} />
               </motion.div>
