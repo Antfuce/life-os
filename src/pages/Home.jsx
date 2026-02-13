@@ -213,6 +213,11 @@ Respond as ${persona === "both" ? "Antonio & Mariana together" : persona}. Be co
 CRITICAL: At the start of your response, classify the conversation intent:
 [INTENT:category] where category is one of: cv_building, interview_prep, job_search, networking, social, travel, general
 
+USER CONTEXT:
+Current Role: ${memories.find(m => m.key === 'current_role')?.value || 'Not specified'}
+Target Role: ${memories.find(m => m.key === 'target_role')?.value || 'Not specified'}
+Key Skills: ${memories.find(m => m.key === 'skills')?.value || 'Not specified'}
+
 Then, at the end of your response, output any extracted data in this exact format (only include lines where you found new info):
 [MEMORY:current_role=value]
 [MEMORY:target_role=value]
@@ -235,8 +240,13 @@ If user is building a CV (intent: cv_building):
 [CV:skills=skill1, skill2, skill3]
 
 If user is preparing for interview (intent: interview_prep):
-[INTERVIEW:question=What is your greatest strength?]
-[INTERVIEW:tip=Focus on skills relevant to the role]`;
+Generate 3-5 tailored interview questions based on their CV and target role. Include behavioral, technical, and situational questions.
+Format: [INTERVIEW:question=Your specific question here]
+[INTERVIEW:tip=Specific tip for answering this question based on their background]
+[INTERVIEW:followup=Potential follow-up question interviewer might ask]
+
+For mock interview mode, also include:
+[INTERVIEW:scenario=Brief scenario setup for the mock interview]`;
 
     const res = await base44.integrations.Core.InvokeLLM({ prompt });
 
@@ -310,14 +320,19 @@ If user is preparing for interview (intent: interview_prep):
     if (interviewMatches) {
       content = content.replace(/\[INTERVIEW:\w+=[^\]]+\]/g, "").trim();
       const newQuestions = [];
+      let scenario = "";
 
       for (const match of interviewMatches) {
         const [, key, value] = match.match(/\[INTERVIEW:(\w+)=([^\]]+)\]/);
         
         if (key === "question") {
-          newQuestions.push({ question: value, tip: "" });
+          newQuestions.push({ question: value, tip: "", followup: "" });
         } else if (key === "tip" && newQuestions.length > 0) {
           newQuestions[newQuestions.length - 1].tip = value;
+        } else if (key === "followup" && newQuestions.length > 0) {
+          newQuestions[newQuestions.length - 1].followup = value;
+        } else if (key === "scenario") {
+          scenario = value;
         }
       }
       
