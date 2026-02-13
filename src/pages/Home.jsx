@@ -314,6 +314,8 @@ Keep it SHORT and factual (2-3 sentences max).`;
 CONVERSATION SO FAR:
 ${chatHistory}
 
+USER'S NAME: ${userName || "Friend"}
+
 WHAT YOU KNOW ABOUT THE USER:
 ${memoryContext}${lastConvContext}
 
@@ -321,11 +323,12 @@ Respond as ${persona === "both" ? "Antonio & Mariana together" : persona}.
 
 CRITICAL RULES:
 1. ${isFirstMessage && lastConvSummary ? "START by referencing the last conversation naturally (e.g., 'Last time we were working on...'), add a human thought about it, then transition to addressing today's message. Keep it conversational and natural." : "Continue the conversation naturally."}
-2. Chat message must be MAX 2-3 LINES (or 4 lines if recalling last conversation). Short, conversational, human. Like texting. NO long explanations.
-3. Don't describe what the cards will show — just have a natural conversation.
-4. Use what you know about the user to personalize your response.
-5. Be dynamic — if user says 'hi', be general. If they mention a specific topic, address it directly.
-6. Return structured data in the JSON format specified below.`;
+2. Use their name naturally in messages (e.g., "Hey ${userName || "there"}," or references to them by name).
+3. Chat message must be MAX 2-3 LINES (or 4 lines if recalling last conversation). Short, conversational, human. Like texting. NO long explanations.
+4. Don't describe what the cards will show — just have a natural conversation.
+5. Use what you know about the user to personalize your response.
+6. Be dynamic — if user says 'hi', be general. If they mention a specific topic, address it directly.
+7. Return structured data in the JSON format specified below.`;
 
     const responseSchema = {
       type: "object",
