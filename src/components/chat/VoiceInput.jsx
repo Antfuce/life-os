@@ -155,28 +155,46 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, disabled
   };
 
   return (
-    <Button
-      onClick={toggleListening}
-      disabled={disabled || !recognition}
-      variant="ghost"
-      size="icon"
-      className={cn(
-        "relative flex-shrink-0",
-        isListening && "text-rose-500"
+    <div className="relative">
+      <Button
+        onClick={toggleListening}
+        disabled={disabled || !recognition}
+        variant="ghost"
+        size="icon"
+        className={cn(
+          "relative flex-shrink-0 transition-all",
+          isListening ? "bg-red-500 text-white hover:bg-red-600" : "text-neutral-600 hover:text-neutral-900"
+        )}
+        title={isListening ? "Click to stop talking" : "Click to start talking"}
+      >
+        {isListening ? (
+          <>
+            <motion.div
+              className="absolute inset-0 rounded-lg"
+              animate={{ boxShadow: ["0 0 0 0 rgba(239, 68, 68, 0.7)", "0 0 0 12px rgba(239, 68, 68, 0)"] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
+            />
+            <motion.div
+              animate={{ scale: [1, 0.9, 1] }}
+              transition={{ duration: 1, repeat: Infinity }}
+              className="relative z-10"
+            >
+              <Mic className="w-5 h-5" />
+            </motion.div>
+          </>
+        ) : (
+          <Mic className="w-5 h-5" />
+        )}
+      </Button>
+      {isListening && (
+        <motion.span
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-medium text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap"
+        >
+          🎤 Listening...
+        </motion.span>
       )}
-    >
-      {isListening ? (
-        <>
-          <motion.div
-            className="absolute inset-0 rounded-lg bg-rose-500/10"
-            animate={{ scale: [1, 1.2, 1] }}
-            transition={{ duration: 1.5, repeat: Infinity }}
-          />
-          <MicOff className="w-5 h-5 relative z-10" />
-        </>
-      ) : (
-        <Mic className="w-5 h-5" />
-      )}
-    </Button>
+    </div>
   );
 }
