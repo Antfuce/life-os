@@ -348,7 +348,12 @@ If user is preparing for interview (intent: interview_prep):
 
         {/* Chat state */}
         {hasStarted && (
-          <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.3, delay: 0.4 }}
+            className="flex-1 flex flex-col h-full"
+          >
             {/* Header */}
             <div className="flex-shrink-0 px-6 py-4 flex items-center justify-between bg-white/30 backdrop-blur-xl border-b border-white/20">
               <div className="flex items-center gap-3">
@@ -452,7 +457,7 @@ If user is preparing for interview (intent: interview_prep):
                 <ChatInput onSend={handleSend} disabled={isLoading} />
               </div>
             </div>
-          </>
+          </motion.div>
         )}
       </div>
     </div>
