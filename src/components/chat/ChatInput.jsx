@@ -45,7 +45,7 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
   return (
     <div className="relative">
       {/* Animated wave overlay - flows right to left */}
-      <div className="flex items-end gap-3 bg-white/60 backdrop-blur-xl border border-white/40 rounded-2xl px-4 py-3 shadow-lg shadow-black/[0.03] relative z-10 overflow-hidden group hover:shadow-xl hover:shadow-violet-500/20 transition-all duration-300">
+      <div className="flex items-end gap-2 bg-white/60 backdrop-blur-xl border border-white/40 rounded-2xl px-3 py-2 shadow-lg shadow-black/[0.03] relative z-10 overflow-hidden group hover:shadow-xl hover:shadow-violet-500/20 transition-all duration-300">
         {/* Glow backdrop layer */}
         <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-amber-500/0 via-rose-500/5 to-violet-600/0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
 
