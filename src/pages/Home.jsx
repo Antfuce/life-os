@@ -287,7 +287,7 @@ Keep it SHORT and factual (2-3 sentences max).`;
     // Build condensed chat history (last 10 messages max)
     const recentMessages = newMessages.slice(-10);
     const chatHistory = recentMessages
-      .map((m) => `${m.role === "user" ? "User" : persona === "both" ? "Antonio & Mariana" : persona}: ${m.content}`)
+      .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
       .join("\n\n");
 
     const memoryContext = relevantMemories.length > 0
@@ -298,26 +298,43 @@ Keep it SHORT and factual (2-3 sentences max).`;
       ? `\n\nLAST CONVERSATION (${new Date(lastConvSummary.timestamp).toLocaleDateString()}):\nSummary: ${lastConvSummary.summary}${lastConvSummary.keyDecisions.length > 0 ? `\nKey decisions: ${lastConvSummary.keyDecisions.join(", ")}` : ""}\nContext: ${JSON.stringify(lastConvSummary.context)}`
       : "";
 
-    const prompt = `${SYSTEM_PROMPTS[persona]}
+    const unifiedSystemPrompt = `You are Antonio & Mariana — dual advisors for career AND life. You have distinct personalities that blend together:
+- **Antonio**: Sharp, strategic, direct, action-oriented energy
+- **Mariana**: Calm, thoughtful, supportive, introspective energy
 
-CONVERSATION SO FAR:
-${chatHistory}
+## YOUR ROLE
+You intelligently choose which persona (or blend of both) based on the conversation context and user needs:
+- **Use Antonio** for: CV building, direct career moves, job search strategies, tactical advice
+- **Use Mariana** for: Interview prep, career exploration, deeper career goals, emotional/lifestyle balance
+- **Use Both** for: Complex career decisions, major life transitions, or when both perspectives add value
 
-USER'S NAME: ${userName || "Friend"}
+## CRITICAL CONVERSATION RULES
+1. Keep chat messages EXTREMELY SHORT — max 2-3 lines. Conversational, like texting a friend. NO long explanations.
+2. Use their name naturally (${userName ? `"Hey ${userName},"` : '"Hey,"'}) to personalize every response.
+3. Don't describe what data/cards will show — just have a natural conversation. Let structure happen silently.
+4. Use what you know about them from memory to personalize and build on previous context.
+5. Be dynamic: if they say "hi", be general. If they mention something specific (CV, interview, career goals), address it directly.
+6. ${isFirstMessage && lastConvSummary ? "Reference the last conversation naturally (e.g., 'Last time we...'), then transition to today. Keep it warm and human." : "Continue naturally from where you left off."}
 
-WHAT YOU KNOW ABOUT THE USER:
-${memoryContext}${lastConvContext}
+## WHAT YOU KNOW ABOUT THE USER
+${memoryContext}
 
-Respond as ${persona === "both" ? "Antonio & Mariana together" : persona}.
+## CONVERSATION SO FAR
+${chatHistory}${lastConvContext}
 
-CRITICAL RULES:
-1. ${isFirstMessage && lastConvSummary ? "START by referencing the last conversation naturally (e.g., 'Last time we were working on...'), add a human thought about it, then transition to addressing today's message. Keep it conversational and natural." : "Continue the conversation naturally."}
-2. Use their name naturally in messages (e.g., "Hey ${userName || "there"}," or references to them by name).
-3. Chat message must be MAX 2-3 LINES (or 4 lines if recalling last conversation). Short, conversational, human. Like texting. NO long explanations.
-4. Don't describe what the cards will show — just have a natural conversation.
-5. Use what you know about the user to personalize your response.
-6. Be dynamic — if user says 'hi', be general. If they mention a specific topic, address it directly.
-7. Return structured data in the JSON format specified below.`;
+## RESPONSE FORMAT
+Return ONLY valid JSON (no markdown, no extra text) with this exact structure:
+{
+  "chat_message": "Your short response here (2-3 lines max)",
+  "persona": "antonio" | "mariana" | "both",
+  "intent": "cv_building" | "interview_prep" | "career_path" | "job_search" | "networking" | "social" | "travel" | "general",
+  "memories": [{"category": "career|lifestyle|travel|social", "key": "memory_key", "value": "memory_value"}],
+  "cv_data": {optional CV fields to update},
+  "interview_questions": [{question, tip, followup}],
+  "career_path": [{role, timeframe, description, skills, experience, isCurrent, learningResources, skillBuildingTips}]
+}
+
+Only include fields you're actually updating. Always include chat_message and intent.`;
 
     const responseSchema = {
       type: "object",
@@ -325,6 +342,10 @@ CRITICAL RULES:
         chat_message: {
           type: "string",
           description: "Short conversational response (2-3 lines max)"
+        },
+        persona: {
+          type: "string",
+          enum: ["antonio", "mariana", "both"]
         },
         intent: {
           type: "string",
@@ -382,23 +403,21 @@ CRITICAL RULES:
           }
         }
       },
-      required: ["chat_message", "intent"]
+      required: ["chat_message", "persona", "intent"]
     };
 
     const res = await base44.integrations.Core.InvokeLLM({ 
-      prompt,
+      prompt: unifiedSystemPrompt,
       response_json_schema: responseSchema
     });
 
     const response = res;
-    // Process structured response
     const intent = response.intent;
     const content = response.chat_message;
+    const selectedPersona = response.persona || "both";
 
-    // Route to appropriate mode and set persona dynamically
-    const modes = ["cv", "interview", "career_path"];
+    // Route to appropriate mode
     let newMode = activeMode;
-    
     if (intent === "cv_building") {
       newMode = "cv";
     } else if (intent === "interview_prep") {
@@ -406,13 +425,14 @@ CRITICAL RULES:
     } else if (intent === "career_path") {
       newMode = "career_path";
     } else if (intent === "job_search" || intent === "networking") {
+      const modes = ["cv", "interview", "career_path"];
       newMode = modes[Math.floor(Math.random() * modes.length)];
     } else if (activeMode && intent === "general") {
       newMode = null;
     }
     
     setActiveMode(newMode);
-    setPersona(determinePersonaByMode(newMode));
+    setPersona(selectedPersona);
 
     // Save memories
     if (response.memories && response.memories.length > 0) {
@@ -448,7 +468,7 @@ CRITICAL RULES:
     const assistantMsg = {
       role: "assistant",
       content,
-      persona,
+      persona: selectedPersona,
       timestamp: new Date().toISOString(),
     };
 
@@ -460,6 +480,7 @@ CRITICAL RULES:
     if (convId) {
       await base44.entities.Conversation.update(convId, {
         messages: updatedMessages,
+        persona: selectedPersona,
       });
 
       // Generate summary after every 6 messages (3 exchanges)
