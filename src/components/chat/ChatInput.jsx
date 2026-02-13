@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import VoiceInput from "./VoiceInput";
 
 export default function ChatInput({ onSend, disabled, voiceMode = false, pauseListening = false }) {
