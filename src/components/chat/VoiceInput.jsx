@@ -49,15 +49,17 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, disabled
       };
 
       recognitionInstance.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
-        if (event.error === "no-speech") {
-          // Restart automatically on no-speech
+        console.error('❌ Speech error:', event.error);
+        if (event.error === "network") {
+          console.log('Network error — check internet');
+        } else if (event.error === "no-speech") {
+          console.log('No speech detected, waiting...');
           if (isListening) {
             setTimeout(() => {
               try {
                 recognitionInstance.start();
               } catch (e) {
-                // Already started
+                console.error('Restart failed:', e);
               }
             }, 100);
           }
