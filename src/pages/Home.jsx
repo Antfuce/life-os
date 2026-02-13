@@ -8,6 +8,8 @@ import MessageBubble from "../components/chat/MessageBubble";
 import ChatInput from "../components/chat/ChatInput";
 import TypingIndicator from "../components/chat/TypingIndicator";
 import { useConversationService } from "../components/chat/useConversationService";
+import { detectIntent, selectPersona, selectMode } from "../components/chat/intentDetector";
+import { validateAndFixResponse } from "../components/chat/responseValidator";
 
 import WhisperCaption from "../components/chat/WhisperCaption";
 import ContextPanel from "../components/chat/ContextPanel";
