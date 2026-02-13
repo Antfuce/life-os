@@ -542,7 +542,13 @@ Return ONLY valid JSON (no markdown, no extra text) with this exact structure:
   "intent": "cv_building" | "interview_prep" | "career_path" | "job_search" | "networking" | "social" | "travel" | "general",
   "context_used": ["name", "current_role", "company"],
   "memories": [{"category": "career|lifestyle|travel|social", "key": "memory_key", "value": "memory_value"}],
-  "cv_data": {optional CV fields to update},
+  "cv_data": {
+    "personal": {"name": "string", "email": "string", "phone": "string", "location": "string"},
+    "summary": "string",
+    "experience": [{"title": "string", "company": "string", "location": "string", "start_date": "string", "end_date": "string", "current": "boolean", "description": "string", "achievements": ["string"]}],
+    "education": [{"degree": "string", "institution": "string", "location": "string", "graduation_date": "string"}],
+    "skills": ["string"]
+  },
   "interview_questions": [{question, tip, followup}],
   "career_path": [{role, timeframe, description, skills, experience, isCurrent, learningResources, skillBuildingTips}]
 }
