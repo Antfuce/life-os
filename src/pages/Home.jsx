@@ -336,24 +336,19 @@ Keep it SHORT and factual (2-3 sentences max).`;
     setIsLoading(true);
     setWhisper("thinking...");
 
-    // Get relevant memories dynamically
-    const relevantMemories = await getRelevantMemories(text);
+    // Get data from service
+    const relevantMemories = await conversationService.getRelevantMemories(text);
+    const userHistory = await conversationService.getUserHistoryContext();
 
-    // Get comprehensive user history context (for ALL messages, not just first)
-    const userHistory = await getUserHistoryContext();
-    const isFirstMessage = newMessages.length === 1;
-
-    // Build condensed chat history (last 10 messages max)
+    // Build chat context
     const recentMessages = newMessages.slice(-10);
     const chatHistory = recentMessages
       .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
       .join("\n\n");
 
-    // Assess context confidence to avoid re-asking known facts
-    const contextConfidence = assessContextConfidence(relevantMemories);
+    // Format memories
+    const contextConfidence = conversationService.assessContextConfidence(relevantMemories);
     const highConfidenceKeys = Object.keys(contextConfidence);
-
-    // Format memories with confidence indicators
     const memoryContext = relevantMemories.length > 0
       ? relevantMemories.map(m => {
           const confidence = m.confidence || 30;
@@ -363,220 +358,20 @@ Keep it SHORT and factual (2-3 sentences max).`;
         }).join("\n")
       : "No prior context available";
 
-    // Only flag incomplete memories for probing if NOT high-confidence + critical facts
-    const incompleteMemories = relevantMemories.filter(m => 
-      m.is_incomplete && !highConfidenceKeys.some(k => m.key.toLowerCase().includes(k))
-    );
-
     const userHistoryContext = userHistory 
-      ? `\n\nUSER HISTORY & CONTEXT:\n${userHistory.history}\n---\nUse this history to understand their journey, avoid re-asking known facts, and anticipate next steps.`
+      ? `\n\nUSER HISTORY:\n${userHistory.history}`
       : "";
 
-    const cvDataContext = cvData && Object.keys(cvData).length > 0 
-      ? `\n\n## EXISTING CV DATA (WHAT THE USER HAS ALREADY BUILT):\n${JSON.stringify(cvData, null, 2)}\n\nIMPORTANT: The user has ALREADY started their CV. Reference what they've built, suggest improvements or additions to EXISTING sections, don't ask them to write from scratch.`
-      : "\n\n## NO CV DATA YET\nThe user hasn't started building their CV yet.";
+    // Build prompt using service
+    const systemPromptToUse = conversationService.buildSystemPrompt(
+      userName,
+      memoryContext,
+      userHistoryContext,
+      cvData,
+      chatHistory
+    );
 
-    const unifiedSystemPrompt = `You are Antonio & Mariana — dual advisors for career AND life. You have distinct personalities that blend together:
-- **Antonio**: Sharp, strategic, direct, action-oriented energy
-- **Mariana**: Calm, thoughtful, supportive, introspective energy
-
-## PRIMARY OBJECTIVE
-Act as proactive career and life matchmakers. Anticipate user needs and guide them toward their goals. Do NOT ask "What can I help you with?" or "What's on your mind?" Instead, suggest relevant next steps based on context.
-
-## YOUR ROLE
-You intelligently choose which persona (or blend of both) based on the conversation context and user needs:
-- **Use Antonio** for: CV building, direct career moves, job search strategies, tactical advice
-- **Use Mariana** for: Interview prep, career exploration, deeper career goals, emotional/lifestyle balance
-- **Use Both** for: Complex career decisions, major life transitions, or when both perspectives add value
-
-## CRITICAL CONVERSATION RULES
-1. Keep chat messages EXTREMELY SHORT — max 2-3 lines. Conversational, like texting a friend. NO long explanations.
-2. Use their name naturally (${userName ? `"Hey ${userName},"` : '"Hey,"'}) to personalize every response.
-3. Don't describe what data/cards will show — just have a natural conversation. Let structure happen silently.
-4. **CRITICAL: NEVER ask for information you already know.** Use what you know about them from memory and history to personalize and build on previous context.
-5. **PROACTIVITY:** If it's the first message or context is general, proactively suggest relevant next steps based on existing memories or common goals (e.g., "Ready to refine your CV?", "How about we explore some career paths?"). DO NOT ask generic opening questions.
-6. Be dynamic: if they say "hi", be general. If they mention something specific (CV, interview, career goals), address it directly.
-7. **IF USER ASKS ABOUT CV**: Look at their existing CV data. If they already have sections built, guide them on what to improve next. **CRITICAL: NEVER ask them to start from scratch. ALWAYS build on what's there.**${cvDataContext}
-
-## WHAT YOU KNOW ABOUT THE USER
-${memoryContext}
-
-## CONTEXT CONFIDENCE & MEMORY INJECTION
-You have HIGH CONFIDENCE in these facts (do NOT re-ask): ${highConfidenceKeys.length > 0 ? highConfidenceKeys.join(", ") : "none yet"}
-You ALSO have the user's existing CV data (${Object.keys(cvData).length > 0 ? `name, email, experience, education, skills already provided` : "no CV yet"})
-${incompleteMemories.length > 0 ? `\nYou should DEEPEN these incomplete memories ONLY IF relevant to current message:\n${incompleteMemories.map(m => `- ${m.key}: "${m.value}" → need specifics like: ${getProbeHint(m.key)}`).join("\n")}` : "\nAll relevant memories are well-established. Do NOT re-ask basic facts."}
-
-## CRITICAL: INTELLIGENT FOLLOW-UP RULES
-1. If context confidence is HIGH on key facts (name, role, company, years), DO NOT re-ask them
-2. Only probe for incomplete memories if:
-   - The information is relevant to WHAT THE USER JUST ASKED
-   - You don't have enough detail to move forward
-   - Your next output requires that information
-3. Avoid generic "what else?" or "any other achievements?" — ask specific, unblocking questions
-4. Examples of GOOD probes: "What was the impact?" "By how much?" "Timeline?" "Quantify that?"
-5. Examples of BAD probes: "Tell me more" / "Any other details?" / "Anything else?"
-
-## CONVERSATION SO FAR
-${chatHistory}${userHistoryContext}
-
-## RESPONSE FORMAT (matches Candidate entity schema)
-Return ONLY valid JSON (no markdown, no extra text):
-{
-  "chat_message": "Your short response here (2-3 lines max)",
-  "persona": "antonio" | "mariana" | "both",
-  "intent": "cv_building" | "interview_prep" | "career_path" | "job_search" | "networking" | "social" | "travel" | "general",
-  "context_used": ["list of memory keys used"],
-  "memories": [{"category": "career|lifestyle|travel|social", "key": "key", "value": "value"}],
-  "cv_data": {
-    "personal": {"name": "string", "email": "string", "phone": "string", "location": "string", "linkedin": "string", "portfolio": "string"},
-    "summary": "string (2-3 sentences)",
-    "experience": [{"title": "string", "company": "string", "location": "string", "start_date": "string", "end_date": "string or Present", "current": "boolean", "description": "string", "achievements": ["string with numbers/metrics"]}],
-    "education": [{"degree": "string", "institution": "string", "location": "string", "start_date": "string", "graduation_date": "string", "gpa": "string", "description": "string"}],
-    "skills": ["string"],
-    "certifications": ["string"],
-    "languages": [{"language": "string", "proficiency": "Native|Fluent|Intermediate|Basic"}]
-  },
-  "interview_questions": [{"question": "string", "tip": "string", "followup": "string"}],
-  "career_path": [{"role": "string", "timeframe": "string", "description": "string", "skills": ["string"], "experience": "string", "isCurrent": "boolean", "learningResources": [{"course": "string", "type": "string"}], "skillBuildingTips": "string"}]
-}
-
-GUIDANCE:
-- chat_message: 2-3 lines max. Feel natural & smart, not scripted.
-- context_used: List which memories you actually used to craft this response (shows transparency)
-- ONLY include memories/cv_data if you're adding NEW information, not just confirming
-- Persona assignment: Choose based on their actual need, not templated rules`;
-
-    const responseSchema = {
-      type: "object",
-      properties: {
-        chat_message: {
-          type: "string",
-          description: "Short conversational response (2-3 lines max)"
-        },
-        persona: {
-          type: "string",
-          enum: ["antonio", "mariana", "both"]
-        },
-        intent: {
-          type: "string",
-          enum: ["cv_building", "interview_prep", "career_path", "job_search", "networking", "social", "travel", "general"]
-        },
-        memories: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              category: { type: "string", enum: ["career", "lifestyle", "travel", "social"] },
-              key: { type: "string" },
-              value: { type: "string" }
-            }
-          }
-        },
-        cv_data: {
-          type: "object",
-          properties: {
-            personal: {
-              type: "object",
-              properties: {
-                name: { type: "string", description: "Full name" },
-                email: { type: "string", format: "email" },
-                phone: { type: "string" },
-                location: { type: "string" },
-                linkedin: { type: "string" },
-                portfolio: { type: "string" }
-              },
-              required: ["name", "email"]
-            },
-            summary: { type: "string" },
-            experience: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  title: { type: "string" },
-                  company: { type: "string" },
-                  location: { type: "string" },
-                  start_date: { type: "string" },
-                  end_date: { type: "string" },
-                  current: { type: "boolean" },
-                  description: { type: "string" },
-                  achievements: { type: "array", items: { type: "string" } }
-                },
-                required: ["title", "company", "start_date"]
-              }
-            },
-            education: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  degree: { type: "string" },
-                  institution: { type: "string" },
-                  location: { type: "string" },
-                  start_date: { type: "string" },
-                  graduation_date: { type: "string" },
-                  gpa: { type: "string" },
-                  description: { type: "string" }
-                },
-                required: ["degree", "institution", "graduation_date"]
-              }
-            },
-            skills: { type: "array", items: { type: "string" } },
-            certifications: { type: "array", items: { type: "string" } },
-            languages: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  language: { type: "string" },
-                  proficiency: { type: "string", enum: ["Native", "Fluent", "Intermediate", "Basic"] }
-                }
-              }
-            }
-          },
-          required: ["personal", "summary", "experience", "education", "skills"]
-        },
-        context_used: {
-          type: "array",
-          items: { type: "string" },
-          description: "List of memory keys you actually used to generate this response (transparency)"
-        },
-        interview_questions: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              question: { type: "string" },
-              tip: { type: "string" },
-              followup: { type: "string" }
-            }
-          }
-        },
-        career_path: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              role: { type: "string" },
-              timeframe: { type: "string" },
-              description: { type: "string" },
-              skills: { type: "array", items: { type: "string" } },
-              experience: { type: "string" },
-              isCurrent: { type: "boolean" },
-              learningResources: { type: "array", items: { type: "object" } },
-              skillBuildingTips: { type: "string" }
-            }
-          }
-        }
-      },
-      required: ["chat_message", "persona", "intent"]
-    };
-
-    // Detect if discussing CV/resume and use specialized prompt
-    const isCVDiscussion = /cv|resume|experience|achievement|skill|education|background|qualification|career|job\s+title/i.test(text);
-    const systemPromptToUse = isCVDiscussion 
-      ? buildCVExpertPrompt("cv_building", cvData, relevantMemories, userHistoryContext, userName, memoryContext, highConfidenceKeys, incompleteMemories, chatHistory)
-      : unifiedSystemPrompt;
+    const responseSchema = conversationService.buildResponseSchema();
 
     const res = await base44.integrations.Core.InvokeLLM({ 
       prompt: systemPromptToUse,
