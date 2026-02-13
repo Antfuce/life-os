@@ -712,15 +712,29 @@ GUIDANCE:
                   {persona === "both" ? "Antonio & Mariana" : persona ? persona.charAt(0).toUpperCase() + persona.slice(1) : "Antonio & Mariana"}
                 </div>
               </div>
-              <button
-                onClick={() => setShowMemory(!showMemory)}
-                className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
-              >
-                <Brain className="w-4 h-4 text-neutral-500" />
-                {memories.length > 0 && (
-                  <div className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-violet-500" />
-                )}
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowMemory(!showMemory)}
+                  className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
+                >
+                  <Brain className="w-4 h-4 text-neutral-500" />
+                  {memories.length > 0 && (
+                    <div className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-violet-500" />
+                  )}
+                </button>
+                <button
+                  onClick={() => setShowDebug(!showDebug)}
+                  className={cn(
+                    "w-9 h-9 rounded-xl flex items-center justify-center transition-colors text-xs font-bold",
+                    showDebug 
+                      ? "bg-amber-100 text-amber-700 hover:bg-amber-200" 
+                      : "hover:bg-white/40 text-neutral-400"
+                  )}
+                  title="Toggle context usage debug view"
+                >
+                  ⚡
+                </button>
+              </div>
             </div>
 
             {/* Messages + CV Preview Split */}
