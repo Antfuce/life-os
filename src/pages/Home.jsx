@@ -10,6 +10,7 @@ import TypingIndicator from "../components/chat/TypingIndicator";
 
 import WhisperCaption from "../components/chat/WhisperCaption";
 import ContextPanel from "../components/chat/ContextPanel";
+import ContextUsageDebug from "../components/chat/ContextUsageDebug";
 import DeliverableCard from "../components/deliverables/DeliverableCard";
 import AvatarHint from "../components/chat/AvatarHint";
 import LiveCVPreview from "../components/cv/LiveCVPreview";
