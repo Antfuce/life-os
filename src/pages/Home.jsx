@@ -48,6 +48,8 @@ export default function Home() {
   const [interviewQuestions, setInterviewQuestions] = useState([]);
   const [agentConversationId, setAgentConversationId] = useState(null);
   const [candidateId, setCandidateId] = useState(null);
+  const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const [floatingModules, setFloatingModules] = useState([]); // Array of { id, type, data, position }
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
