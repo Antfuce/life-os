@@ -507,6 +507,11 @@ GUIDANCE:
     const intent = response.intent;
     const content = response.chat_message;
     const selectedPersona = response.persona || "both";
+    
+    // Track what context was used (for transparency/debugging)
+    if (response.context_used) {
+      setContextUsedList(response.context_used);
+    }
 
     // Route to appropriate mode
     let newMode = activeMode;
