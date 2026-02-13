@@ -287,6 +287,52 @@ export default function CareerPathVisualization({ pathData, onClose }) {
                                     </p>
                                   </div>
                                 )}
+
+                                {/* Skill Building Tips */}
+                                {node.skillBuildingTips && (
+                                  <div>
+                                    <div className="flex items-center gap-1.5 mb-2">
+                                      <Lightbulb className="w-3 h-3 text-rose-500" />
+                                      <span className="text-[10px] font-semibold text-neutral-700 uppercase tracking-wider">
+                                        How to Develop These Skills
+                                      </span>
+                                    </div>
+                                    <p className="text-xs text-neutral-600 bg-rose-50 rounded-lg p-2 border border-rose-100 leading-relaxed">
+                                      {node.skillBuildingTips}
+                                    </p>
+                                  </div>
+                                )}
+
+                                {/* Learning Resources */}
+                                {node.learningResources.length > 0 && (
+                                  <div>
+                                    <div className="flex items-center gap-1.5 mb-2">
+                                      <ExternalLink className="w-3 h-3 text-blue-500" />
+                                      <span className="text-[10px] font-semibold text-neutral-700 uppercase tracking-wider">
+                                        Recommended Learning
+                                      </span>
+                                    </div>
+                                    <div className="space-y-2">
+                                      {node.learningResources.map((resource, i) => (
+                                        <div
+                                          key={i}
+                                          className="flex items-start gap-2 text-xs bg-blue-50 rounded-lg p-2 border border-blue-100 hover:border-blue-200 transition-colors"
+                                        >
+                                          <div className="flex-1">
+                                            <p className="font-medium text-blue-900">{resource.course || resource.title}</p>
+                                            {resource.article && (
+                                              <p className="text-blue-700 text-[10px] mt-0.5">{resource.article}</p>
+                                            )}
+                                            <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[9px] bg-blue-100 text-blue-600">
+                                              {resource.type?.replace(/_/g, " ") || "resource"}
+                                            </span>
+                                          </div>
+                                          <ExternalLink className="w-3 h-3 text-blue-400 flex-shrink-0 mt-0.5" />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
                               </motion.div>
                             )}
                           </AnimatePresence>
