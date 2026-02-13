@@ -146,10 +146,21 @@ export default function Home() {
         setTimeout(() => handleAgentSend(agentConv, initialText), 100);
       }
     } else {
+      // Determine persona based on initial message intent
+      let selectedPersona = "both";
+      const lowerText = initialText.toLowerCase();
+      if (/interview|prep|question|answer|practice/.test(lowerText)) {
+        selectedPersona = "mariana";
+      } else if (/career|path|progression|goal|growth/.test(lowerText)) {
+        selectedPersona = "mariana";
+      }
+      
+      setPersona(selectedPersona);
+
       // Use regular conversation for other topics
       const conv = await base44.entities.Conversation.create({
         title: "New conversation",
-        persona,
+        persona: selectedPersona,
         status: "active",
         messages: [],
       });
