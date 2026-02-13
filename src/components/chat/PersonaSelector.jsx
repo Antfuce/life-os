@@ -40,10 +40,11 @@ export default function PersonaSelector({ active, onChange }) {
             )}
           </span>
           {p.locked && (
-            <div className="absolute -top-6 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-              <div className="bg-neutral-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap">
+            <div className="absolute -top-8 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+              <div className="bg-neutral-800 text-white text-[10px] px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
                 Coming soon
               </div>
+              <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-0.5 w-0 h-0 border-l-4 border-l-transparent border-r-4 border-r-transparent border-t-4 border-t-neutral-800" />
             </div>
           )}
         </button>
