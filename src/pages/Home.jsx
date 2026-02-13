@@ -374,6 +374,10 @@ Keep it SHORT and factual (2-3 sentences max).`;
       ? `\n\nLAST CONVERSATION (${new Date(lastConvSummary.timestamp).toLocaleDateString()}):\nSummary: ${lastConvSummary.summary}${lastConvSummary.keyDecisions.length > 0 ? `\nKey decisions: ${lastConvSummary.keyDecisions.join(", ")}` : ""}\nContext: ${JSON.stringify(lastConvSummary.context)}`
       : "";
 
+    const cvDataContext = cvData && Object.keys(cvData).length > 0 
+      ? `\n\n## EXISTING CV DATA (WHAT THE USER HAS ALREADY BUILT):\n${JSON.stringify(cvData, null, 2)}\n\nIMPORTANT: The user has ALREADY started their CV. Reference what they've built, suggest improvements or additions to EXISTING sections, don't ask them to write from scratch.`
+      : "\n\n## NO CV DATA YET\nThe user hasn't started building their CV yet.";
+
     const unifiedSystemPrompt = `You are Antonio & Mariana — dual advisors for career AND life. You have distinct personalities that blend together:
 - **Antonio**: Sharp, strategic, direct, action-oriented energy
 - **Mariana**: Calm, thoughtful, supportive, introspective energy
@@ -391,6 +395,7 @@ You intelligently choose which persona (or blend of both) based on the conversat
 4. Use what you know about them from memory to personalize and build on previous context.
 5. Be dynamic: if they say "hi", be general. If they mention something specific (CV, interview, career goals), address it directly.
 6. ${isFirstMessage && lastConvSummary ? "Reference the last conversation naturally (e.g., 'Last time we...'), then transition to today. Keep it warm and human." : "Continue naturally from where you left off."}
+7. **IF USER ASKS ABOUT CV**: Look at their existing CV data. If they already have sections built, guide them on what to improve next. Don't ask them to start from scratch — build on what's there.${cvDataContext}
 
 ## WHAT YOU KNOW ABOUT THE USER
 ${memoryContext}
