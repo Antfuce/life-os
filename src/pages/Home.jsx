@@ -59,7 +59,8 @@ export default function Home() {
     const initializeApp = async () => {
       const user = await base44.auth.me();
       if (user) {
-        setUserName(user.full_name);
+        const firstName = user.full_name.split(' ')[0];
+        setUserName(firstName);
       }
       loadMemories();
       loadDeliverables();
