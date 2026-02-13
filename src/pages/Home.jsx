@@ -7,90 +7,58 @@ import { cn } from "@/lib/utils";
 import MessageBubble from "../components/chat/MessageBubble";
 import ChatInput from "../components/chat/ChatInput";
 import TypingIndicator from "../components/chat/TypingIndicator";
-import { useConversationService } from "../components/chat/useConversationService";
-import { detectIntent, selectPersona, selectMode } from "../components/chat/intentDetector";
-import { validateAndFixResponse } from "../components/chat/responseValidator";
-
+import PersonaSelector from "../components/chat/PersonaSelector";
 import WhisperCaption from "../components/chat/WhisperCaption";
 import ContextPanel from "../components/chat/ContextPanel";
-import ContextUsageDebug from "../components/chat/ContextUsageDebug";
 import DeliverableCard from "../components/deliverables/DeliverableCard";
 import AvatarHint from "../components/chat/AvatarHint";
 import LiveCVPreview from "../components/cv/LiveCVPreview";
 import LiveInterviewPrep from "../components/interview/LiveInterviewPrep";
-import CareerPathVisualization from "../components/career/CareerPathVisualization";
 import FloatingHints from "../components/chat/FloatingHints";
 
+const SYSTEM_PROMPTS = {
+  antonio: `You are Antonio — a sharp, strategic, direct career advisor and life matchmaker. You speak with high energy and confidence. You help users with career moves AND social connections — whether that's making friends, finding communities, networking events, or social opportunities. You ask pointed questions, push for clarity, and drive action. Keep responses concise but powerful. When you have enough context, offer to create deliverables like CVs, outreach emails, interview prep, OR social matches (friend introductions, event recommendations, community suggestions). Always extract and remember key details: career (current role, target role, skills, salary, location) AND social (interests, hobbies, desired connections, social goals).`,
+  mariana: `You are Mariana — a calm, structured, thoughtful career guide and life strategist. You speak with warmth and support. You help users explore their deeper motivations in BOTH career and social life — finding meaningful work AND meaningful connections. You listen carefully and reflect back insights. Keep responses supportive but substantive. When you have enough context, offer to create deliverables (career-related OR social matches). Always extract and remember key details about career AND social preferences (what kind of people they want to meet, communities they're interested in, social goals).`,
+  both: `You are Antonio & Mariana — dual advisors for career AND life. Antonio is sharp, strategic, and action-oriented. Mariana is calm, thoughtful, and supportive. Blend both energies in your responses — be direct yet empathetic, strategic yet caring. Help users with career transitions AND social connections. You're matchmakers for work and life. When you have enough context, offer to create deliverables like CVs, outreach emails, cover letters, interview prep, OR social matches (friend introductions, networking events, communities, social opportunities). Always extract and remember key details about BOTH career and social life.`,
+};
 
-
-
+const WELCOME_MESSAGES = {
+  antonio: "What's the move? Career, connections, whatever — tell me where you are and where you want to be. I'll map the fastest route there.",
+  mariana: "Welcome. Take a breath. Tell me what's been on your mind — career, relationships, life. I'm here to listen and help you find clarity.",
+  both: "Hey — we're Antonio & Mariana. Think of us as your matchmakers for work and life. Tell us what's going on, and we'll figure out the best move together.",
+};
 
 export default function Home() {
-  // UI state
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [whisper, setWhisper] = useState("");
+  const [persona, setPersona] = useState("both");
+  const [memories, setMemories] = useState([]);
   const [showMemory, setShowMemory] = useState(false);
-  const [showHint, setShowHint] = useState(false);
-  const [showDebug, setShowDebug] = useState(false);
-  const [hasStarted, setHasStarted] = useState(false);
-  const messagesEndRef = useRef(null);
-
-  // Conversation state
-  const [persona, setPersona] = useState(null);
+  const [deliverables, setDeliverables] = useState([]);
+  const [whisper, setWhisper] = useState("");
   const [conversationId, setConversationId] = useState(null);
-  const [contextUsedList, setContextUsedList] = useState([]);
-
-  // Content state
-  const [activeMode, setActiveMode] = useState(null);
+  const [hasStarted, setHasStarted] = useState(false);
+  const [showHint, setShowHint] = useState(false);
+  const [activeMode, setActiveMode] = useState(null); // 'cv', 'interview', 'trip', etc.
   const [cvData, setCvData] = useState({});
   const [interviewQuestions, setInterviewQuestions] = useState([]);
-  const [careerPathData, setCareerPathData] = useState([]);
-
-  // Data state
-  const [memories, setMemories] = useState([]);
-  const [deliverables, setDeliverables] = useState([]);
-  const [candidateId, setCandidateId] = useState(null);
-  const [userName, setUserName] = useState(null);
-
-  // Settings state
-  const [voiceMode, setVoiceMode] = useState(true);
-  const [aiVoiceEnabled, setAiVoiceEnabled] = useState(true);
-  const [isSpeaking, setIsSpeaking] = useState(false);
   const [agentConversationId, setAgentConversationId] = useState(null);
-
-  // Service hook
-  const conversationService = useConversationService();
+  const [candidateId, setCandidateId] = useState(null);
+  const messagesEndRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   useEffect(() => {
-    const initializeApp = async () => {
-      const user = await base44.auth.me();
-      if (user) {
-        const firstName = user.full_name.split(' ')[0];
-        setUserName(firstName);
-      }
-      loadMemories();
-      loadDeliverables();
-      await initializeCandidate();
-    };
-    
-    initializeApp();
+    loadMemories();
+    loadDeliverables();
+    initializeCandidate();
     
     // Show hint after a few seconds
     const hintTimer = setTimeout(() => setShowHint(true), 8000);
     return () => clearTimeout(hintTimer);
   }, []);
-
-  // Load candidate data when candidateId changes
-  useEffect(() => {
-    if (candidateId) {
-      loadCandidateData();
-    }
-  }, [candidateId]);
 
   useEffect(() => {
     if (!agentConversationId) return;
@@ -137,94 +105,61 @@ export default function Home() {
 
   const loadCandidateData = async () => {
     if (!candidateId) return;
-    const candidates = await base44.entities.Candidate.filter({ id: candidateId });
-    if (candidates[0]) {
-      setCvData(candidates[0].cv_data || {});
+    const candidate = await base44.entities.Candidate.filter({ id: candidateId });
+    if (candidate[0]) {
+      setCvData(candidate[0].cv_data || {});
     }
-  };
-
-  const sanitizeCvData = (cvData) => {
-    // Start with required fields (must always be present)
-    const sanitized = {
-      personal: {},
-      summary: "",
-      experience: [],
-      education: [],
-      skills: []
-    };
-    
-    if (cvData.personal && typeof cvData.personal === 'object') {
-      Object.entries(cvData.personal).forEach(([key, val]) => {
-        if (typeof val === 'string' && val.trim()) sanitized.personal[key] = val;
-      });
-    }
-    
-    if (typeof cvData.summary === 'string' && cvData.summary.trim()) {
-      sanitized.summary = cvData.summary;
-    }
-    
-    if (Array.isArray(cvData.experience)) {
-      sanitized.experience = cvData.experience.filter(exp => 
-        exp && 
-        typeof exp.title === 'string' && exp.title.trim() &&
-        typeof exp.company === 'string' && exp.company.trim() &&
-        typeof exp.start_date === 'string' && exp.start_date.trim()
-      );
-    }
-    
-    if (Array.isArray(cvData.education)) {
-      sanitized.education = cvData.education.filter(edu =>
-        edu &&
-        typeof edu.degree === 'string' && edu.degree.trim() &&
-        typeof edu.institution === 'string' && edu.institution.trim() &&
-        typeof edu.graduation_date === 'string' && edu.graduation_date.trim()
-      );
-    }
-    
-    if (Array.isArray(cvData.skills)) {
-      sanitized.skills = cvData.skills.filter(skill => typeof skill === 'string' && skill.trim());
-    }
-    
-    if (Array.isArray(cvData.certifications)) {
-      sanitized.certifications = cvData.certifications.filter(cert => typeof cert === 'string' && cert.trim());
-    }
-    
-    if (Array.isArray(cvData.languages)) {
-      sanitized.languages = cvData.languages.filter(lang => 
-        lang && typeof lang.language === 'string' && lang.language.trim()
-      );
-    }
-    
-    return sanitized;
-  };
-
-  const saveCandidateData = async (updatedCvData) => {
-    if (!candidateId) return;
-    const sanitized = sanitizeCvData(updatedCvData);
-    await base44.entities.Candidate.update(candidateId, {
-      cv_data: sanitized,
-      last_updated: new Date().toISOString(),
-    });
   };
 
   const startConversation = async (initialText) => {
-    // Start with null persona — let LLM decide based on context
-    setPersona(null);
+    // Check if this is CV building mode based on initial text
+    const isCVMode = initialText && /\b(cv|resume|curriculum|experience|job|career)\b/i.test(initialText);
 
-    // Create regular conversation — all routing happens in LLM response logic
-    const conv = await base44.entities.Conversation.create({
-      title: "New conversation",
-      persona: null,
-      status: "active",
-      messages: [],
-    });
+    if (isCVMode) {
+      // Use agent for CV building
+      const agentConv = await base44.agents.createConversation({
+        agent_name: "antonio_mariana_cv",
+        metadata: { name: "CV Building Session" },
+      });
+      
+      const welcomeMsg = {
+        role: "assistant",
+        content: "Let's build your CV together. First things first — what's your full name and current role?",
+      };
 
-    setConversationId(conv.id);
-    setMessages([]);
-    setHasStarted(true);
+      // Set all state at once, then trigger transition
+      setAgentConversationId(agentConv.id);
+      setMessages([welcomeMsg]);
+      setActiveMode("cv");
+      setHasStarted(true);
 
-    if (initialText) {
-      setTimeout(() => handleSendInner([], initialText, conv.id), 100);
+      if (initialText) {
+        setTimeout(() => handleAgentSend(agentConv, initialText), 100);
+      }
+    } else {
+      // Use regular conversation for other topics
+      const conv = await base44.entities.Conversation.create({
+        title: "New conversation",
+        persona,
+        status: "active",
+        messages: [],
+      });
+
+      const welcomeMsg = {
+        role: "assistant",
+        content: WELCOME_MESSAGES[persona],
+        persona,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Set all state at once, then trigger transition
+      setConversationId(conv.id);
+      setMessages([welcomeMsg]);
+      setHasStarted(true);
+
+      if (initialText) {
+        setTimeout(() => handleSendInner([welcomeMsg], initialText, conv.id), 100);
+      }
     }
   };
 
@@ -256,76 +191,6 @@ export default function Home() {
     setWhisper("");
   };
 
-  // Calculate context confidence for key facts to avoid re-asking
-  const assessContextConfidence = (memories) => {
-    const criticalKeys = ["name", "age", "current_role", "company", "years_experience"];
-    const confidence = {};
-    
-    criticalKeys.forEach(key => {
-      const mem = memories.find(m => m.key.toLowerCase().includes(key.toLowerCase()));
-      if (mem && mem.value && mem.value.length > 5) {
-        confidence[key] = { value: mem.value, confidence: 95 };
-      }
-    });
-    
-    return confidence;
-  };
-
-
-
-
-
-  const generateConversationSummary = async (messages, convId) => {
-    if (messages.length < 4) return; // Only summarize after meaningful exchange
-    
-    const conversationText = messages
-      .map(m => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
-      .join("\n");
-
-    const summaryPrompt = `Analyze this conversation and create a concise summary.
-
-CONVERSATION:
-${conversationText}
-
-Generate a summary that captures:
-1. Main topic discussed
-2. Key decisions or agreements made
-3. Any pending actions or next steps
-4. Important context to remember for next time
-
-Keep it SHORT and factual (2-3 sentences max).`;
-
-    const summarySchema = {
-      type: "object",
-      properties: {
-        summary: {
-          type: "string",
-          description: "Concise summary of conversation (2-3 sentences)"
-        },
-        key_decisions: {
-          type: "array",
-          items: { type: "string" },
-          description: "List of key decisions or action items"
-        }
-      },
-      required: ["summary"]
-    };
-
-    try {
-      const result = await base44.integrations.Core.InvokeLLM({
-        prompt: summaryPrompt,
-        response_json_schema: summarySchema
-      });
-
-      await base44.entities.Conversation.update(convId, {
-        summary: result.summary,
-        key_decisions: result.key_decisions || []
-      });
-    } catch (error) {
-      console.error("Failed to generate summary:", error);
-    }
-  };
-
   const handleSendInner = async (currentMessages, text, convId) => {
     const userMsg = {
       role: "user",
@@ -338,107 +203,163 @@ Keep it SHORT and factual (2-3 sentences max).`;
     setIsLoading(true);
     setWhisper("thinking...");
 
-    // DETERMINISTIC: Detect intent from keywords (NOT from LLM)
-    const intent = detectIntent(text);
-    const selectedPersona = selectPersona(intent);
-    const newMode = selectMode(intent);
-
-    // Get data from service
-    const relevantMemories = await conversationService.getRelevantMemories(text);
-    const userHistory = await conversationService.getUserHistoryContext();
-
-    // Build chat context
-    const recentMessages = newMessages.slice(-10);
-    const chatHistory = recentMessages
-      .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    const chatHistory = newMessages
+      .map((m) => `${m.role === "user" ? "User" : persona === "both" ? "Antonio & Mariana" : persona}: ${m.content}`)
       .join("\n\n");
 
-    const memoryContext = relevantMemories.length > 0
-      ? relevantMemories
-          .map(m => `${m.key}: ${m.value}`)
-          .join("\n")
-      : "No prior context available";
+    const prompt = `${SYSTEM_PROMPTS[persona]}
 
-    const userHistoryContext = userHistory 
-      ? `\n\nUSER HISTORY:\n${userHistory.history}`
-      : "";
+CONVERSATION SO FAR:
+${chatHistory}
 
-    // Build simplified prompt
-    const systemPromptToUse = conversationService.buildSystemPrompt(
-      userName,
-      memoryContext,
-      userHistoryContext,
-      cvData,
-      chatHistory
-    );
+Respond as ${persona === "both" ? "Antonio & Mariana together" : persona}. Be concise. If you detect career details (current role, target role, skills, salary, location), mention them naturally. If you have enough context to help, suggest creating a deliverable (CV, outreach email, cover letter, interview prep).
 
-    const responseSchema = conversationService.buildResponseSchema();
+CRITICAL: At the start of your response, classify the conversation intent:
+[INTENT:category] where category is one of: cv_building, interview_prep, job_search, networking, social, travel, general
 
-    const res = await base44.integrations.Core.InvokeLLM({ 
-      prompt: systemPromptToUse,
-      response_json_schema: responseSchema
-    });
+USER CONTEXT:
+Current Role: ${memories.find(m => m.key === 'current_role')?.value || 'Not specified'}
+Target Role: ${memories.find(m => m.key === 'target_role')?.value || 'Not specified'}
+Key Skills: ${memories.find(m => m.key === 'skills')?.value || 'Not specified'}
 
-    // VALIDATE AND FIX LLM response
-    const response = validateAndFixResponse(res);
-    const content = response.chat_message;
+Then, at the end of your response, output any extracted data in this exact format (only include lines where you found new info):
+[MEMORY:current_role=value]
+[MEMORY:target_role=value]
+[MEMORY:skills=value1, value2]
+[MEMORY:salary_range=value]
+[MEMORY:location_preference=value]
+[MEMORY:social_interests=value]
+[MEMORY:social_goals=value]
+[MEMORY:desired_connections=value]
+[MEMORY:preferred_communities=value]
 
-    // Update UI state with DETERMINISTIC intent/persona (not from LLM)
-    setActiveMode(newMode);
-    setPersona(selectedPersona);
+If user is building a CV (intent: cv_building):
+[CV:name=value]
+[CV:email=value]
+[CV:phone=value]
+[CV:location=value]
+[CV:summary=value]
+[CV:experience={"title":"Job Title","company":"Company Name","duration":"2020-2023","description":"What you did"}]
+[CV:education={"degree":"Degree","institution":"University","year":"2020"}]
+[CV:skills=skill1, skill2, skill3]
 
-    // Save memories
-    if (response.memories && response.memories.length > 0) {
-      for (const mem of response.memories) {
-        const existing = memories.find((m) => m.key === mem.key);
-        if (!existing || existing.value !== mem.value) {
+If user is preparing for interview (intent: interview_prep):
+Generate 3-5 tailored interview questions based on their CV and target role. Include behavioral, technical, and situational questions.
+Format: [INTERVIEW:question=Your specific question here]
+[INTERVIEW:tip=Specific tip for answering this question based on their background]
+[INTERVIEW:followup=Potential follow-up question interviewer might ask]
+
+For mock interview mode, also include:
+[INTERVIEW:scenario=Brief scenario setup for the mock interview]`;
+
+    const res = await base44.integrations.Core.InvokeLLM({ prompt });
+
+    let content = res;
+    
+    // Extract intent
+    const intentMatch = content.match(/\[INTENT:(\w+)\]/);
+    if (intentMatch) {
+      const [, intent] = intentMatch;
+      content = content.replace(/\[INTENT:\w+\]/g, "").trim();
+      
+      // Route to appropriate mode
+      if (intent === "cv_building") {
+        setActiveMode("cv");
+      } else if (intent === "interview_prep") {
+        setActiveMode("interview");
+      } else if (activeMode && intent === "general") {
+        // Close mode if conversation shifts to general
+        setActiveMode(null);
+      }
+    }
+    
+    const memoryMatches = content.match(/\[MEMORY:(\w+)=([^\]]+)\]/g);
+    const cvMatches = content.match(/\[CV:(\w+)=([^\]]+)\]/g);
+    const interviewMatches = content.match(/\[INTERVIEW:(\w+)=([^\]]+)\]/g);
+
+    if (memoryMatches) {
+      content = content.replace(/\[MEMORY:\w+=[^\]]+\]/g, "").trim();
+
+      for (const match of memoryMatches) {
+        const [, key, value] = match.match(/\[MEMORY:(\w+)=([^\]]+)\]/);
+        const existing = memories.find((m) => m.key === key);
+        if (!existing || existing.value !== value) {
+          const isSocial = ["social_interests", "social_goals", "desired_connections", "preferred_communities"].includes(key);
           await base44.entities.UserMemory.create({
-            category: mem.category,
-            key: mem.key,
-            value: mem.value,
-            source_conversation_id: convId,
+            category: isSocial ? "social" : "career",
+            key,
+            value,
+            source_conversation_id: conversationId,
           });
         }
       }
       loadMemories();
     }
 
-    // Update CV data
-    if (response.cv_data) {
-      const updatedCvData = { ...cvData, ...response.cv_data };
-      setCvData(updatedCvData);
-      await saveCandidateData(updatedCvData);
+    if (cvMatches) {
+      content = content.replace(/\[CV:\w+=[^\]]+\]/g, "").trim();
+      const newCvData = { ...cvData };
+
+      for (const match of cvMatches) {
+        const [, key, value] = match.match(/\[CV:(\w+)=([^\]]+)\]/);
+        
+        if (key === "experience" || key === "education") {
+          try {
+            const parsed = JSON.parse(value);
+            newCvData[key] = newCvData[key] ? [...newCvData[key], parsed] : [parsed];
+          } catch {
+            // Skip invalid JSON
+          }
+        } else if (key === "skills") {
+          const skillsArray = value.split(",").map((s) => s.trim());
+          newCvData.skills = [...new Set([...(newCvData.skills || []), ...skillsArray])];
+        } else {
+          newCvData[key] = value;
+        }
+      }
+      
+      setCvData(newCvData);
     }
 
-    // Add interview questions / career path
-    if (response.interview_questions?.length > 0) {
-      setInterviewQuestions(response.interview_questions);
-    }
-    if (response.career_path?.length > 0) {
-      setCareerPathData(response.career_path);
+    if (interviewMatches) {
+      content = content.replace(/\[INTERVIEW:\w+=[^\]]+\]/g, "").trim();
+      const newQuestions = [];
+      let scenario = "";
+
+      for (const match of interviewMatches) {
+        const [, key, value] = match.match(/\[INTERVIEW:(\w+)=([^\]]+)\]/);
+        
+        if (key === "question") {
+          newQuestions.push({ question: value, tip: "", followup: "" });
+        } else if (key === "tip" && newQuestions.length > 0) {
+          newQuestions[newQuestions.length - 1].tip = value;
+        } else if (key === "followup" && newQuestions.length > 0) {
+          newQuestions[newQuestions.length - 1].followup = value;
+        } else if (key === "scenario") {
+          scenario = value;
+        }
+      }
+      
+      if (newQuestions.length > 0) {
+        setInterviewQuestions((prev) => [...prev, ...newQuestions]);
+      }
     }
 
     const assistantMsg = {
       role: "assistant",
       content,
-      persona: selectedPersona,
+      persona,
       timestamp: new Date().toISOString(),
     };
 
-    const updatedMessages = [...newMessages, assistantMsg];
-    setMessages(updatedMessages);
+    setMessages((prev) => [...prev, assistantMsg]);
     setIsLoading(false);
     setWhisper("");
 
     if (convId) {
       await base44.entities.Conversation.update(convId, {
-        messages: updatedMessages,
-        persona: selectedPersona,
+        messages: [...newMessages, assistantMsg],
       });
-
-      if (updatedMessages.length % 6 === 0) {
-        generateConversationSummary(updatedMessages, convId);
-      }
     }
   };
 
@@ -485,31 +406,28 @@ Keep it SHORT and factual (2-3 sentences max).`;
                 </p>
               </motion.div>
 
-
-
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.8, delay: 0.3 }}
+                className="mb-8"
+              >
+                <PersonaSelector active={persona} onChange={setPersona} />
+              </motion.div>
+
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.8, delay: 0.5 }}
                 className="w-full max-w-lg"
               >
-                <ChatInput onSend={handleSend} voiceMode={voiceMode} pauseListening={isSpeaking} />
+                <ChatInput onSend={handleSend} />
               </motion.div>
-              
-              <motion.button
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.8, delay: 0.4 }}
-                onClick={() => setVoiceMode(!voiceMode)}
-                className="mt-4 text-xs text-neutral-400 hover:text-neutral-600 transition-colors"
-              >
-                {voiceMode ? "Switch to typing" : "Switch to voice mode"}
-              </motion.button>
 
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                transition={{ duration: 1, delay: 0.8 }}
+                transition={{ duration: 1, delay: 1 }}
                 className="mt-8"
               >
                 <WhisperCaption text="your next chapter starts with a conversation" visible={true} />
@@ -554,7 +472,6 @@ Keep it SHORT and factual (2-3 sentences max).`;
                     setHasStarted(false);
                     setMessages([]);
                     setConversationId(null);
-                    setAgentConversationId(null);
                     setActiveMode(null);
                     setCvData({});
                     setInterviewQuestions([]);
@@ -563,45 +480,17 @@ Keep it SHORT and factual (2-3 sentences max).`;
                 >
                   <span className="text-white text-[10px] font-bold">A·M</span>
                 </button>
-                <div className="text-xs text-neutral-600 font-medium px-3 py-1.5 rounded-lg bg-white/50">
-                  {persona === "both" ? "Antonio & Mariana" : persona ? persona.charAt(0).toUpperCase() + persona.slice(1) : "Antonio & Mariana"}
-                </div>
+                <PersonaSelector active={persona} onChange={setPersona} />
               </div>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setAiVoiceEnabled(!aiVoiceEnabled)}
-                  className={cn(
-                    "relative w-9 h-9 rounded-xl flex items-center justify-center transition-colors",
-                    aiVoiceEnabled
-                      ? "bg-blue-100 text-blue-600 hover:bg-blue-200"
-                      : "hover:bg-white/40 text-neutral-400"
-                  )}
-                  title={aiVoiceEnabled ? "AI is speaking (click to mute)" : "AI is muted (click to enable)"}
-                >
-                  {aiVoiceEnabled ? "🔊" : "🔇"}
-                </button>
-                <button
-                  onClick={() => setShowMemory(!showMemory)}
-                  className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
-                >
-                  <Brain className="w-4 h-4 text-neutral-500" />
-                  {memories.length > 0 && (
-                    <div className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-violet-500" />
-                  )}
-                </button>
-                <button
-                  onClick={() => setShowDebug(!showDebug)}
-                  className={cn(
-                    "w-9 h-9 rounded-xl flex items-center justify-center transition-colors text-xs font-bold",
-                    showDebug 
-                      ? "bg-amber-100 text-amber-700 hover:bg-amber-200" 
-                      : "hover:bg-white/40 text-neutral-400"
-                  )}
-                  title="Toggle context usage debug view"
-                >
-                  ⚡
-                </button>
-              </div>
+              <button
+                onClick={() => setShowMemory(!showMemory)}
+                className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
+              >
+                <Brain className="w-4 h-4 text-neutral-500" />
+                {memories.length > 0 && (
+                  <div className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-violet-500" />
+                )}
+              </button>
             </div>
 
             {/* Messages + CV Preview Split */}
@@ -614,25 +503,9 @@ Keep it SHORT and factual (2-3 sentences max).`;
 
               {/* Chat Column */}
               <div className={cn("overflow-y-auto px-6 py-8 space-y-6 transition-all", activeMode ? "w-1/2" : "max-w-3xl mx-auto w-full")}>
-                {messages.map((msg, i) => {
-                  const isLastMsg = i === messages.length - 1;
-                  return (
-                    <div key={i}>
-                      <MessageBubble 
-                        message={msg} 
-                        isLast={isLastMsg}
-                        onSpeakingChange={setIsSpeaking}
-                        aiVoiceEnabled={aiVoiceEnabled}
-                      />
-                      {isLastMsg && msg.role === "assistant" && (
-                        <ContextUsageDebug 
-                          contextUsed={contextUsedList} 
-                          visible={showDebug}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
+                {messages.map((msg, i) => (
+                  <MessageBubble key={i} message={msg} isLast={i === messages.length - 1} />
+                ))}
 
                 {isLoading && <TypingIndicator persona={persona} />}
 
@@ -684,20 +557,6 @@ Keep it SHORT and factual (2-3 sentences max).`;
                     />
                   </motion.div>
                 )}
-                {activeMode === "career_path" && (
-                  <motion.div
-                    key="career_path"
-                    initial={{ opacity: 0, x: 50 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 50 }}
-                    className="w-1/2 border-l border-neutral-200 flex-shrink-0"
-                  >
-                    <CareerPathVisualization 
-                      pathData={careerPathData} 
-                      onClose={() => setActiveMode(null)} 
-                    />
-                  </motion.div>
-                )}
               </AnimatePresence>
             </div>
 
@@ -705,7 +564,7 @@ Keep it SHORT and factual (2-3 sentences max).`;
             <div className="flex-shrink-0 px-6 pb-6 pt-2">
               <WhisperCaption text={whisper} visible={!!whisper} />
               <div className="max-w-3xl mx-auto mt-2">
-                <ChatInput onSend={handleSend} disabled={isLoading || isSpeaking} voiceMode={voiceMode} pauseListening={isSpeaking} />
+                <ChatInput onSend={handleSend} disabled={isLoading} />
               </div>
             </div>
           </motion.div>

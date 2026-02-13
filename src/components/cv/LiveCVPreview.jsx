@@ -1,22 +1,10 @@
-import React, { useState } from "react";
+import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { FileText, Download, Sparkles, ChevronDown } from "lucide-react";
+import { FileText, Download, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { jsPDF } from "jspdf";
-import ModernTemplate from "./templates/ModernTemplate";
-import ClassicTemplate from "./templates/ClassicTemplate";
-import MinimalTemplate from "./templates/MinimalTemplate";
-import CVTemplateSelector from "./CVTemplateSelector";
-
-const TEMPLATES = {
-  modern: ModernTemplate,
-  classic: ClassicTemplate,
-  minimal: MinimalTemplate,
-};
 
 export default function LiveCVPreview({ cvData, onDownload }) {
-  const [selectedTemplate, setSelectedTemplate] = useState("modern");
-  const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const {
     name = "",
     email = "",
@@ -29,13 +17,6 @@ export default function LiveCVPreview({ cvData, onDownload }) {
   } = cvData || {};
 
   const hasContent = name || email || experience.length > 0 || education.length > 0;
-
-  const formatDateRange = (startDate, endDate, isCurrent) => {
-    if (!startDate) return "";
-    if (isCurrent) return `${startDate} — Present`;
-    if (endDate) return `${startDate} — ${endDate}`;
-    return startDate;
-  };
 
   const handleDownload = () => {
     const doc = new jsPDF();
@@ -148,46 +129,16 @@ export default function LiveCVPreview({ cvData, onDownload }) {
             <p className="text-[10px] text-neutral-400">Building as you speak</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowTemplateSelector(!showTemplateSelector)}
-            className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors flex items-center gap-1.5"
-          >
-            🎨 Templates
-            <ChevronDown className="w-3 h-3" />
-          </button>
-          <Button
-            onClick={handleDownload}
-            disabled={!hasContent}
-            size="sm"
-            className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700"
-          >
-            <Download className="w-3 h-3 mr-1.5" />
-            Download PDF
-          </Button>
-        </div>
+        <Button
+          onClick={handleDownload}
+          disabled={!hasContent}
+          size="sm"
+          className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700"
+        >
+          <Download className="w-3 h-3 mr-1.5" />
+          Download PDF
+        </Button>
       </div>
-
-      {/* Template Selector */}
-      <AnimatePresence>
-        {showTemplateSelector && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            className="px-6 py-4 border-b border-neutral-100 bg-neutral-50"
-          >
-            <CVTemplateSelector
-              cvData={cvData}
-              selectedTemplate={selectedTemplate}
-              onSelect={(templateId) => {
-                setSelectedTemplate(templateId);
-                setShowTemplateSelector(false);
-              }}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* CV Content */}
       <div className="flex-1 overflow-y-auto p-8 bg-gradient-to-b from-white to-neutral-50">
@@ -212,12 +163,129 @@ export default function LiveCVPreview({ cvData, onDownload }) {
               key="content"
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
+              className="max-w-2xl mx-auto bg-white shadow-lg p-12 rounded-lg"
             >
-              {React.createElement(TEMPLATES[selectedTemplate] || ModernTemplate, { cvData })}
+              {/* Name & Contact */}
+              {name && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mb-6"
+                >
+                  <h1 className="text-3xl font-bold text-neutral-900 mb-2">{name}</h1>
+                  <div className="flex flex-wrap gap-3 text-sm text-neutral-600">
+                    {email && <span>{email}</span>}
+                    {phone && <span>• {phone}</span>}
+                    {location && <span>• {location}</span>}
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Summary */}
+              {summary && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mb-6"
+                >
+                  <h2 className="text-sm font-semibold text-neutral-900 uppercase tracking-wider mb-2 border-b border-neutral-200 pb-1">
+                    Professional Summary
+                  </h2>
+                  <p className="text-sm text-neutral-700 leading-relaxed">{summary}</p>
+                </motion.div>
+              )}
+
+              {/* Experience */}
+              {experience.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mb-6"
+                >
+                  <h2 className="text-sm font-semibold text-neutral-900 uppercase tracking-wider mb-3 border-b border-neutral-200 pb-1">
+                    Experience
+                  </h2>
+                  <div className="space-y-4">
+                    {experience.map((exp, i) => (
+                      <motion.div
+                        key={i}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: i * 0.1 }}
+                      >
+                        <div className="flex justify-between items-start mb-1">
+                          <h3 className="text-sm font-semibold text-neutral-900">{exp.title}</h3>
+                          <span className="text-xs text-neutral-500">{exp.duration}</span>
+                        </div>
+                        <p className="text-sm text-neutral-600 mb-1">{exp.company}</p>
+                        {exp.description && (
+                          <p className="text-xs text-neutral-600 leading-relaxed">{exp.description}</p>
+                        )}
+                      </motion.div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Education */}
+              {education.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mb-6"
+                >
+                  <h2 className="text-sm font-semibold text-neutral-900 uppercase tracking-wider mb-3 border-b border-neutral-200 pb-1">
+                    Education
+                  </h2>
+                  <div className="space-y-3">
+                    {education.map((edu, i) => (
+                      <motion.div
+                        key={i}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: i * 0.1 }}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <h3 className="text-sm font-semibold text-neutral-900">{edu.degree}</h3>
+                            <p className="text-sm text-neutral-600">{edu.institution}</p>
+                          </div>
+                          <span className="text-xs text-neutral-500">{edu.year}</span>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Skills */}
+              {skills.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                >
+                  <h2 className="text-sm font-semibold text-neutral-900 uppercase tracking-wider mb-3 border-b border-neutral-200 pb-1">
+                    Skills
+                  </h2>
+                  <div className="flex flex-wrap gap-2">
+                    {skills.map((skill, i) => (
+                      <motion.span
+                        key={i}
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ delay: i * 0.05 }}
+                        className="px-3 py-1 bg-neutral-100 text-neutral-700 text-xs rounded-full"
+                      >
+                        {skill}
+                      </motion.span>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>
       </div>
     </motion.div>
-    );
-    }
+  );
+}

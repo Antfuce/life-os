@@ -1,80 +1,11 @@
-import React, { useState, useEffect, useRef } from "react";
+import React from "react";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
-import { Volume2, VolumeX } from "lucide-react";
 import PersonaAvatar from "./PersonaAvatar";
 import ReactMarkdown from "react-markdown";
-import { base44 } from "@/api/base44Client";
 
-export default function MessageBubble({ message, isLast, onSpeakingChange, aiVoiceEnabled = true }) {
+export default function MessageBubble({ message, isLast }) {
   const isUser = message.role === "user";
-  const persona = message.persona || "both";
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [audioUrl, setAudioUrl] = useState(null);
-  const audioRef = useRef(null);
-
-  useEffect(() => {
-    // Auto-play assistant messages ONLY if aiVoiceEnabled is true
-    if (!isUser && message.content && isLast && aiVoiceEnabled) {
-      playAudio();
-    }
-  }, [isUser, message.content, isLast, aiVoiceEnabled]);
-
-  const playAudio = async () => {
-    if (audioUrl) {
-      if (audioRef.current) {
-        audioRef.current.play();
-        setIsPlaying(true);
-        if (onSpeakingChange) onSpeakingChange(true);
-      }
-      return;
-    }
-
-    try {
-      setIsPlaying(true);
-      if (onSpeakingChange) onSpeakingChange(true);
-      
-      const { data } = await base44.functions.invoke('textToSpeech', {
-        text: message.content,
-        voiceGender: persona === 'mariana' ? 'FEMALE' : persona === 'antonio' ? 'MALE' : 'NEUTRAL',
-      });
-
-      const audioBlob = base64ToBlob(data.audioContent, 'audio/mpeg');
-      const url = URL.createObjectURL(audioBlob);
-      setAudioUrl(url);
-
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.play();
-      audio.onended = () => {
-        setIsPlaying(false);
-        if (onSpeakingChange) onSpeakingChange(false);
-      };
-    } catch (error) {
-      console.error('TTS error:', error);
-      setIsPlaying(false);
-      if (onSpeakingChange) onSpeakingChange(false);
-    }
-  };
-
-  const stopAudio = () => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-      setIsPlaying(false);
-      if (onSpeakingChange) onSpeakingChange(false);
-    }
-  };
-
-  const base64ToBlob = (base64, type) => {
-    const byteCharacters = atob(base64);
-    const byteNumbers = new Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
-    return new Blob([byteArray], { type });
-  };
 
   return (
     <motion.div
@@ -91,34 +22,20 @@ export default function MessageBubble({ message, isLast, onSpeakingChange, aiVoi
             {message.persona === "both" ? "Antonio & Mariana" : message.persona}
           </span>
         )}
-        <div className="flex items-start gap-2">
-          <div
-            className={cn(
-              "rounded-2xl px-5 py-3 max-w-lg",
-              isUser
-                ? "bg-neutral-900 text-white"
-                : "bg-white/70 backdrop-blur-sm border border-white/40 text-neutral-800 shadow-sm"
-            )}
-          >
-            {isUser ? (
-              <p className="text-[15px] leading-relaxed">{message.content}</p>
-            ) : (
-              <div className="text-[15px] leading-relaxed prose prose-sm prose-neutral max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                <ReactMarkdown>{message.content}</ReactMarkdown>
-              </div>
-            )}
-          </div>
-          {!isUser && (
-            <button
-              onClick={isPlaying ? stopAudio : playAudio}
-              className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/60 transition-colors"
-            >
-              {isPlaying ? (
-                <VolumeX className="w-4 h-4 text-neutral-500" />
-              ) : (
-                <Volume2 className="w-4 h-4 text-neutral-500" />
-              )}
-            </button>
+        <div
+          className={cn(
+            "rounded-2xl px-5 py-3 max-w-lg",
+            isUser
+              ? "bg-neutral-900 text-white"
+              : "bg-white/70 backdrop-blur-sm border border-white/40 text-neutral-800 shadow-sm"
+          )}
+        >
+          {isUser ? (
+            <p className="text-[15px] leading-relaxed">{message.content}</p>
+          ) : (
+            <div className="text-[15px] leading-relaxed prose prose-sm prose-neutral max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+              <ReactMarkdown>{message.content}</ReactMarkdown>
+            </div>
           )}
         </div>
         {message.timestamp && (
