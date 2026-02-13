@@ -733,14 +733,24 @@ GUIDANCE:
 
               {/* Chat Column */}
               <div className={cn("overflow-y-auto px-6 py-8 space-y-6 transition-all", activeMode ? "w-1/2" : "max-w-3xl mx-auto w-full")}>
-                {messages.map((msg, i) => (
-                  <MessageBubble 
-                    key={i} 
-                    message={msg} 
-                    isLast={i === messages.length - 1}
-                    onSpeakingChange={setIsSpeaking}
-                  />
-                ))}
+                {messages.map((msg, i) => {
+                  const isLastMsg = i === messages.length - 1;
+                  return (
+                    <div key={i}>
+                      <MessageBubble 
+                        message={msg} 
+                        isLast={isLastMsg}
+                        onSpeakingChange={setIsSpeaking}
+                      />
+                      {isLastMsg && msg.role === "assistant" && (
+                        <ContextUsageDebug 
+                          contextUsed={contextUsedList} 
+                          visible={showDebug}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
 
                 {isLoading && <TypingIndicator persona={persona} />}
 
