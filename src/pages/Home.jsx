@@ -126,54 +126,23 @@ export default function Home() {
   };
 
   const startConversation = async (initialText) => {
-    // Check if this is CV building mode based on initial text
-    const isCVMode = initialText && /\b(cv|resume|curriculum|experience|job|career)\b/i.test(initialText);
+    // Start with null persona — let LLM decide based on context
+    setPersona(null);
 
-    if (isCVMode) {
-      // Use agent for CV building
-      const agentConv = await base44.agents.createConversation({
-        agent_name: "antonio_mariana_cv",
-        metadata: { name: "CV Building Session" },
-      });
-      
-      // Set all state at once, then trigger transition
-      setPersona("antonio");
-      setAgentConversationId(agentConv.id);
-      setMessages([]);
-      setActiveMode("cv");
-      setHasStarted(true);
+    // Create regular conversation — all routing happens in LLM response logic
+    const conv = await base44.entities.Conversation.create({
+      title: "New conversation",
+      persona: null,
+      status: "active",
+      messages: [],
+    });
 
-      if (initialText) {
-        setTimeout(() => handleAgentSend(agentConv, initialText), 100);
-      }
-    } else {
-      // Determine persona based on initial message intent
-      let selectedPersona = "both";
-      const lowerText = initialText.toLowerCase();
-      if (/interview|prep|question|answer|practice/.test(lowerText)) {
-        selectedPersona = "mariana";
-      } else if (/career|path|progression|goal|growth/.test(lowerText)) {
-        selectedPersona = "mariana";
-      }
-      
-      setPersona(selectedPersona);
+    setConversationId(conv.id);
+    setMessages([]);
+    setHasStarted(true);
 
-      // Use regular conversation for other topics
-      const conv = await base44.entities.Conversation.create({
-        title: "New conversation",
-        persona: selectedPersona,
-        status: "active",
-        messages: [],
-      });
-
-      // Set all state at once, then trigger transition
-      setConversationId(conv.id);
-      setMessages([]);
-      setHasStarted(true);
-
-      if (initialText) {
-        setTimeout(() => handleSendInner([], initialText, conv.id), 100);
-      }
+    if (initialText) {
+      setTimeout(() => handleSendInner([], initialText, conv.id), 100);
     }
   };
 
