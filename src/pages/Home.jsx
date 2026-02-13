@@ -1013,6 +1013,18 @@ GUIDANCE:
               </div>
               <div className="flex items-center gap-1">
                 <button
+                  onClick={() => setAiVoiceEnabled(!aiVoiceEnabled)}
+                  className={cn(
+                    "relative w-9 h-9 rounded-xl flex items-center justify-center transition-colors",
+                    aiVoiceEnabled
+                      ? "bg-blue-100 text-blue-600 hover:bg-blue-200"
+                      : "hover:bg-white/40 text-neutral-400"
+                  )}
+                  title={aiVoiceEnabled ? "AI is speaking (click to mute)" : "AI is muted (click to enable)"}
+                >
+                  {aiVoiceEnabled ? "🔊" : "🔇"}
+                </button>
+                <button
                   onClick={() => setShowMemory(!showMemory)}
                   className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
                 >
