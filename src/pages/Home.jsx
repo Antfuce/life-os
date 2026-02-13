@@ -54,7 +54,7 @@ export default function Home() {
     setDeliverables(dels);
   };
 
-  const startConversation = async () => {
+  const startConversation = async (initialText) => {
     setHasStarted(true);
     const conv = await base44.entities.Conversation.create({
       title: "New conversation",
@@ -71,20 +71,29 @@ export default function Home() {
       timestamp: new Date().toISOString(),
     };
     setMessages([welcomeMsg]);
+
+    if (initialText) {
+      // Small delay so state settles
+      setTimeout(() => handleSendInner([welcomeMsg], initialText, conv.id), 100);
+    }
   };
 
   const handleSend = async (text) => {
     if (!hasStarted) {
-      await startConversation();
+      await startConversation(text);
+      return;
     }
+    handleSendInner(messages, text, conversationId);
+  };
 
+  const handleSendInner = async (currentMessages, text, convId) => {
     const userMsg = {
       role: "user",
       content: text,
       timestamp: new Date().toISOString(),
     };
 
-    const newMessages = [...messages, userMsg];
+    const newMessages = [...currentMessages, userMsg];
     setMessages(newMessages);
     setIsLoading(true);
     setWhisper("thinking...");
@@ -141,8 +150,8 @@ Also, at the end of your response, on a new line, output any extracted career da
     setIsLoading(false);
     setWhisper("");
 
-    if (conversationId) {
-      await base44.entities.Conversation.update(conversationId, {
+    if (convId) {
+      await base44.entities.Conversation.update(convId, {
         messages: [...newMessages, assistantMsg],
       });
     }
@@ -202,7 +211,7 @@ Also, at the end of your response, on a new line, output any extracted career da
                 transition={{ duration: 0.8, delay: 0.5 }}
                 className="w-full max-w-lg"
               >
-                <ChatInput onSend={(text) => { startConversation().then(() => handleSend(text)); }} />
+                <ChatInput onSend={handleSend} />
               </motion.div>
 
               <motion.div
