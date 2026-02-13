@@ -647,7 +647,7 @@ GUIDANCE:
                   <span className="text-white text-[10px] font-bold">A·M</span>
                 </button>
                 <div className="text-xs text-neutral-600 font-medium px-3 py-1.5 rounded-lg bg-white/50">
-                  {persona === "both" ? "Antonio & Mariana" : persona.charAt(0).toUpperCase() + persona.slice(1)}
+                  {persona === "both" ? "Antonio & Mariana" : persona ? persona.charAt(0).toUpperCase() + persona.slice(1) : "Antonio & Mariana"}
                 </div>
               </div>
               <button
