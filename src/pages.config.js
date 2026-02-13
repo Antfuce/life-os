@@ -51,6 +51,7 @@ import Home from './pages/Home';
 import Deliverables from './pages/Deliverables';
 import Memory from './pages/Memory';
 import Social from './pages/Social';
+import InterviewPrep from './pages/InterviewPrep';
 import __Layout from './Layout.jsx';
 
 
@@ -59,6 +60,7 @@ export const PAGES = {
     "Deliverables": Deliverables,
     "Memory": Memory,
     "Social": Social,
+    "InterviewPrep": InterviewPrep,
 }
 
 export const pagesConfig = {

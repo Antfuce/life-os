@@ -15,6 +15,7 @@ import AvatarHint from "../components/chat/AvatarHint";
 import LiveCVPreview from "../components/cv/LiveCVPreview";
 import LiveInterviewPrep from "../components/interview/LiveInterviewPrep";
 import FloatingHints from "../components/chat/FloatingHints";
+import QuickActions from "../components/home/QuickActions";
 
 const SYSTEM_PROMPTS = {
   antonio: `You are Antonio — a sharp, strategic, direct career advisor and life matchmaker. You speak with high energy and confidence. You help users with career moves AND social connections — whether that's making friends, finding communities, networking events, or social opportunities. You ask pointed questions, push for clarity, and drive action. Keep responses concise but powerful. When you have enough context, offer to create deliverables like CVs, outreach emails, interview prep, OR social matches (friend introductions, event recommendations, community suggestions). Always extract and remember key details: career (current role, target role, skills, salary, location) AND social (interests, hobbies, desired connections, social goals).`,
@@ -413,6 +414,19 @@ If user is preparing for interview (intent: interview_prep):
               >
                 <WhisperCaption text="your next chapter starts with a conversation" visible={true} />
               </motion.div>
+
+              <div className="mt-12">
+                <QuickActions onActionClick={(hint) => {
+                  const textarea = document.querySelector('textarea');
+                  if (textarea && hint === "cv") {
+                    textarea.value = "I need to build my CV";
+                    textarea.focus();
+                  } else if (textarea && hint === "jobs") {
+                    textarea.value = "Help me find a job";
+                    textarea.focus();
+                  }
+                }} />
+              </div>
 
               <AnimatePresence>
                 {showHint && (
