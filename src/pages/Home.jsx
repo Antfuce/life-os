@@ -42,6 +42,8 @@ export default function Home() {
   const [activeMode, setActiveMode] = useState(null); // 'cv', 'interview', 'trip', etc.
   const [cvData, setCvData] = useState({});
   const [interviewQuestions, setInterviewQuestions] = useState([]);
+  const [agentConversationId, setAgentConversationId] = useState(null);
+  const [candidateId, setCandidateId] = useState(null);
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -51,11 +53,28 @@ export default function Home() {
   useEffect(() => {
     loadMemories();
     loadDeliverables();
+    initializeCandidate();
     
     // Show hint after a few seconds
     const hintTimer = setTimeout(() => setShowHint(true), 8000);
     return () => clearTimeout(hintTimer);
   }, []);
+
+  useEffect(() => {
+    if (!agentConversationId) return;
+
+    const unsubscribe = base44.agents.subscribeToConversation(agentConversationId, (data) => {
+      setMessages(data.messages || []);
+      
+      // Extract CV data from latest assistant message
+      const latestMsg = data.messages?.[data.messages.length - 1];
+      if (latestMsg?.role === "assistant") {
+        loadCandidateData();
+      }
+    });
+
+    return unsubscribe;
+  }, [agentConversationId]);
 
   const loadMemories = async () => {
     const mems = await base44.entities.UserMemory.list("-created_date", 20);
@@ -67,27 +86,76 @@ export default function Home() {
     setDeliverables(dels);
   };
 
+  const initializeCandidate = async () => {
+    const user = await base44.auth.me();
+    if (!user) return;
+
+    const candidates = await base44.entities.Candidate.filter({ created_by: user.email });
+    if (candidates.length > 0) {
+      setCandidateId(candidates[0].id);
+      setCvData(candidates[0].cv_data || {});
+    } else {
+      const newCandidate = await base44.entities.Candidate.create({
+        cv_data: { personal: {}, experience: [], education: [], skills: {} },
+        cv_version: 1,
+      });
+      setCandidateId(newCandidate.id);
+    }
+  };
+
+  const loadCandidateData = async () => {
+    if (!candidateId) return;
+    const candidate = await base44.entities.Candidate.filter({ id: candidateId });
+    if (candidate[0]) {
+      setCvData(candidate[0].cv_data || {});
+    }
+  };
+
   const startConversation = async (initialText) => {
     setHasStarted(true);
-    const conv = await base44.entities.Conversation.create({
-      title: "New conversation",
-      persona,
-      status: "active",
-      messages: [],
-    });
-    setConversationId(conv.id);
 
-    const welcomeMsg = {
-      role: "assistant",
-      content: WELCOME_MESSAGES[persona],
-      persona,
-      timestamp: new Date().toISOString(),
-    };
-    setMessages([welcomeMsg]);
+    // Check if this is CV building mode based on initial text
+    const isCVMode = initialText && /\b(cv|resume|curriculum|experience|job|career)\b/i.test(initialText);
 
-    if (initialText) {
-      // Small delay so state settles
-      setTimeout(() => handleSendInner([welcomeMsg], initialText, conv.id), 100);
+    if (isCVMode) {
+      // Use agent for CV building
+      setActiveMode("cv");
+      const agentConv = await base44.agents.createConversation({
+        agent_name: "antonio_mariana_cv",
+        metadata: { name: "CV Building Session" },
+      });
+      setAgentConversationId(agentConv.id);
+      
+      const welcomeMsg = {
+        role: "assistant",
+        content: "Let's build your CV together. First things first — what's your full name and current role?",
+      };
+      setMessages([welcomeMsg]);
+
+      if (initialText) {
+        setTimeout(() => handleAgentSend(agentConv, initialText), 100);
+      }
+    } else {
+      // Use regular conversation for other topics
+      const conv = await base44.entities.Conversation.create({
+        title: "New conversation",
+        persona,
+        status: "active",
+        messages: [],
+      });
+      setConversationId(conv.id);
+
+      const welcomeMsg = {
+        role: "assistant",
+        content: WELCOME_MESSAGES[persona],
+        persona,
+        timestamp: new Date().toISOString(),
+      };
+      setMessages([welcomeMsg]);
+
+      if (initialText) {
+        setTimeout(() => handleSendInner([welcomeMsg], initialText, conv.id), 100);
+      }
     }
   };
 
@@ -96,7 +164,27 @@ export default function Home() {
       await startConversation(text);
       return;
     }
-    handleSendInner(messages, text, conversationId);
+
+    // Route to agent if in CV mode
+    if (activeMode === "cv" && agentConversationId) {
+      const conversation = await base44.agents.getConversation(agentConversationId);
+      await handleAgentSend(conversation, text);
+    } else {
+      handleSendInner(messages, text, conversationId);
+    }
+  };
+
+  const handleAgentSend = async (conversation, text) => {
+    setIsLoading(true);
+    setWhisper("building your cv...");
+    
+    await base44.agents.addMessage(conversation, {
+      role: "user",
+      content: text,
+    });
+
+    setIsLoading(false);
+    setWhisper("");
   };
 
   const handleSendInner = async (currentMessages, text, convId) => {
