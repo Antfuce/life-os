@@ -130,6 +130,7 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, disabled
       try {
         recognition.stop();
         setIsListening(false);
+        if (onRecordingChange) onRecordingChange(false);
         console.log('✓ Stopped listening');
       } catch (e) {
         console.error("Stop failed:", e);
@@ -139,6 +140,7 @@ export default function VoiceInput({ onTranscript, onInterimTranscript, disabled
         recognition.abort(); // Reset any pending state
         recognition.start();
         setIsListening(true);
+        if (onRecordingChange) onRecordingChange(true);
         console.log('✓ Started listening...');
       } catch (e) {
         console.error("Start failed:", e);
