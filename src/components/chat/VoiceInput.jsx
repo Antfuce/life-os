@@ -4,7 +4,7 @@ import { Mic, MicOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-export default function VoiceInput({ onTranscript, disabled }) {
+export default function VoiceInput({ onTranscript, onInterimTranscript, disabled, autoStart = false }) {
   const [isListening, setIsListening] = useState(false);
   const [recognition, setRecognition] = useState(null);
 
@@ -14,28 +14,84 @@ export default function VoiceInput({ onTranscript, disabled }) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       const recognitionInstance = new SpeechRecognition();
       
-      recognitionInstance.continuous = false;
-      recognitionInstance.interimResults = false;
+      recognitionInstance.continuous = true;
+      recognitionInstance.interimResults = true;
       recognitionInstance.lang = 'en-US';
 
       recognitionInstance.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        onTranscript(transcript);
-        setIsListening(false);
+        let interimTranscript = "";
+        let finalTranscript = "";
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript + " ";
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+
+        if (onInterimTranscript && interimTranscript) {
+          onInterimTranscript(interimTranscript);
+        }
+
+        if (finalTranscript) {
+          onTranscript(finalTranscript.trim());
+        }
       };
 
       recognitionInstance.onerror = (event) => {
         console.error('Speech recognition error:', event.error);
-        setIsListening(false);
+        if (event.error === "no-speech") {
+          // Restart automatically on no-speech
+          if (isListening) {
+            setTimeout(() => {
+              try {
+                recognitionInstance.start();
+              } catch (e) {
+                // Already started
+              }
+            }, 100);
+          }
+        }
       };
 
       recognitionInstance.onend = () => {
-        setIsListening(false);
+        // Auto-restart if still in listening mode
+        if (isListening) {
+          try {
+            recognitionInstance.start();
+          } catch (e) {
+            // Already started
+          }
+        }
       };
 
       setRecognition(recognitionInstance);
+
+      // Auto-start if requested
+      if (autoStart) {
+        setTimeout(() => {
+          try {
+            recognitionInstance.start();
+            setIsListening(true);
+          } catch (e) {
+            console.error("Auto-start failed:", e);
+          }
+        }, 500);
+      }
     }
-  }, [onTranscript]);
+
+    return () => {
+      if (recognition) {
+        try {
+          recognition.stop();
+        } catch (e) {
+          // Already stopped
+        }
+      }
+    };
+  }, [autoStart]);
 
   const toggleListening = () => {
     if (!recognition) {
@@ -47,8 +103,12 @@ export default function VoiceInput({ onTranscript, disabled }) {
       recognition.stop();
       setIsListening(false);
     } else {
-      recognition.start();
-      setIsListening(true);
+      try {
+        recognition.start();
+        setIsListening(true);
+      } catch (e) {
+        console.error("Start failed:", e);
+      }
     }
   };
 
@@ -59,7 +119,7 @@ export default function VoiceInput({ onTranscript, disabled }) {
       variant="ghost"
       size="icon"
       className={cn(
-        "relative",
+        "relative flex-shrink-0",
         isListening && "text-rose-500"
       )}
     >
