@@ -245,6 +245,25 @@ export default function Home() {
     };
   };
 
+  // Helper to suggest specific clarification questions
+  const getProbeHint = (memoryKey) => {
+    const hints = {
+      "achievement": "metrics, numbers, or impact?",
+      "responsibility": "scope or team size?",
+      "duration": "exact timeline?",
+      "skill": "proficiency level or examples?",
+      "goal": "specific target or metrics?",
+      "location": "exact city/country?",
+      "experience": "projects or outcomes?",
+      "interest": "specific focus or depth?",
+    };
+    
+    for (const [key, hint] of Object.entries(hints)) {
+      if (memoryKey.toLowerCase().includes(key)) return hint;
+    }
+    return "specifics?";
+  };
+
   const generateConversationSummary = async (messages, convId) => {
     if (messages.length < 4) return; // Only summarize after meaningful exchange
     
