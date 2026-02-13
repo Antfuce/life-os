@@ -137,6 +137,7 @@ export default function Home() {
       });
       
       // Set all state at once, then trigger transition
+      setPersona("antonio");
       setAgentConversationId(agentConv.id);
       setMessages([]);
       setActiveMode("cv");
