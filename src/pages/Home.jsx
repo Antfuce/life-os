@@ -426,21 +426,24 @@ CRITICAL RULES:
     const intent = response.intent;
     const content = response.chat_message;
 
-    // Route to appropriate mode
+    // Route to appropriate mode and set persona dynamically
     const modes = ["cv", "interview", "career_path"];
+    let newMode = activeMode;
     
     if (intent === "cv_building") {
-      setActiveMode("cv");
+      newMode = "cv";
     } else if (intent === "interview_prep") {
-      setActiveMode("interview");
+      newMode = "interview";
     } else if (intent === "career_path") {
-      setActiveMode("career_path");
+      newMode = "career_path";
     } else if (intent === "job_search" || intent === "networking") {
-      const randomMode = modes[Math.floor(Math.random() * modes.length)];
-      setActiveMode(randomMode);
+      newMode = modes[Math.floor(Math.random() * modes.length)];
     } else if (activeMode && intent === "general") {
-      setActiveMode(null);
+      newMode = null;
     }
+    
+    setActiveMode(newMode);
+    setPersona(determinePersonaByMode(newMode));
 
     // Save memories
     if (response.memories && response.memories.length > 0) {
