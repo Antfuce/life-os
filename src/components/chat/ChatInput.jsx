@@ -85,9 +85,9 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
               </filter>
             </defs>
 
-            {/* Glow layer waves - fat filled */}
+            {/* Glow layer waves - fat filled, converging to microphone */}
             <motion.path
-              d="M0,30 Q150,10 300,30 T600,30"
+              d="M0,30 Q200,10 500,15 Q580,12 600,10"
               stroke="url(#waveGradientGlow)"
               strokeWidth="8"
               fill="url(#waveGradientGlow)"
@@ -100,9 +100,9 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
               opacity="0.6"
             />
 
-            {/* Primary wave layer 1 - thick filled */}
+            {/* Primary wave layer 1 - thick filled, converging */}
             <motion.path
-              d="M0,30 Q150,8 300,30 T600,30"
+              d="M0,30 Q200,8 500,12 Q580,8 600,5"
               stroke="url(#waveGradientPrimary)"
               strokeWidth="6"
               fill="url(#waveGradientPrimary)"
@@ -114,9 +114,9 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
               strokeDasharray="300"
             />
 
-            {/* Primary wave layer 2 - thick filled */}
+            {/* Primary wave layer 2 - thick filled, converging */}
             <motion.path
-              d="M0,30 Q150,52 300,30 T600,30"
+              d="M0,30 Q200,52 500,48 Q580,45 600,42"
               stroke="url(#waveGradientPrimary)"
               strokeWidth="6"
               fill="url(#waveGradientPrimary)"
@@ -129,9 +129,9 @@ export default function ChatInput({ onSend, disabled, voiceMode = false, pauseLi
               opacity="0.9"
             />
 
-            {/* Accent shimmer wave - bright sparkle */}
+            {/* Accent shimmer wave - converging to microphone */}
             <motion.path
-              d="M0,30 Q150,20 300,30 T600,30"
+              d="M0,30 Q200,20 500,22 Q580,18 600,15"
               stroke="url(#waveGradientGlow)"
               strokeWidth="3"
               fill="url(#waveGradientGlow)"
