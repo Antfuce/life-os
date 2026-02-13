@@ -148,16 +148,46 @@ export default function LiveCVPreview({ cvData, onDownload }) {
             <p className="text-[10px] text-neutral-400">Building as you speak</p>
           </div>
         </div>
-        <Button
-          onClick={handleDownload}
-          disabled={!hasContent}
-          size="sm"
-          className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700"
-        >
-          <Download className="w-3 h-3 mr-1.5" />
-          Download PDF
-        </Button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowTemplateSelector(!showTemplateSelector)}
+            className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors flex items-center gap-1.5"
+          >
+            🎨 Templates
+            <ChevronDown className="w-3 h-3" />
+          </button>
+          <Button
+            onClick={handleDownload}
+            disabled={!hasContent}
+            size="sm"
+            className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700"
+          >
+            <Download className="w-3 h-3 mr-1.5" />
+            Download PDF
+          </Button>
+        </div>
       </div>
+
+      {/* Template Selector */}
+      <AnimatePresence>
+        {showTemplateSelector && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="px-6 py-4 border-b border-neutral-100 bg-neutral-50"
+          >
+            <CVTemplateSelector
+              cvData={cvData}
+              selectedTemplate={selectedTemplate}
+              onSelect={(templateId) => {
+                setSelectedTemplate(templateId);
+                setShowTemplateSelector(false);
+              }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* CV Content */}
       <div className="flex-1 overflow-y-auto p-8 bg-gradient-to-b from-white to-neutral-50">
