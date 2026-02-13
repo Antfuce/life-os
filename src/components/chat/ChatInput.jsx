@@ -1,5 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
-import { Send } from "lucide-react";
+import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import VoiceInput from "./VoiceInput";
 
