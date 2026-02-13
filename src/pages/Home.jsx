@@ -306,9 +306,18 @@ Additionally, if the user is building a CV, extract CV data in this format:
             {/* Header */}
             <div className="flex-shrink-0 px-6 py-4 flex items-center justify-between bg-white/30 backdrop-blur-xl border-b border-white/20">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 flex items-center justify-center">
+                <button
+                  onClick={() => {
+                    setHasStarted(false);
+                    setMessages([]);
+                    setConversationId(null);
+                    setCvMode(false);
+                    setCvData({});
+                  }}
+                  className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 flex items-center justify-center hover:opacity-80 transition-opacity cursor-pointer"
+                >
                   <span className="text-white text-[10px] font-bold">A·M</span>
-                </div>
+                </button>
                 <PersonaSelector active={persona} onChange={setPersona} />
               </div>
               <button
