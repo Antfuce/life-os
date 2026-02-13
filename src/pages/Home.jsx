@@ -475,7 +475,7 @@ If user is preparing for interview (intent: interview_prep):
             </div>
 
             {/* Messages + CV Preview Split */}
-            <div className="flex-1 overflow-y-auto relative flex">
+            <div className="flex-1 relative flex overflow-hidden">
               <ContextPanel
                 memories={memories}
                 visible={showMemory}
@@ -483,7 +483,7 @@ If user is preparing for interview (intent: interview_prep):
               />
 
               {/* Chat Column */}
-              <div className={cn("px-6 py-8 space-y-6 transition-all", activeMode ? "w-1/2" : "max-w-3xl mx-auto w-full")}>
+              <div className={cn("overflow-y-auto px-6 py-8 space-y-6 transition-all", activeMode ? "w-1/2" : "max-w-3xl mx-auto w-full")}>
                 {messages.map((msg, i) => (
                   <MessageBubble key={i} message={msg} isLast={i === messages.length - 1} />
                 ))}
@@ -511,7 +511,7 @@ If user is preparing for interview (intent: interview_prep):
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Dynamic Side Panel */}
+              {/* Dynamic Side Panel - Fixed */}
               <AnimatePresence mode="wait">
                 {activeMode === "cv" && (
                   <motion.div
@@ -519,7 +519,7 @@ If user is preparing for interview (intent: interview_prep):
                     initial={{ opacity: 0, x: 50 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 50 }}
-                    className="w-1/2 p-6 border-l border-neutral-200"
+                    className="w-1/2 border-l border-neutral-200 flex-shrink-0"
                   >
                     <LiveCVPreview cvData={cvData} onDownload={() => {}} />
                   </motion.div>
@@ -530,7 +530,7 @@ If user is preparing for interview (intent: interview_prep):
                     initial={{ opacity: 0, x: 50 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 50 }}
-                    className="w-1/2 p-6 border-l border-neutral-200"
+                    className="w-1/2 border-l border-neutral-200 flex-shrink-0"
                   >
                     <LiveInterviewPrep 
                       questions={interviewQuestions} 
