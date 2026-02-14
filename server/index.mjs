@@ -105,7 +105,8 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
 
   const ac = new AbortController();
   const onClose = () => ac.abort();
-  req.raw.on('close', onClose);
+  // Abort upstream work only when the client disconnects mid-stream.
+  reply.raw.on('close', onClose);
 
   try {
     const body = req.body || {};
@@ -256,7 +257,7 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
     try { sseWrite(reply.raw, 'done', { ok: false }); } catch {}
     try { reply.raw.end(); } catch {}
   } finally {
-    req.raw.off('close', onClose);
+    reply.raw.off('close', onClose);
   }
 });
 
