@@ -159,24 +159,109 @@ For mock interview mode, also include:
 [INTERVIEW:scenario=Brief scenario setup for the mock interview]`;
 
     const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
-    const r = await fetch(`${API_ORIGIN}/v1/chat/turn`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        conversationId: convId,
-        persona,
-        messages: newMessages,
-        cvData,
-      }),
-    });
+    const assistantId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-    const j = await r.json();
-    if (!j?.ok) {
-      throw new Error(j?.error || 'Engine error');
+    // Create a placeholder assistant message and stream into it.
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        persona,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+
+    async function runNonStreamingFallback() {
+      const r = await fetch(`${API_ORIGIN}/v1/chat/turn`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: convId,
+          persona,
+          messages: newMessages,
+          cvData,
+        }),
+      });
+
+      const j = await r.json();
+      if (!j?.ok) throw new Error(j?.error || 'Engine error');
+      return String(j.text || '');
     }
 
-    let content = j.text || '';
-    
+    let content = '';
+
+    try {
+      const r = await fetch(`${API_ORIGIN}/v1/chat/stream`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: convId,
+          persona,
+          messages: newMessages,
+          cvData,
+        }),
+      });
+
+      if (!r.ok || !r.body) {
+        content = await runNonStreamingFallback();
+      } else {
+        const reader = r.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+
+        const parseBlock = (block) => {
+          const lines = String(block || '').split('\n');
+          let ev = null;
+          const dataLines = [];
+          for (const line of lines) {
+            if (line.startsWith('event:')) ev = line.slice('event:'.length).trim();
+            if (line.startsWith('data:')) dataLines.push(line.slice('data:'.length).trim());
+          }
+          const dataRaw = dataLines.join('\n');
+          let data = null;
+          try { data = JSON.parse(dataRaw); } catch {}
+          return { ev, data };
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+
+          let sep;
+          while ((sep = buf.indexOf('\n\n')) !== -1) {
+            const block = buf.slice(0, sep);
+            buf = buf.slice(sep + 2);
+            const { ev, data } = parseBlock(block);
+
+            if (ev === 'delta' && data?.text) {
+              content += String(data.text);
+              setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content } : m)));
+            }
+
+            if (ev === 'error') {
+              throw new Error(data?.error || 'Stream error');
+            }
+
+            if (ev === 'done') {
+              // Finished
+              break;
+            }
+          }
+
+          if (buf.includes('event: done')) break;
+        }
+      }
+    } catch (e) {
+      // Fallback to non-streaming if streaming fails.
+      content = await runNonStreamingFallback();
+    }
+
+    // Finalize the message content (after parsing tags etc.) below.
+    setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content } : m)));
+
     // Extract intent
     const intentMatch = content.match(/\[INTENT:(\w+)\]/);
     if (intentMatch) {
@@ -272,14 +357,10 @@ For mock interview mode, also include:
       }
     }
 
-    const assistantMsg = {
-      role: "assistant",
-      content,
-      persona,
-      timestamp: new Date().toISOString(),
-    };
-
-    setMessages((prev) => [...prev, assistantMsg]);
+    // Update the streamed placeholder message with the final cleaned content.
+    setMessages((prev) =>
+      prev.map((m) => (m.id === assistantId ? { ...m, content, persona } : m))
+    );
     setIsLoading(false);
     setWhisper("");
 
