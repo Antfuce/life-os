@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Brain } from "lucide-react";
+import { Brain, Volume2, VolumeX } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import MessageBubble from "../components/chat/MessageBubble";
@@ -41,7 +41,9 @@ export default function Home() {
   const [memories, setMemories] = useState([]);
   const [showMemory, setShowMemory] = useState(false);
   const [deliverables, setDeliverables] = useState([]);
-  const [whisper, setWhisper] = useState("");
+  const [whisper, setWhisper] = useState(""); // assistant streaming caption
+  const [voiceCaption, setVoiceCaption] = useState(""); // user interim caption
+  const [ttsEnabled, setTtsEnabled] = useState(false);
   const [conversationId, setConversationId] = useState(null);
   const [hasStarted, setHasStarted] = useState(false);
   const [showHint, setShowHint] = useState(false);
@@ -65,6 +67,52 @@ export default function Home() {
     const hintTimer = setTimeout(() => setShowHint(true), 8000);
     return () => clearTimeout(hintTimer);
   }, []);
+
+  // Spawn modules when a mode activates.
+  useEffect(() => {
+    if (!activeMode) return;
+
+    if (activeMode === "cv") {
+      setFloatingModules((prev) => {
+        if (prev.some((m) => m.type === "cv")) return prev;
+        return [
+          ...prev,
+          { id: `${Date.now()}-cv`, type: "cv", position: { x: 60, y: 120 }, data: {} },
+        ];
+      });
+    }
+
+    if (activeMode === "interview") {
+      setFloatingModules((prev) => {
+        if (prev.some((m) => m.type === "interview")) return prev;
+        return [
+          ...prev,
+          { id: `${Date.now()}-interview`, type: "interview", position: { x: 80, y: 160 }, data: {} },
+        ];
+      });
+    }
+  }, [activeMode]);
+
+  const speak = (text) => {
+    if (!ttsEnabled) return;
+    if (typeof window === "undefined") return;
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+
+    const t = String(text || "").trim();
+    if (!t) return;
+
+    try {
+      synth.cancel();
+      const u = new SpeechSynthesisUtterance(t);
+      u.rate = 1.0;
+      u.pitch = 1.0;
+      u.lang = "en-US";
+      synth.speak(u);
+    } catch {
+      // noop
+    }
+  };
 
   const startConversation = async (initialText) => {
     const isCVMode = initialText && /\b(cv|resume|curriculum|experience|job|career)\b/i.test(initialText);
@@ -90,11 +138,19 @@ export default function Home() {
   };
 
   const handleSend = async (text) => {
+    const t = (text ?? "").trim();
+
+    // "Mic tap" on landing sends empty string today — treat that as "start voice room".
     if (!hasStarted) {
-      await startConversation(text);
+      await startConversation(t);
+      if (!t) {
+        setIsVoiceActive(true);
+      }
       return;
     }
-    handleSendInner(messages, text, conversationId);
+
+    if (!t) return;
+    handleSendInner(messages, t, conversationId);
   };
 
   const handleSendInner = async (currentMessages, text, convId) => {
@@ -108,6 +164,7 @@ export default function Home() {
     setMessages(newMessages);
     setIsLoading(true);
     setWhisper("thinking...");
+    setVoiceCaption("");
 
     const chatHistory = newMessages
       .map((m) => `${m.role === "user" ? "User" : persona === "both" ? "Antonio & Mariana" : persona}: ${m.content}`)
@@ -250,6 +307,8 @@ For mock interview mode, also include:
             if (ev === 'delta' && data?.text) {
               content += String(data.text);
               setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content } : m)));
+              // Voice-mode caption: show tail of the streaming assistant reply.
+              setWhisper(content.slice(-140));
             }
 
             if (ev === 'error') {
@@ -377,7 +436,8 @@ For mock interview mode, also include:
       prev.map((m) => (m.id === assistantId ? { ...m, content, persona } : m))
     );
     setIsLoading(false);
-    setWhisper("");
+    // Let WhisperResponse fade out naturally.
+    setTimeout(() => setWhisper(""), 2500);
 
     // Persistence comes next (Postgres). For now, state lives in the session.
   };
@@ -486,16 +546,30 @@ For mock interview mode, also include:
               transition={{ duration: 0.5 }}
               className="flex-1 flex flex-col items-center justify-center relative h-full overflow-hidden"
             >
-              {/* Whisper Response - fading text */}
+              {/* Voice captions */}
+              <div className="absolute top-24 left-0 right-0 px-6">
+                <div className="max-w-2xl mx-auto">
+                  <WhisperCaption text={voiceCaption} visible={!!voiceCaption} />
+                </div>
+              </div>
+
+              {/* Whisper Response - fading text (assistant tail) */}
               <AnimatePresence>
-                {whisper && (
-                  <WhisperResponse text={whisper} visible={!!whisper} />
-                )}
+                {whisper && <WhisperResponse text={whisper} visible={!!whisper} />}
               </AnimatePresence>
 
               {/* Central Avatar with Waves */}
               <div className="flex-1 flex items-center justify-center">
                 <AvatarWithWaves persona={persona} isActive={isVoiceActive} />
+              </div>
+
+              {/* Message feed (so voice mode isn't blind) */}
+              <div className="absolute bottom-28 left-0 right-0 px-6">
+                <div className="max-w-2xl mx-auto space-y-3">
+                  {messages.slice(-4).map((m, idx) => (
+                    <MessageBubble key={m.id || idx} message={m} isLast={idx === messages.length - 1} />
+                  ))}
+                </div>
               </div>
 
               {/* Memory Panel */}
@@ -549,7 +623,14 @@ For mock interview mode, also include:
               </AnimatePresence>
 
               {/* Voice Input - bottom */}
-              <VoiceInput onTranscript={handleSend} isListening={isVoiceActive} />
+              <VoiceInput
+                onTranscript={(t) => {
+                  setVoiceCaption("");
+                  handleSend(t);
+                }}
+                onInterim={(t) => setVoiceCaption(t)}
+                isListening={isVoiceActive}
+              />
             </motion.div>
           )}
         </AnimatePresence>

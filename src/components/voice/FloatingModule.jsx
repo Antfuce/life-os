@@ -12,8 +12,8 @@ export default function FloatingModule({ title, children, onClose, position = { 
       transition={{ type: "spring", stiffness: 300, damping: 30 }}
       style={{
         position: "fixed",
-        left: `${position.x}%`,
-        top: `${position.y}%`,
+        left: typeof position.x === "number" ? `${position.x}px` : position.x,
+        top: typeof position.y === "number" ? `${position.y}px` : position.y,
       }}
       drag
       dragMomentum={false}
