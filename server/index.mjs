@@ -2,6 +2,8 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { readFile } from 'node:fs/promises';
 
+import { initDb, stableId, toTsMs } from './db.mjs';
+
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const HOST = process.env.HOST || '127.0.0.1';
 
@@ -33,21 +35,47 @@ function extractOutputText(respJson) {
 }
 
 const PERSONAS = {
+  // User-facing personas (Phase 2+)
   antonio: `You are Antonio — sharp, strategic, direct. High-energy closer. You drive action. No fluff.`,
   mariana: `You are Mariana — calm, structured, thoughtful, supportive. You reduce anxiety and create clarity.`,
   both: `You are Antonio & Mariana. One brain, two voices. Blend direct strategy + calm structure.`,
+
+  // Agent 4 (default for now): execution-first, neutral voice.
+  executor: `You are the Executor — an execution layer for Antonio & Mariana. You do not roleplay. You are crisp, practical, and outcome-driven.
+
+Primary mission (V1): Recruitment matchmaking + execution.
+Flow: conversation → extract facts → CV draft/edits → interview prep → outreach drafts.
+
+Rules:
+- Ask the minimum number of questions needed to take action.
+- Prefer producing concrete artifacts (bullets, drafts, templates) over theory.
+- Never claim you sent messages or made intros unless explicitly instructed and the system confirms it.
+- When missing info blocks execution, ask for it in 1-3 targeted questions.`
 };
 
 const fastify = Fastify({ logger: true });
 await fastify.register(cors, { origin: true });
 
+// Local persistence (Phase: persistence v0)
+const dbCtx = await initDb(process.env.LIFE_OS_DB);
+
 fastify.get('/health', async () => ({ ok: true }));
 
 fastify.post('/v1/chat/turn', async (req, reply) => {
   const body = req.body || {};
-  const persona = body.persona && PERSONAS[body.persona] ? body.persona : 'both';
+  const conversationId = body.conversationId ? String(body.conversationId) : `${Date.now()}`;
+  const persona = body.persona && PERSONAS[body.persona] ? body.persona : 'executor';
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const cvData = body.cvData && typeof body.cvData === 'object' ? body.cvData : {};
+
+  // Persist the last user message (deduped). We store assistant after we get model output.
+  const last = messages[messages.length - 1];
+  if (last && last.role === 'user') {
+    const tsMs = toTsMs(last.timestamp);
+    const mid = stableId(conversationId, 'user', tsMs, last.content);
+    dbCtx.upsertConv.run(conversationId, tsMs, tsMs, persona);
+    dbCtx.insertMsg.run(mid, conversationId, tsMs, 'user', null, String(last.content || ''));
+  }
 
   const system = [
     PERSONAS[persona],
@@ -95,11 +123,11 @@ fastify.post('/v1/chat/turn', async (req, reply) => {
       authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
-      model: 'openai-codex/gpt-5.2',
+      model: process.env.LIFE_OS_MODEL || 'openai-codex/gpt-5.2',
       instructions: system,
       input,
-      max_output_tokens: 900,
-      user: 'life-os:web',
+      max_output_tokens: process.env.LIFE_OS_MAX_TOKENS ? Number(process.env.LIFE_OS_MAX_TOKENS) : 900,
+      user: 'antonio-mariana:web',
     }),
   });
 
@@ -111,7 +139,16 @@ fastify.post('/v1/chat/turn', async (req, reply) => {
   }
 
   const text = extractOutputText(json) || '';
-  return { ok: true, text };
+
+  // Persist assistant message (deduped).
+  {
+    const tsMs = Date.now();
+    const mid = stableId(conversationId, 'assistant', tsMs, persona, text);
+    dbCtx.upsertConv.run(conversationId, tsMs, tsMs, persona);
+    dbCtx.insertMsg.run(mid, conversationId, tsMs, 'assistant', persona, text);
+  }
+
+  return { ok: true, text, conversationId };
 });
 
 fastify.listen({ port: PORT, host: HOST });

@@ -20,21 +20,24 @@ import AvatarWithWaves from "../components/voice/AvatarWithWaves";
 import FloatingModule from "../components/voice/FloatingModule";
 
 const SYSTEM_PROMPTS = {
-  antonio: `You are Antonio — a sharp, strategic, direct career advisor and life matchmaker. You speak with high energy and confidence. You help users with career moves AND social connections — whether that's making friends, finding communities, networking events, or social opportunities. You ask pointed questions, push for clarity, and drive action. Keep responses concise but powerful. When you have enough context, offer to create deliverables like CVs, outreach emails, interview prep, OR social matches (friend introductions, event recommendations, community suggestions). Always extract and remember key details: career (current role, target role, skills, salary, location) AND social (interests, hobbies, desired connections, social goals).`,
-  mariana: `You are Mariana — a calm, structured, thoughtful career guide and life strategist. You speak with warmth and support. You help users explore their deeper motivations in BOTH career and social life — finding meaningful work AND meaningful connections. You listen carefully and reflect back insights. Keep responses supportive but substantive. When you have enough context, offer to create deliverables (career-related OR social matches). Always extract and remember key details about career AND social preferences (what kind of people they want to meet, communities they're interested in, social goals).`,
-  both: `You are Antonio & Mariana — dual advisors for career AND life. Antonio is sharp, strategic, and action-oriented. Mariana is calm, thoughtful, and supportive. Blend both energies in your responses — be direct yet empathetic, strategic yet caring. Help users with career transitions AND social connections. You're matchmakers for work and life. When you have enough context, offer to create deliverables like CVs, outreach emails, cover letters, interview prep, OR social matches (friend introductions, networking events, communities, social opportunities). Always extract and remember key details about BOTH career and social life.`,
+  // The backend owns the real system prompt; this is kept for UX copy/routing only.
+  antonio: `Antonio — sharp, strategic, direct.`,
+  mariana: `Mariana — calm, structured, thoughtful.`,
+  both: `Antonio & Mariana — blended strategy + support.`,
+  executor: `Executor — execution-first, neutral voice.`,
 };
 
 const WELCOME_MESSAGES = {
-  antonio: "What's the move? Career, connections, whatever — tell me where you are and where you want to be. I'll map the fastest route there.",
-  mariana: "Welcome. Take a breath. Tell me what's been on your mind — career, relationships, life. I'm here to listen and help you find clarity.",
-  both: "Hey — we're Antonio & Mariana. Think of us as your matchmakers for work and life. Tell us what's going on, and we'll figure out the best move together.",
+  antonio: "What's the move? Give me your situation and target — I'll map the fastest route.",
+  mariana: "Welcome. Tell me what's going on — we'll slow it down and get clarity.",
+  both: "Hey — we're Antonio & Mariana. Tell us what's going on, and we'll make the next move.",
+  executor: "Tell me your goal in one sentence. I’ll ask 1–3 questions and then produce the first deliverable.",
 };
 
 export default function Home() {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [persona, setPersona] = useState("both");
+  const [persona, setPersona] = useState("executor");
   const [memories, setMemories] = useState([]);
   const [showMemory, setShowMemory] = useState(false);
   const [deliverables, setDeliverables] = useState([]);
@@ -159,6 +162,7 @@ For mock interview mode, also include:
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
+        conversationId: convId,
         persona,
         messages: newMessages,
         cvData,
@@ -321,6 +325,9 @@ For mock interview mode, also include:
                 </h1>
                 <p className="text-neutral-400 text-sm tracking-[0.15em] uppercase font-medium">
                   Matchmakers for work & life
+                </p>
+                <p className="text-neutral-500 text-xs mt-3">
+                  Running mode: <span className="font-medium">Executor</span>
                 </p>
               </motion.div>
 

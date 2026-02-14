@@ -17,7 +17,7 @@ export default function MessageBubble({ message, isLast }) {
       {!isUser && <PersonaAvatar persona={message.persona} size="sm" />}
 
       <div className={cn("flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
-        {!isUser && message.persona && (
+        {!isUser && message.persona && message.persona !== "executor" && (
           <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 font-medium ml-1">
             {message.persona === "both" ? "Antonio & Mariana" : message.persona}
           </span>

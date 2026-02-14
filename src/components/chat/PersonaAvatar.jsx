@@ -15,17 +15,24 @@ export default function PersonaAvatar({ persona, size = "md" }) {
     antonio: {
       image: ANTONIO_IMG,
       gradient: "from-amber-500 to-orange-600",
+      label: "A",
     },
     mariana: {
       image: MARIANA_IMG,
       gradient: "from-violet-500 to-purple-600",
+      label: "M",
     },
     both: {
       gradient: "from-amber-500 via-rose-500 to-violet-500",
+      label: "A·M",
+    },
+    executor: {
+      gradient: "from-neutral-700 to-neutral-900",
+      label: "E",
     },
   };
 
-  const current = config[persona] || config.both;
+  const current = config[persona] || config.executor;
 
   if (persona === "both") {
     return (
@@ -44,13 +51,25 @@ export default function PersonaAvatar({ persona, size = "md" }) {
     );
   }
 
+  // If we don't have an image (e.g., executor), render a clean badge.
+  if (!current.image) {
+    return (
+      <div
+        className={cn(
+          "rounded-full shadow-lg flex items-center justify-center text-white text-[10px] font-semibold",
+          "bg-gradient-to-br",
+          current.gradient,
+          sizes[size]
+        )}
+      >
+        {current.label}
+      </div>
+    );
+  }
+
   return (
     <div className={cn("relative rounded-full overflow-hidden shadow-lg", sizes[size])}>
-      <img
-        src={current.image}
-        alt={persona}
-        className="w-full h-full object-cover"
-      />
+      <img src={current.image} alt={persona} className="w-full h-full object-cover" />
     </div>
   );
 }
