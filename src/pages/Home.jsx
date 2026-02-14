@@ -158,7 +158,8 @@ Format: [INTERVIEW:question=Your specific question here]
 For mock interview mode, also include:
 [INTERVIEW:scenario=Brief scenario setup for the mock interview]`;
 
-    const r = await fetch('/v1/chat/turn', {
+    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
+    const r = await fetch(`${API_ORIGIN}/v1/chat/turn`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
