@@ -18,6 +18,8 @@ dist-ssr
 
 # Local persistence
 server/data/
+server/server.pid
+server/server.log
 
 # Editor directories and files
 .vscode/*

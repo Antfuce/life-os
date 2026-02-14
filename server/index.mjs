@@ -35,23 +35,40 @@ function extractOutputText(respJson) {
 }
 
 const PERSONAS = {
-  // User-facing personas (Phase 2+)
+  // User-facing personas (UI skin)
   antonio: `You are Antonio — sharp, strategic, direct. High-energy closer. You drive action. No fluff.`,
   mariana: `You are Mariana — calm, structured, thoughtful, supportive. You reduce anxiety and create clarity.`,
   both: `You are Antonio & Mariana. One brain, two voices. Blend direct strategy + calm structure.`,
 
-  // Agent 4 (default for now): execution-first, neutral voice.
-  executor: `You are the Executor — an execution layer for Antonio & Mariana. You do not roleplay. You are crisp, practical, and outcome-driven.
+  // Agent 4 (runtime brain): execution-first.
+  executor: `You are the Executor — the execution layer behind Antonio & Mariana.
+
+You do not roleplay. You are crisp, practical, outcome-driven.
 
 Primary mission (V1): Recruitment matchmaking + execution.
 Flow: conversation → extract facts → CV draft/edits → interview prep → outreach drafts.
 
+Critical UI contract:
+- The UI may show Antonio/Mariana avatars.
+- You MUST choose who "speaks" for each reply and put it on the FIRST LINE:
+  [SPEAKER:antonio] or [SPEAKER:mariana] (or [SPEAKER:both] when both should speak).
+- After that first line, output normal human text (no brackets).
+
 Rules:
 - Ask the minimum number of questions needed to take action.
-- Prefer producing concrete artifacts (bullets, drafts, templates) over theory.
+- Prefer concrete artifacts over theory.
 - Never claim you sent messages or made intros unless explicitly instructed and the system confirms it.
 - When missing info blocks execution, ask for it in 1-3 targeted questions.`
 };
+
+function parseSpeakerTag(text) {
+  const t = String(text || '');
+  const m = t.match(/^\s*\[SPEAKER:(antonio|mariana|both|executor)\]\s*\n?/i);
+  if (!m) return { speaker: null, cleaned: t };
+  const speaker = String(m[1]).toLowerCase();
+  const cleaned = t.slice(m[0].length);
+  return { speaker, cleaned };
+}
 
 const fastify = Fastify({ logger: true });
 await fastify.register(cors, { origin: true });
@@ -111,7 +128,8 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
   try {
     const body = req.body || {};
     const conversationId = body.conversationId ? String(body.conversationId) : `${Date.now()}`;
-    const persona = body.persona && PERSONAS[body.persona] ? body.persona : 'executor';
+    const requestedPersona = body.persona && PERSONAS[body.persona] && body.persona !== 'executor' ? body.persona : 'both';
+    const persona = 'executor';
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const cvData = body.cvData && typeof body.cvData === 'object' ? body.cvData : {};
 
@@ -120,14 +138,16 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
     if (last && last.role === 'user') {
       const tsMs = toTsMs(last.timestamp);
       const mid = stableId(conversationId, 'user', tsMs, last.content);
-      dbCtx.upsertConv.run(conversationId, tsMs, tsMs, persona);
+      dbCtx.upsertConv.run(conversationId, tsMs, tsMs, requestedPersona);
       dbCtx.insertMsg.run(mid, conversationId, tsMs, 'user', null, String(last.content || ''));
     }
 
     const system = [
       PERSONAS[persona],
       '',
-      'You are a live career coach + CV builder + interview prep assistant.',
+      `Requested UI persona: ${requestedPersona}. Choose [SPEAKER:...] accordingly.`,
+      '',
+      'You are a live career coach + CV builder + interview prep assistant',
       'You must output: (1) a normal human reply, (2) OPTIONAL structured tags for CV and interview.',
       '',
       'Rules for tags:',
@@ -168,7 +188,7 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
       return;
     }
 
-    sseWrite(reply.raw, 'ready', { ok: true, conversationId, persona });
+    sseWrite(reply.raw, 'ready', { ok: true, conversationId, requestedPersona });
 
     const upstream = await fetch(OPENCLAW_RESPONSES_URL, {
       method: 'POST',
@@ -199,6 +219,21 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
     const dec = new TextDecoder('utf-8');
     let buf = '';
     let fullText = '';
+    let prefixBuf = '';
+    let speaker = null;
+    let streamingStarted = false;
+
+    const emitDelta = (t) => {
+      if (!t) return;
+      fullText += t;
+      sseWrite(reply.raw, 'delta', { text: t });
+    };
+
+    const ensureSpeaker = (fallbackSpeaker) => {
+      if (speaker) return;
+      speaker = fallbackSpeaker;
+      sseWrite(reply.raw, 'speaker', { speaker });
+    };
 
     while (true) {
       const { value, done } = await reader.read();
@@ -223,34 +258,56 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
         if (event === 'response.output_text.delta') {
           const delta = (dataJson && (dataJson.delta ?? dataJson.text)) || '';
           if (typeof delta === 'string' && delta.length) {
-            fullText += delta;
-            sseWrite(reply.raw, 'delta', { text: delta });
+            if (!speaker) {
+              prefixBuf += delta;
+              // Try to parse speaker as early as possible.
+              if (prefixBuf.includes('\n') || prefixBuf.length > 80) {
+                const parsed = parseSpeakerTag(prefixBuf);
+                if (parsed.speaker) {
+                  ensureSpeaker(parsed.speaker === 'executor' ? requestedPersona : parsed.speaker);
+                  streamingStarted = true;
+                  emitDelta(parsed.cleaned);
+                } else if (prefixBuf.length > 120) {
+                  ensureSpeaker(requestedPersona);
+                  streamingStarted = true;
+                  emitDelta(prefixBuf);
+                }
+              }
+            } else {
+              streamingStarted = true;
+              emitDelta(delta);
+            }
           }
         }
 
         if (event === 'response.output_text.done') {
           const final = (dataJson && dataJson.text) || '';
-          if (typeof final === 'string' && final.length && !fullText) {
-            fullText = final;
+          if (typeof final === 'string' && final.length && !fullText && !streamingStarted) {
+            const parsed = parseSpeakerTag(final);
+            ensureSpeaker(parsed.speaker === 'executor' ? requestedPersona : (parsed.speaker || requestedPersona));
+            emitDelta(parsed.cleaned);
           }
         }
       }
 
-      if (buf.includes('data: [DONE]')) {
-        // stop early if we see terminal marker in an incomplete block
-        break;
-      }
+      if (buf.includes('data: [DONE]')) break;
+    }
+
+    // If we never emitted a speaker, pick the requested persona.
+    if (!speaker) {
+      speaker = requestedPersona;
+      sseWrite(reply.raw, 'speaker', { speaker });
     }
 
     // Persist assistant message
     {
       const tsMs = Date.now();
-      const mid = stableId(conversationId, 'assistant', tsMs, persona, fullText);
-      dbCtx.upsertConv.run(conversationId, tsMs, tsMs, persona);
-      dbCtx.insertMsg.run(mid, conversationId, tsMs, 'assistant', persona, fullText);
+      const mid = stableId(conversationId, 'assistant', tsMs, speaker, fullText);
+      dbCtx.upsertConv.run(conversationId, tsMs, tsMs, speaker);
+      dbCtx.insertMsg.run(mid, conversationId, tsMs, 'assistant', speaker, fullText);
     }
 
-    sseWrite(reply.raw, 'done', { ok: true, conversationId });
+    sseWrite(reply.raw, 'done', { ok: true, conversationId, speaker });
     reply.raw.end();
   } catch (e) {
     sseWrite(reply.raw, 'error', { ok: false, error: String(e) });
@@ -264,7 +321,9 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
 fastify.post('/v1/chat/turn', async (req, reply) => {
   const body = req.body || {};
   const conversationId = body.conversationId ? String(body.conversationId) : `${Date.now()}`;
-  const persona = body.persona && PERSONAS[body.persona] ? body.persona : 'executor';
+  // UI provides a preferred persona, but runtime is executor.
+  const requestedPersona = body.persona && PERSONAS[body.persona] && body.persona !== 'executor' ? body.persona : 'both';
+  const persona = 'executor';
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const cvData = body.cvData && typeof body.cvData === 'object' ? body.cvData : {};
 
@@ -273,12 +332,14 @@ fastify.post('/v1/chat/turn', async (req, reply) => {
   if (last && last.role === 'user') {
     const tsMs = toTsMs(last.timestamp);
     const mid = stableId(conversationId, 'user', tsMs, last.content);
-    dbCtx.upsertConv.run(conversationId, tsMs, tsMs, persona);
+    dbCtx.upsertConv.run(conversationId, tsMs, tsMs, requestedPersona);
     dbCtx.insertMsg.run(mid, conversationId, tsMs, 'user', null, String(last.content || ''));
   }
 
   const system = [
     PERSONAS[persona],
+    '',
+    `Requested UI persona: ${requestedPersona}. Choose [SPEAKER:...] accordingly.`,
     '',
     'You are a live career coach + CV builder + interview prep assistant.',
     'You must output: (1) a normal human reply, (2) OPTIONAL structured tags for CV and interview.',
@@ -338,17 +399,19 @@ fastify.post('/v1/chat/turn', async (req, reply) => {
     return reply.code(500).send({ ok: false, error: 'OpenClaw responses failed', detail: json || rawText.slice(0, 1200) });
   }
 
-  const text = extractOutputText(json) || '';
+  const rawTextOut = extractOutputText(json) || '';
+  const { speaker, cleaned } = parseSpeakerTag(rawTextOut);
+  const effectiveSpeaker = speaker && speaker !== 'executor' ? speaker : requestedPersona;
 
   // Persist assistant message (deduped).
   {
     const tsMs = Date.now();
-    const mid = stableId(conversationId, 'assistant', tsMs, persona, text);
-    dbCtx.upsertConv.run(conversationId, tsMs, tsMs, persona);
-    dbCtx.insertMsg.run(mid, conversationId, tsMs, 'assistant', persona, text);
+    const mid = stableId(conversationId, 'assistant', tsMs, effectiveSpeaker, cleaned);
+    dbCtx.upsertConv.run(conversationId, tsMs, tsMs, effectiveSpeaker);
+    dbCtx.insertMsg.run(mid, conversationId, tsMs, 'assistant', effectiveSpeaker, cleaned);
   }
 
-  return { ok: true, text, conversationId };
+  return { ok: true, text: cleaned, speaker: effectiveSpeaker, conversationId };
 });
 
 fastify.listen({ port: PORT, host: HOST });

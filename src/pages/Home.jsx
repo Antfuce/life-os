@@ -37,7 +37,7 @@ const WELCOME_MESSAGES = {
 export default function Home() {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [persona, setPersona] = useState("executor");
+  const [persona, setPersona] = useState("both");
   const [memories, setMemories] = useState([]);
   const [showMemory, setShowMemory] = useState(false);
   const [deliverables, setDeliverables] = useState([]);
@@ -162,13 +162,14 @@ For mock interview mode, also include:
     const assistantId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     // Create a placeholder assistant message and stream into it.
+    // Note: backend will emit a speaker event; until then show neutral.
     setMessages((prev) => [
       ...prev,
       {
         id: assistantId,
         role: "assistant",
         content: "",
-        persona,
+        persona: "executor",
         timestamp: new Date().toISOString(),
       },
     ]);
@@ -187,7 +188,7 @@ For mock interview mode, also include:
 
       const j = await r.json();
       if (!j?.ok) throw new Error(j?.error || 'Engine error');
-      return String(j.text || '');
+      return { text: String(j.text || ''), speaker: j.speaker };
     }
 
     let content = '';
@@ -205,7 +206,11 @@ For mock interview mode, also include:
       });
 
       if (!r.ok || !r.body) {
-        content = await runNonStreamingFallback();
+        const fb = await runNonStreamingFallback();
+        content = fb.text;
+        if (fb.speaker) {
+          setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, persona: String(fb.speaker) } : m)));
+        }
       } else {
         const reader = r.body.getReader();
         const dec = new TextDecoder();
@@ -236,6 +241,12 @@ For mock interview mode, also include:
             buf = buf.slice(sep + 2);
             const { ev, data } = parseBlock(block);
 
+            if (ev === 'speaker' && data?.speaker) {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === assistantId ? { ...m, persona: String(data.speaker) } : m))
+              );
+            }
+
             if (ev === 'delta' && data?.text) {
               content += String(data.text);
               setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content } : m)));
@@ -256,7 +267,11 @@ For mock interview mode, also include:
       }
     } catch (e) {
       // Fallback to non-streaming if streaming fails.
-      content = await runNonStreamingFallback();
+      const fb = await runNonStreamingFallback();
+      content = fb.text;
+      if (fb.speaker) {
+        setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, persona: String(fb.speaker) } : m)));
+      }
     }
 
     // Finalize the message content (after parsing tags etc.) below.
