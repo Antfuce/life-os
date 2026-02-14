@@ -61,6 +61,16 @@ const dbCtx = await initDb(process.env.LIFE_OS_DB);
 
 fastify.get('/health', async () => ({ ok: true }));
 
+// Convenience: visiting the tunnel URL in a browser should show something meaningful.
+fastify.get('/', async () => ({
+  ok: true,
+  service: 'antonio-mariana-api',
+  endpoints: {
+    health: '/health',
+    chatTurn: '/v1/chat/turn (POST json)',
+  },
+}));
+
 fastify.post('/v1/chat/turn', async (req, reply) => {
   const body = req.body || {};
   const conversationId = body.conversationId ? String(body.conversationId) : `${Date.now()}`;
