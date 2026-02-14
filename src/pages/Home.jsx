@@ -1,20 +1,16 @@
 import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Brain, Volume2, VolumeX } from "lucide-react";
-import { cn } from "@/lib/utils";
 
 import MessageBubble from "../components/chat/MessageBubble";
-import ChatInput from "../components/chat/ChatInput";
-import TypingIndicator from "../components/chat/TypingIndicator";
+import UnifiedInput from "../components/chat/UnifiedInput";
 import PersonaSelector from "../components/chat/PersonaSelector";
 import WhisperCaption from "../components/chat/WhisperCaption";
 import ContextPanel from "../components/chat/ContextPanel";
-import DeliverableCard from "../components/deliverables/DeliverableCard";
-import AvatarHint from "../components/chat/AvatarHint";
 import LiveCVPreview from "../components/cv/LiveCVPreview";
+import InlineCVPreview from "../components/cv/InlineCVPreview";
 import LiveInterviewPrep from "../components/interview/LiveInterviewPrep";
 import FloatingHints from "../components/chat/FloatingHints";
-import VoiceInput from "../components/voice/VoiceInput";
 import WhisperResponse from "../components/voice/WhisperResponse";
 import AvatarWithWaves from "../components/voice/AvatarWithWaves";
 import FloatingModule from "../components/voice/FloatingModule";
@@ -24,14 +20,12 @@ const SYSTEM_PROMPTS = {
   antonio: `Antonio — sharp, strategic, direct.`,
   mariana: `Mariana — calm, structured, thoughtful.`,
   both: `Antonio & Mariana — blended strategy + support.`,
-  executor: `Executor — execution-first, neutral voice.`,
 };
 
 const WELCOME_MESSAGES = {
   antonio: "What's the move? Give me your situation and target — I'll map the fastest route.",
   mariana: "Welcome. Tell me what's going on — we'll slow it down and get clarity.",
   both: "Hey — we're Antonio & Mariana. Tell us what's going on, and we'll make the next move.",
-  executor: "Tell me your goal in one sentence. I’ll ask 1–3 questions and then produce the first deliverable.",
 };
 
 export default function Home() {
@@ -77,7 +71,7 @@ export default function Home() {
         if (prev.some((m) => m.type === "cv")) return prev;
         return [
           ...prev,
-          { id: `${Date.now()}-cv`, type: "cv", position: { x: 60, y: 120 }, data: {} },
+          { id: `${Date.now()}-cv`, type: "cv", position: { x: 100, y: 100 }, data: {} },
         ];
       });
     }
@@ -87,7 +81,7 @@ export default function Home() {
         if (prev.some((m) => m.type === "interview")) return prev;
         return [
           ...prev,
-          { id: `${Date.now()}-interview`, type: "interview", position: { x: 80, y: 160 }, data: {} },
+          { id: `${Date.now()}-interview`, type: "interview", position: { x: 120, y: 120 }, data: {} },
         ];
       });
     }
@@ -121,7 +115,7 @@ export default function Home() {
     const welcomeMsg = {
       role: "assistant",
       content: isCVMode
-        ? "Let’s build your CV together. First: what’s your full name and current role?"
+        ? "Let's build your CV together. First: what's your full name and current role?"
         : WELCOME_MESSAGES[persona],
       persona,
       timestamp: new Date().toISOString(),
@@ -140,7 +134,7 @@ export default function Home() {
   const handleSend = async (text) => {
     const t = (text ?? "").trim();
 
-    // "Mic tap" on landing sends empty string today — treat that as "start voice room".
+    // "Mic tap" on landing sends empty string today - treat that as "start voice room".
     if (!hasStarted) {
       await startConversation(t);
       if (!t) {
@@ -219,14 +213,14 @@ For mock interview mode, also include:
     const assistantId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     // Create a placeholder assistant message and stream into it.
-    // Note: backend will emit a speaker event; until then show neutral.
+    // Backend will emit a speaker event to update persona; start with selected persona.
     setMessages((prev) => [
       ...prev,
       {
         id: assistantId,
         role: "assistant",
         content: "",
-        persona: "executor",
+        persona,
         timestamp: new Date().toISOString(),
       },
     ]);
@@ -341,7 +335,7 @@ For mock interview mode, also include:
     if (intentMatch) {
       const [, intent] = intentMatch;
       content = content.replace(/\[INTENT:\w+\]/g, "").trim();
-      
+
       // Route to appropriate mode
       if (intent === "cv_building") {
         setActiveMode("cv");
@@ -352,7 +346,7 @@ For mock interview mode, also include:
         setActiveMode(null);
       }
     }
-    
+
     const memoryMatches = content.match(/\[MEMORY:(\w+)=([^\]]+)\]/g);
     const cvMatches = content.match(/\[CV:(\w+)=([^\]]+)\]/g);
     const interviewMatches = content.match(/\[INTERVIEW:(\w+)=([^\]]+)\]/g);
@@ -388,7 +382,7 @@ For mock interview mode, also include:
 
       for (const match of cvMatches) {
         const [, key, value] = match.match(/\[CV:(\w+)=([^\]]+)\]/);
-        
+
         if (key === "experience" || key === "education") {
           try {
             const parsed = JSON.parse(value);
@@ -403,7 +397,7 @@ For mock interview mode, also include:
           newCvData[key] = value;
         }
       }
-      
+
       setCvData(newCvData);
     }
 
@@ -414,7 +408,7 @@ For mock interview mode, also include:
 
       for (const match of interviewMatches) {
         const [, key, value] = match.match(/\[INTERVIEW:(\w+)=([^\]]+)\]/);
-        
+
         if (key === "question") {
           newQuestions.push({ question: value, tip: "", followup: "" });
         } else if (key === "tip" && newQuestions.length > 0) {
@@ -425,7 +419,7 @@ For mock interview mode, also include:
           scenario = value;
         }
       }
-      
+
       if (newQuestions.length > 0) {
         setInterviewQuestions((prev) => [...prev, ...newQuestions]);
       }
@@ -433,9 +427,11 @@ For mock interview mode, also include:
 
     // Update the streamed placeholder message with the final cleaned content.
     setMessages((prev) =>
-      prev.map((m) => (m.id === assistantId ? { ...m, content, persona } : m))
+      // Do not overwrite the speaker set by stream events (speaker persona).
+      prev.map((m) => (m.id === assistantId ? { ...m, content } : m))
     );
     setIsLoading(false);
+    speak(content);
     // Let WhisperResponse fade out naturally.
     setTimeout(() => setWhisper(""), 2500);
 
@@ -457,7 +453,7 @@ For mock interview mode, also include:
       <div className="relative h-full flex flex-col">
         {/* Floating Hints */}
         <FloatingHints visible={!hasStarted} />
-        
+
         {/* Landing state */}
         <AnimatePresence mode="wait">
           {!hasStarted && (
@@ -501,19 +497,19 @@ For mock interview mode, also include:
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.8, delay: 0.5 }}
-                className="w-full max-w-lg"
+                className="w-full max-w-2xl px-4"
               >
-                <ChatInput onSend={handleSend} />
+                <UnifiedInput onSend={handleSend} disabled={isLoading} />
               </motion.div>
 
-              <motion.div
+              <motion.p
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ duration: 1, delay: 1 }}
-                className="mt-8"
+                className="mt-6 text-[12px] tracking-[0.15em] uppercase text-neutral-400"
               >
-                <WhisperCaption text="your next chapter starts with a conversation" visible={true} />
-              </motion.div>
+                your next chapter starts with a conversation
+              </motion.p>
 
               <AnimatePresence>
                 {showHint && (
@@ -526,7 +522,7 @@ For mock interview mode, also include:
                   >
                     <AvatarHint
                       persona="both"
-                      text="We can help with career moves, but also social life — making friends, finding communities, networking events. Just ask."
+                      text="We can help with career moves, but also social life - making friends, finding communities, networking events. Just ask."
                       visible={true}
                     />
                   </motion.div>
@@ -564,11 +560,22 @@ For mock interview mode, also include:
               </div>
 
               {/* Message feed (so voice mode isn't blind) */}
-              <div className="absolute bottom-28 left-0 right-0 px-6">
+              <div className="absolute bottom-28 left-0 right-0 px-6 overflow-y-auto max-h-[60vh]">
                 <div className="max-w-2xl mx-auto space-y-3">
-                  {messages.slice(-4).map((m, idx) => (
-                    <MessageBubble key={m.id || idx} message={m} isLast={idx === messages.length - 1} />
-                  ))}
+                  {(() => {
+                    const feed = messages.slice(-6);
+                    return feed.map((m, idx) => (
+                      <MessageBubble key={m.id || idx} message={m} isLast={idx === feed.length - 1} />
+                    ));
+                  })()}
+                  {/* Inline CV progress */}
+                  {cvData.name && (
+                    <InlineCVPreview
+                      cvData={cvData}
+                      onExpand={() => setActiveMode("cv")}
+                    />
+                  )}
+                  <div ref={messagesEndRef} />
                 </div>
               </div>
 
@@ -584,11 +591,16 @@ For mock interview mode, also include:
                 <button
                   onClick={() => {
                     setHasStarted(false);
+                    setIsVoiceActive(false);
+                    setVoiceCaption("");
+                    setWhisper("");
                     setMessages([]);
                     setConversationId(null);
                     setActiveMode(null);
+                    setFloatingModules([]);
                     setCvData({});
                     setInterviewQuestions([]);
+                    setShowMemory(false);
                   }}
                   className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 flex items-center justify-center hover:opacity-80 transition-opacity cursor-pointer"
                 >
@@ -596,16 +608,39 @@ For mock interview mode, also include:
                 </button>
               </div>
 
-              {/* Memory button - top right */}
-              <button
-                onClick={() => setShowMemory(!showMemory)}
-                className="absolute top-6 right-6 relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
-              >
-                <Brain className="w-4 h-4 text-neutral-500" />
-                {memories.length > 0 && (
-                  <div className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-violet-500" />
-                )}
-              </button>
+              {/* Controls - top right */}
+              <div className="absolute top-6 right-6 flex items-center gap-1">
+                {/* TTS toggle */}
+                <button
+                  onClick={() => {
+                    setTtsEnabled((prev) => {
+                      const next = !prev;
+                      if (!next) window.speechSynthesis?.cancel?.();
+                      return next;
+                    });
+                  }}
+                  className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
+                  title={ttsEnabled ? "Voice playback: on" : "Voice playback: off"}
+                >
+                  {ttsEnabled ? (
+                    <Volume2 className="w-4 h-4 text-neutral-500" />
+                  ) : (
+                    <VolumeX className="w-4 h-4 text-neutral-400" />
+                  )}
+                </button>
+
+                {/* Memory toggle */}
+                <button
+                  onClick={() => setShowMemory(!showMemory)}
+                  className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
+                  title={showMemory ? "Hide memory" : "Show memory"}
+                >
+                  <Brain className="w-4 h-4 text-neutral-500" />
+                  {memories.length > 0 && (
+                    <div className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-violet-500" />
+                  )}
+                </button>
+              </div>
 
               {/* Floating Modules */}
               <AnimatePresence>
@@ -622,15 +657,19 @@ For mock interview mode, also include:
                 ))}
               </AnimatePresence>
 
-              {/* Voice Input - bottom */}
-              <VoiceInput
-                onTranscript={(t) => {
-                  setVoiceCaption("");
-                  handleSend(t);
-                }}
-                onInterim={(t) => setVoiceCaption(t)}
-                isListening={isVoiceActive}
-              />
+              {/* Unified Input - always text + optional mic */}
+              <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-8 pb-6 px-4 z-20">
+                <UnifiedInput
+                  onSend={(t) => {
+                    setVoiceCaption("");
+                    handleSend(t);
+                  }}
+                  disabled={isLoading}
+                  onInterim={(t) => setVoiceCaption(t)}
+                  onListeningChange={setIsVoiceActive}
+                  placeholder="Type or speak your message..."
+                />
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
