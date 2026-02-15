@@ -48,10 +48,21 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       status TEXT NOT NULL,
       correlationId TEXT,
       resumeToken TEXT,
+      reconnectWindowMs INTEGER,
+      resumeValidUntilMs INTEGER,
+      lastAckSequence INTEGER,
+      lastAckTimestamp TEXT,
+      lastAckEventId TEXT,
       provider TEXT,
+ codex/add-backend-support-for-livekit-tokens-and-events
       providerRoomName TEXT,
       providerParticipantIdentity TEXT,
       providerParticipantName TEXT,
+=======
+      providerRoomId TEXT,
+      providerParticipantId TEXT,
+      providerCallId TEXT,
+ prod
       metadataJson TEXT,
       lastError TEXT,
       createdAtMs INTEGER NOT NULL,
@@ -61,6 +72,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       failedAtMs INTEGER
     );
 
+ codex/add-backend-support-for-livekit-tokens-and-events
     CREATE TABLE IF NOT EXISTS call_provider_event (
       id TEXT PRIMARY KEY,
       sessionId TEXT NOT NULL,
@@ -70,12 +82,34 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       payloadJson TEXT,
       receivedAtMs INTEGER NOT NULL,
       FOREIGN KEY (sessionId) REFERENCES call_session(id)
+=======
+    CREATE TABLE IF NOT EXISTS realtime_event (
+      eventId TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      timestamp TEXT NOT NULL,
+      type TEXT NOT NULL,
+      actorJson TEXT NOT NULL,
+      payloadJson TEXT NOT NULL,
+      version TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS realtime_checkpoint (
+      sessionId TEXT NOT NULL,
+      consumerId TEXT NOT NULL,
+      watermarkTimestamp TEXT NOT NULL,
+      watermarkEventId TEXT NOT NULL,
+      updatedAtMs INTEGER NOT NULL,
+      PRIMARY KEY (sessionId, consumerId)
+prod
     );
 
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_status_updated ON call_session(status, updatedAtMs);
+codex/add-backend-support-for-livekit-tokens-and-events
     CREATE UNIQUE INDEX IF NOT EXISTS idx_call_provider_event_unique ON call_provider_event(provider, providerEventId);
   `);
 
@@ -88,6 +122,21 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
 
   ensureColumn('call_session', 'providerParticipantIdentity', 'TEXT');
   ensureColumn('call_session', 'providerParticipantName', 'TEXT');
+=======
+    CREATE INDEX IF NOT EXISTS idx_realtime_event_session_ts_id ON realtime_event(sessionId, timestamp, eventId);
+    CREATE INDEX IF NOT EXISTS idx_realtime_event_session_sequence ON realtime_event(sessionId, sequence);
+  `);
+
+  try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN providerParticipantId TEXT;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN providerCallId TEXT;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN reconnectWindowMs INTEGER;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN resumeValidUntilMs INTEGER;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN lastAckSequence INTEGER;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN lastAckTimestamp TEXT;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN lastAckEventId TEXT;'); } catch {}
+  try { db.exec('ALTER TABLE realtime_event ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0;'); } catch {}
+prod
 
   const upsertConv = db.prepare(
     `INSERT INTO conversation (id, createdAtMs, updatedAtMs, defaultPersona)
@@ -109,10 +158,16 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
 
   const insertCallSession = db.prepare(
     `INSERT OR IGNORE INTO call_session (
+ codex/add-backend-support-for-livekit-tokens-and-events
       id, userId, status, correlationId, resumeToken, provider, providerRoomName,
       providerParticipantIdentity, providerParticipantName, metadataJson,
       lastError, createdAtMs, updatedAtMs, startedAtMs, endedAtMs, failedAtMs
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+=======
+      id, userId, status, correlationId, resumeToken, reconnectWindowMs, resumeValidUntilMs, lastAckSequence, lastAckTimestamp, lastAckEventId, provider, providerRoomId, providerParticipantId, providerCallId,
+      metadataJson, lastError, createdAtMs, updatedAtMs, startedAtMs, endedAtMs, failedAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+ prod
   );
 
   const getCallSessionById = db.prepare(
@@ -129,10 +184,20 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
   const updateCallSession = db.prepare(
     `UPDATE call_session
        SET status = ?,
+           resumeValidUntilMs = ?,
+           lastAckSequence = ?,
+           lastAckTimestamp = ?,
+           lastAckEventId = ?,
            provider = ?,
+codex/add-backend-support-for-livekit-tokens-and-events
            providerRoomName = ?,
            providerParticipantIdentity = ?,
            providerParticipantName = ?,
+=======
+           providerRoomId = ?,
+           providerParticipantId = ?,
+           providerCallId = ?,
+ prod
            metadataJson = ?,
            lastError = ?,
            updatedAtMs = ?,
@@ -142,6 +207,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
      WHERE id = ?`
   );
 
+ codex/add-backend-support-for-livekit-tokens-and-events
   const getCallSessionByRoomName = db.prepare(
     `SELECT * FROM call_session WHERE providerRoomName = ? ORDER BY createdAtMs DESC LIMIT 1`
   );
@@ -150,6 +216,59 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     `INSERT OR IGNORE INTO call_provider_event (
       id, sessionId, provider, providerEventId, canonicalType, payloadJson, receivedAtMs
     ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+=======
+  const updateCallSessionAck = db.prepare(
+    `UPDATE call_session
+       SET lastAckSequence = ?,
+           lastAckTimestamp = ?,
+           lastAckEventId = ?,
+           updatedAtMs = ?
+     WHERE id = ?`
+  );
+
+  const insertRealtimeEvent = db.prepare(
+    `INSERT OR IGNORE INTO realtime_event (
+      eventId, sessionId, sequence, timestamp, type, actorJson, payloadJson, version, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const getRealtimeSessionMaxSequence = db.prepare(
+    `SELECT COALESCE(MAX(sequence), 0) AS maxSequence
+       FROM realtime_event
+      WHERE sessionId = ?`
+  );
+
+  const listRealtimeEventsAfterSequence = db.prepare(
+    `SELECT * FROM realtime_event
+      WHERE sessionId = ?
+        AND sequence > ?
+      ORDER BY sequence ASC
+      LIMIT ?`
+  );
+
+  const listRealtimeEventsAfterWatermark = db.prepare(
+    `SELECT * FROM realtime_event
+      WHERE sessionId = ?
+        AND (timestamp > ? OR (timestamp = ? AND eventId > ?))
+      ORDER BY timestamp ASC, eventId ASC
+      LIMIT ?`
+  );
+
+  const upsertRealtimeCheckpoint = db.prepare(
+    `INSERT INTO realtime_checkpoint (
+      sessionId, consumerId, watermarkTimestamp, watermarkEventId, updatedAtMs
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(sessionId, consumerId)
+    DO UPDATE SET
+      watermarkTimestamp = excluded.watermarkTimestamp,
+      watermarkEventId = excluded.watermarkEventId,
+      updatedAtMs = excluded.updatedAtMs`
+  );
+
+  const getRealtimeCheckpoint = db.prepare(
+    `SELECT * FROM realtime_checkpoint WHERE sessionId = ? AND consumerId = ?`
+
+    prod
   );
 
   return {
@@ -161,8 +280,18 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     getCallSessionById,
     listCallSessionsByUser,
     updateCallSession,
+codex/add-backend-support-for-livekit-tokens-and-events
     getCallSessionByRoomName,
     insertCallProviderEvent,
+=======
+    updateCallSessionAck,
+    insertRealtimeEvent,
+    getRealtimeSessionMaxSequence,
+    listRealtimeEventsAfterSequence,
+    listRealtimeEventsAfterWatermark,
+    upsertRealtimeCheckpoint,
+    getRealtimeCheckpoint,
+prod
     dbFile,
   };
 }

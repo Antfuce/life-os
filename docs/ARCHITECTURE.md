@@ -35,8 +35,10 @@ These boundaries ensure security, auditability, and deterministic state recovery
 The backend owns all writes and maintains clear source-of-truth tables/collections:
 
 - **Sessions**
-  - Canonical store for session lifecycle (`created`, `active`, `ended`, `failed`).
-  - Includes user identity, provider session IDs, and connection metadata.
+  - Canonical store for session lifecycle (`created`, `active`, `ended`, `failed`) with strict transitions: `created -> active -> ended|failed`.
+  - Every session operation is authenticated and ownership-scoped (`x-user-id` must match the session owner).
+  - Activation atomically records provider correlation identifiers: `provider`, `providerRoomId`, `providerParticipantId`, `providerCallId`.
+  - Duplicate provider/webhook updates are treated as idempotent replays when the requested state and correlation IDs match existing persisted values.
 - **Transcripts**
   - Append-only event stream with stable ordering keys (`session_id`, `sequence`, `provider_event_id`).
   - Stores both raw provider segments and normalized transcript chunks.
