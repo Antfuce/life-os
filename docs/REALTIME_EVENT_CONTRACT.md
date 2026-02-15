@@ -9,20 +9,29 @@ All events MUST use exactly these keys:
 ```json
 {
   "eventId": "evt_01JABCDEF1234567890",
+ codex/review-progress-towards-mvp-hd413u
 codex/review-progress-towards-mvp-hd413u
   "sessionId": "ses_9f8e7d6c5b4a",
   "sequence": 42,
   "ts": "2026-02-15T14:05:12.345Z",
   "type": "call.created",
 =======
+codex/enforce-event-envelope-in-backend
+ prod
+=======
   "sequence": 42,
   "timestamp": "2026-02-16T10:00:00.000Z",
+prod
   "sessionId": "sess_123",
+  "ts": "2026-02-16T10:00:00.000Z",
   "type": "call.started",
+ codex/review-progress-towards-mvp-hd413u
   "actor": {
     "role": "system",
     "id": "backend"
   },
+ prod
+=======
  prod
   "payload": {},
   "schemaVersion": "1.0"
@@ -217,19 +226,20 @@ This contract is intentionally backend-centric per architecture constraints: fro
 ### Field rules
 
 - `eventId` (string, required): globally unique per event. Used as dedupe key.
+codex/enforce-event-envelope-in-backend
+=======
 - `sequence` (integer, server-assigned): monotonic per-session ordering key used for reconnect replay.
 - `timestamp` (string, required): ISO-8601 UTC emit timestamp.
+prod
 - `sessionId` (string, required): session stream partition key.
+- `ts` (string, required): ISO-8601 UTC emit timestamp.
 - `type` (string, required): event discriminator.
-- `actor` (object, required):
-  - `role`: `user | agent | system | provider`
-  - `id`: non-empty string source identifier.
 - `payload` (object, required): type-specific schema.
-- `version` (string, required): currently `1.0`.
+- `schemaVersion` (string, required): currently `1.0`.
 
 ### Drift policy
 
-The aliases `ts` and `schemaVersion` are **not supported** in canonical v1.0 emission. Events containing them must fail validation at publish boundary.
+Canonical emission only supports these six keys. Ingestion boundaries MAY normalize legacy keys (`timestamp` -> `ts`, `version` -> `schemaVersion`) before validation. Unknown extra keys must fail validation.
 
 ## Required event families and payload schemas
 
@@ -349,17 +359,25 @@ Backend publisher validates every event envelope + payload before persistence/fa
 
 - Event store is append-only and session-scoped.
 - Dedupe key is `eventId` (idempotent insert).
+codex/enforce-event-envelope-in-backend
+- Consumers store watermark tuple `(ts, eventId)` per `sessionId`.
+- Replay query returns only events strictly newer than watermark:
+  - `(event.ts > watermark.ts)` OR
+  - `(event.ts == watermark.ts AND event.eventId > watermark.eventId)`
+- Sorting is deterministic: `ts ASC`, then `eventId ASC`.
+=======
 - Consumers should store `sequence` as primary checkpoint; timestamp/eventId tuple remains supported fallback.
 - Replay by sequence returns events where `event.sequence > lastAckSequence`.
 - Watermark replay fallback returns only events strictly newer than `(timestamp, eventId)`:
   - `(event.timestamp > watermark.timestamp)` OR
   - `(event.timestamp == watermark.timestamp AND event.eventId > watermark.eventId)`
 - Sorting is deterministic: `sequence ASC` for sequence replay, otherwise `timestamp ASC` then `eventId ASC`.
+prod
 - Transcript state materialization prefers `transcript.final` over partials for same `utteranceId`.
 
 ## Versioning + compatibility (v1.x)
 
-- `version` is semantic contract version for envelope + payload rules.
+- `schemaVersion` is semantic contract version for envelope + payload rules.
 - v1.x guarantees:
   - existing required envelope keys remain stable,
   - existing event types remain backward compatible,
