@@ -22,6 +22,8 @@ const EVENT_PAYLOAD_VALIDATORS = {
     && isNonNegInt(p.endMs),
 
   'orchestration.action.requested': (p) => req(p, ['actionId', 'actionType', 'summary']),
+  'action.acknowledged': (p) => req(p, ['actionId', 'actionType', 'status', 'requestedEventId'])
+    && inEnum(p.status, ['acknowledged']),
   'action.proposed': (p) => req(p, ['actionId', 'actionType', 'summary']),
   'action.requires_confirmation': (p) => req(p, ['actionId', 'reason', 'confirmationToken']),
   'action.executed': (p) => req(p, ['actionId', 'durationMs']) && isNonNegInt(p.durationMs),

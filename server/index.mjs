@@ -379,6 +379,70 @@ const realtimeMetrics = {
   emittedDuplicate: 0,
 };
 
+const ORCHESTRATION_ACTION_STATUS = {
+  REQUESTED: 'requested',
+  ACKNOWLEDGED: 'acknowledged',
+  SUCCEEDED: 'succeeded',
+  FAILED: 'failed',
+};
+
+function deterministicDurationMs(sessionId, actionId, actionType) {
+  const seed = stableId(sessionId, actionId, actionType).slice(0, 8);
+  return 80 + (Number.parseInt(seed, 16) % 240);
+}
+
+function executeDeterministicTool(actionType, payload, sessionId) {
+  const actionId = String(payload?.actionId || 'unknown');
+  const summary = String(payload?.summary || '').trim();
+  const durationMs = deterministicDurationMs(sessionId, actionId, actionType);
+
+  if (actionType === 'generate_cv') {
+    return {
+      ok: true,
+      durationMs,
+      result: {
+        resultRef: `cv:${sessionId}:${actionId}`,
+        deliverableType: 'cv',
+        summary: summary || 'CV draft generated',
+      },
+    };
+  }
+
+  if (actionType === 'prepare_interview') {
+    return {
+      ok: true,
+      durationMs,
+      result: {
+        resultRef: `interview:${sessionId}:${actionId}`,
+        deliverableType: 'interview',
+        summary: summary || 'Interview prep generated',
+      },
+    };
+  }
+
+  if (actionType === 'draft_outreach') {
+    return {
+      ok: true,
+      durationMs,
+      result: {
+        resultRef: `outreach:${sessionId}:${actionId}`,
+        deliverableType: 'outreach',
+        summary: summary || 'Outreach draft generated',
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    durationMs,
+    error: {
+      code: 'ACTION_TYPE_UNSUPPORTED',
+      message: `Unsupported actionType: ${actionType || 'unknown'}`,
+      retryable: false,
+    },
+  };
+}
+
 function createRealtimeEvent({ sessionId, type, actor, payload, eventId, timestamp, version = EVENT_VERSION }) {
   const nowIso = new Date().toISOString();
   return {
@@ -418,6 +482,117 @@ function publishRealtimeEvent(event) {
 
   realtimeMetrics.emitted += 1;
   return { ok: true, deduped: false, event };
+}
+
+function handleOrchestrationActionRequested(event) {
+  const actionId = String(event?.payload?.actionId || '').trim();
+  const actionType = String(event?.payload?.actionType || '').trim();
+  const summary = String(event?.payload?.summary || '').trim();
+  if (!actionId || !actionType) {
+    throw new Error('orchestration.action.requested requires actionId and actionType');
+  }
+
+  const nowMs = Date.now();
+  dbCtx.insertOrchestrationAction.run(
+    event.sessionId,
+    actionId,
+    actionType,
+    summary,
+    ORCHESTRATION_ACTION_STATUS.REQUESTED,
+    event.eventId,
+    nowMs,
+    nowMs,
+  );
+
+  let actionState = dbCtx.getOrchestrationAction.get(event.sessionId, actionId);
+  if (!actionState) {
+    throw new Error(`failed to persist orchestration action state for actionId=${actionId}`);
+  }
+
+  const emitted = [];
+  if (!actionState.ackEventId) {
+    const ackEvent = createRealtimeEvent({
+      sessionId: event.sessionId,
+      eventId: `evt_${stableId(event.sessionId, actionId, 'ack').slice(0, 20)}`,
+      type: 'action.acknowledged',
+      actor: { role: 'system', id: 'backend' },
+      payload: {
+        actionId,
+        actionType,
+        status: 'acknowledged',
+        requestedEventId: event.eventId,
+        summary,
+      },
+    });
+    publishRealtimeEvent(ackEvent);
+    dbCtx.markOrchestrationActionAcknowledged.run(
+      ORCHESTRATION_ACTION_STATUS.ACKNOWLEDGED,
+      ackEvent.eventId,
+      nowMs,
+      Date.now(),
+      event.sessionId,
+      actionId,
+    );
+    emitted.push(ackEvent);
+    actionState = dbCtx.getOrchestrationAction.get(event.sessionId, actionId);
+  }
+
+  if (actionState?.terminalEventId) {
+    return { emitted, actionState };
+  }
+
+  const execution = executeDeterministicTool(actionType, event.payload, event.sessionId);
+  const terminalEvent = execution.ok
+    ? createRealtimeEvent({
+      sessionId: event.sessionId,
+      eventId: `evt_${stableId(event.sessionId, actionId, 'executed').slice(0, 20)}`,
+      type: 'action.executed',
+      actor: { role: 'system', id: 'backend' },
+      payload: {
+        actionId,
+        actionType,
+        status: ORCHESTRATION_ACTION_STATUS.SUCCEEDED,
+        requestedEventId: event.eventId,
+        acknowledgedEventId: actionState?.ackEventId || null,
+        durationMs: execution.durationMs,
+        ...execution.result,
+      },
+    })
+    : createRealtimeEvent({
+      sessionId: event.sessionId,
+      eventId: `evt_${stableId(event.sessionId, actionId, 'failed').slice(0, 20)}`,
+      type: 'action.failed',
+      actor: { role: 'system', id: 'backend' },
+      payload: {
+        actionId,
+        actionType,
+        status: ORCHESTRATION_ACTION_STATUS.FAILED,
+        requestedEventId: event.eventId,
+        acknowledgedEventId: actionState?.ackEventId || null,
+        code: execution.error.code,
+        message: execution.error.message,
+        retryable: execution.error.retryable,
+      },
+    });
+
+  publishRealtimeEvent(terminalEvent);
+  dbCtx.markOrchestrationActionTerminal.run(
+    execution.ok ? ORCHESTRATION_ACTION_STATUS.SUCCEEDED : ORCHESTRATION_ACTION_STATUS.FAILED,
+    terminalEvent.eventId,
+    execution.ok ? JSON.stringify(execution.result) : null,
+    execution.ok ? null : execution.error.code,
+    execution.ok ? null : execution.error.message,
+    Date.now(),
+    Date.now(),
+    event.sessionId,
+    actionId,
+  );
+  emitted.push(terminalEvent);
+
+  return {
+    emitted,
+    actionState: dbCtx.getOrchestrationAction.get(event.sessionId, actionId),
+  };
 }
 
 function normalizeRealtimeEventRow(row) {
@@ -712,7 +887,11 @@ fastify.post('/v1/realtime/events', async (req, reply) => {
 
   try {
     const result = publishRealtimeEvent(event);
-    return { ok: true, deduped: result.deduped, event: result.event, metrics: realtimeMetrics };
+    let lifecycle = null;
+    if (event.type === 'orchestration.action.requested' && !result.deduped) {
+      lifecycle = handleOrchestrationActionRequested(result.event);
+    }
+    return { ok: true, deduped: result.deduped, event: result.event, lifecycle, metrics: realtimeMetrics };
   } catch (err) {
     return sendError(req, reply, 400, 'INVALID_REALTIME_EVENT', String(err.message || err), false);
   }
