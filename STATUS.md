@@ -34,3 +34,8 @@ Base44-hosted frontend + external backend API (Fastify) that calls OpenClaw `/v1
 1) Replace quick tunnel with **durable** hosting: named Cloudflare tunnel or a real domain.
 2) Add user identity/auth mapping (Base44 user → backend `userId`) for multi-user correctness.
 3) Recruitment vertical MVP deliverables (CV / interview / outreach) + execution gates.
+
+## Provider decision update
+- Realtime voice/media provider is now **LiveKit** (replacing prior placeholder provider references).
+- Next backend transport work should target LiveKit room/token integration.
+

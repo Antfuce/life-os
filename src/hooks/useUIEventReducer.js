@@ -17,6 +17,8 @@ export const UI_EVENT_TYPES = {
   ERROR: 'error',
   STATUS: 'status',
   CONFIRM_REQUIRED: 'confirm.required',
+  ACTION_APPROVAL_STATE: 'action.approval.state',
+  ACTION_AUDIT: 'action.audit',
   DONE: 'done',
 };
 
@@ -26,24 +28,28 @@ const initialState = {
   messages: [],
   currentMessage: '',
   isStreaming: false,
-  
+
   // Speaker
   currentSpeaker: 'both',
-  
+
   // Mode/Modules
   activeModes: {}, // { cv: {...}, interview: {...} }
   floatingModules: [],
-  
+
   // Deliverables
   deliverables: [],
-  
+
   // Status/Error
   status: null, // { type, message, progress }
   error: null,
-  
+
   // Confirmation gates
   pendingConfirmation: null, // { actionId, message, details, onConfirm, onCancel }
-  
+
+  // Action approval/audit
+  actionApprovals: {}, // { [actionId]: { state, ... } }
+  actionAuditTrail: [],
+
   // Meta
   conversationId: null,
   contractVersion: '1.0',
@@ -52,7 +58,7 @@ const initialState = {
 // Reducer
 function uiEventReducer(state, action) {
   const { type, payload } = action;
-  
+
   switch (type) {
     case UI_EVENT_TYPES.TEXT_DELTA: {
       return {
@@ -61,7 +67,7 @@ function uiEventReducer(state, action) {
         isStreaming: true,
       };
     }
-    
+
     case UI_EVENT_TYPES.TEXT_DONE: {
       const newMessage = {
         id: payload.messageId || Date.now(),
@@ -70,7 +76,7 @@ function uiEventReducer(state, action) {
         speaker: payload.speaker || state.currentSpeaker,
         timestamp: Date.now(),
       };
-      
+
       return {
         ...state,
         messages: [...state.messages, newMessage],
@@ -78,23 +84,23 @@ function uiEventReducer(state, action) {
         isStreaming: false,
       };
     }
-    
+
     case UI_EVENT_TYPES.SPEAKER_CHANGE: {
       return {
         ...state,
         currentSpeaker: payload.speaker || 'both',
       };
     }
-    
+
     case UI_EVENT_TYPES.MODE_ACTIVATE: {
       const { mode, context, position } = payload;
-      
+
       // Add to active modes
       const newActiveModes = {
         ...state.activeModes,
         [mode]: { active: true, context, activatedAt: Date.now() },
       };
-      
+
       // Add floating module if position provided
       let newModules = state.floatingModules;
       if (position) {
@@ -111,25 +117,25 @@ function uiEventReducer(state, action) {
           ];
         }
       }
-      
+
       return {
         ...state,
         activeModes: newActiveModes,
         floatingModules: newModules,
       };
     }
-    
+
     case UI_EVENT_TYPES.MODE_DEACTIVATE: {
       const { mode } = payload;
       const { [mode]: _, ...remainingModes } = state.activeModes;
-      
+
       return {
         ...state,
         activeModes: remainingModes,
         floatingModules: state.floatingModules.filter(m => m.type !== mode),
       };
     }
-    
+
     case UI_EVENT_TYPES.DELIVERABLE_CV:
     case UI_EVENT_TYPES.DELIVERABLE_INTERVIEW:
     case UI_EVENT_TYPES.DELIVERABLE_OUTREACH: {
@@ -140,13 +146,13 @@ function uiEventReducer(state, action) {
         actions: payload.actions || [],
         createdAt: Date.now(),
       };
-      
+
       return {
         ...state,
         deliverables: [...state.deliverables, deliverable],
       };
     }
-    
+
     case UI_EVENT_TYPES.ERROR: {
       return {
         ...state,
@@ -159,7 +165,7 @@ function uiEventReducer(state, action) {
         isStreaming: false,
       };
     }
-    
+
     case UI_EVENT_TYPES.STATUS: {
       return {
         ...state,
@@ -170,8 +176,19 @@ function uiEventReducer(state, action) {
         },
       };
     }
-    
+
     case UI_EVENT_TYPES.CONFIRM_REQUIRED: {
+      const confirmationState = {
+        actionId: payload.actionId,
+        state: 'pending_approval',
+        riskTier: payload.riskTier || 'high-risk-external-send',
+        message: payload.message,
+        details: payload.details,
+        timeout: payload.timeout,
+        startedAt: payload.startedAt || Date.now(),
+        expiresAt: payload.expiresAt,
+      };
+
       return {
         ...state,
         pendingConfirmation: {
@@ -181,10 +198,43 @@ function uiEventReducer(state, action) {
           onConfirm: payload.onConfirm,
           onCancel: payload.onCancel,
           timeout: payload.timeout,
+          expiresAt: payload.expiresAt,
+        },
+        actionApprovals: {
+          ...state.actionApprovals,
+          [payload.actionId]: confirmationState,
         },
       };
     }
-    
+
+    case UI_EVENT_TYPES.ACTION_APPROVAL_STATE: {
+      const actionId = payload.actionId;
+      const current = state.actionApprovals[actionId] || {};
+      const nextState = {
+        ...current,
+        ...payload,
+      };
+
+      const shouldClosePending = state.pendingConfirmation?.actionId === actionId
+        && payload.state !== 'pending_approval';
+
+      return {
+        ...state,
+        pendingConfirmation: shouldClosePending ? null : state.pendingConfirmation,
+        actionApprovals: {
+          ...state.actionApprovals,
+          [actionId]: nextState,
+        },
+      };
+    }
+
+    case UI_EVENT_TYPES.ACTION_AUDIT: {
+      return {
+        ...state,
+        actionAuditTrail: [...state.actionAuditTrail, payload],
+      };
+    }
+
     case UI_EVENT_TYPES.DONE: {
       return {
         ...state,
@@ -193,7 +243,7 @@ function uiEventReducer(state, action) {
         conversationId: payload.conversationId || state.conversationId,
       };
     }
-    
+
     // User actions
     case 'USER_SEND_MESSAGE': {
       const userMessage = {
@@ -202,7 +252,7 @@ function uiEventReducer(state, action) {
         content: payload.text,
         timestamp: Date.now(),
       };
-      
+
       return {
         ...state,
         messages: [...state.messages, userMessage],
@@ -210,28 +260,28 @@ function uiEventReducer(state, action) {
         error: null,
       };
     }
-    
+
     case 'USER_CLEAR_CONVERSATION': {
       return {
         ...initialState,
         conversationId: payload?.conversationId || null,
       };
     }
-    
+
     case 'USER_CONFIRM_ACTION': {
       return {
         ...state,
         pendingConfirmation: null,
       };
     }
-    
+
     case 'USER_CANCEL_ACTION': {
       return {
         ...state,
         pendingConfirmation: null,
       };
     }
-    
+
     case 'UPDATE_MODULE_POSITION': {
       return {
         ...state,
@@ -242,14 +292,14 @@ function uiEventReducer(state, action) {
         ),
       };
     }
-    
+
     case 'CLOSE_MODULE': {
       return {
         ...state,
         floatingModules: state.floatingModules.filter(m => m.id !== payload.moduleId),
       };
     }
-    
+
     default:
       return state;
   }
@@ -258,48 +308,48 @@ function uiEventReducer(state, action) {
 // Hook
 export function useUIEventReducer(initial = {}) {
   const [state, dispatch] = useReducer(uiEventReducer, { ...initialState, ...initial });
-  
+
   // Process SSE event from backend
   const processEvent = useCallback((event) => {
     if (!event || !event.type) return;
-    
+
     // Handle both structured events and legacy events
     const eventType = event.type;
     const payload = event.payload || event;
-    
+
     dispatch({ type: eventType, payload });
   }, [dispatch]);
-  
+
   // Batch process multiple events
   const processEvents = useCallback((events) => {
     events.forEach(processEvent);
   }, [processEvent]);
-  
+
   // User actions
   const sendMessage = useCallback((text) => {
     dispatch({ type: 'USER_SEND_MESSAGE', payload: { text } });
   }, [dispatch]);
-  
+
   const clearConversation = useCallback((conversationId) => {
     dispatch({ type: 'USER_CLEAR_CONVERSATION', payload: { conversationId } });
   }, [dispatch]);
-  
+
   const confirmAction = useCallback((actionId) => {
     dispatch({ type: 'USER_CONFIRM_ACTION', payload: { actionId } });
   }, [dispatch]);
-  
+
   const cancelAction = useCallback((actionId) => {
     dispatch({ type: 'USER_CANCEL_ACTION', payload: { actionId } });
   }, [dispatch]);
-  
+
   const updateModulePosition = useCallback((moduleId, position) => {
     dispatch({ type: 'UPDATE_MODULE_POSITION', payload: { moduleId, position } });
   }, [dispatch]);
-  
+
   const closeModule = useCallback((moduleId) => {
     dispatch({ type: 'CLOSE_MODULE', payload: { moduleId } });
   }, [dispatch]);
-  
+
   return {
     state,
     dispatch,

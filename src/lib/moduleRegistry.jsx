@@ -5,11 +5,13 @@
  */
 
 import React, { lazy, Suspense } from 'react';
+import { ACTION_RISK_TIERS, getActionRiskTier } from '../contracts/actionRiskTiers';
 
 // Lazy load components for code splitting
 const LiveCVPreview = lazy(() => import('../components/cv/LiveCVPreview'));
 const InlineCVPreview = lazy(() => import('../components/cv/InlineCVPreview'));
 const LiveInterviewPrep = lazy(() => import('../components/interview/LiveInterviewPrep'));
+const OutreachModule = lazy(() => import('../components/social/OutreachModule'));
 
 // Fallback loading component
 const ModuleLoader = () => (
@@ -80,17 +82,17 @@ export const MODULE_REGISTRY = {
     acceptsData: ['interview', 'questions', 'prep'],
     defaultPosition: { x: 120, y: 120 },
     defaultSize: { width: 500, height: 600 },
-    actions: ['practice', 'save', 'share'],
+    actions: ['interview.practice', 'interview.save', 'interview.share'],
   },
   
   outreach: {
     name: 'Outreach',
     icon: 'Send',
-    component: null, // TODO: Create OutreachModule
+    component: OutreachModule,
     acceptsData: ['outreach', 'message', 'email'],
     defaultPosition: { x: 140, y: 140 },
     defaultSize: { width: 500, height: 500 },
-    actions: ['edit', 'copy', 'requestSend'],
+    actions: ['outreach.edit', 'outreach.copy', 'outreach.requestSend'],
     requireConfirmation: true,
   },
   
@@ -234,10 +236,11 @@ export const MODULE_ACTIONS = {
     // This triggers a CONFIRM_REQUIRED event flow
     dispatch({
       type: 'OUTREACH_SEND_REQUESTED',
-      payload: { 
+      payload: {
         deliverableId: deliverable.id,
         requireConfirmation: true,
         messages: deliverable.data.messages,
+        riskTier: ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND,
       },
     });
   },
@@ -257,6 +260,15 @@ export function executeModuleAction(actionName, deliverable, dispatch) {
   handler(deliverable, dispatch);
 }
 
+
+export function getActionMetadata(actionName) {
+  return {
+    action: actionName,
+    riskTier: getActionRiskTier(actionName),
+    requiresConfirmation: getActionRiskTier(actionName) === ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND,
+  };
+}
+
 /**
  * Get available actions for a module type
  */
@@ -274,5 +286,6 @@ export default {
   renderInlineModule,
   executeModuleAction,
   getModuleActions,
+  getActionMetadata,
   MODULE_ACTIONS,
 };
