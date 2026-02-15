@@ -36,6 +36,11 @@ const ACTION_RISK_TIERS = {
   HIGH_RISK_EXTERNAL_SEND: 'high-risk-external-send',
 };
 
+const SAFETY_POLICY_IDS = {
+  EXTERNAL_SEND_CONFIRMATION: 'policy.external-send.confirmation',
+  DEFAULT: 'policy.default.allow',
+};
+
 const UI_SPEAKERS = {
   ANTONIO: 'antonio',
   MARIANA: 'mariana',
@@ -281,10 +286,12 @@ await fastify.register(cors, { origin: true });
 
 const dbCtx = await initDb(process.env.LIFE_OS_DB);
 
+const DEFAULT_RECONNECT_WINDOW_MS = 2 * 60 * 1000;
+
 fastify.get('/health', async () => ({ 
   ok: true, 
   contract: 'v1.0',
-  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay']
+  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark']
 }));
 
 fastify.get('/', async () => ({
@@ -299,6 +306,11 @@ fastify.get('/', async () => ({
     listCallSessions: '/v1/call/sessions (GET with x-user-id header)',
     getCallSession: '/v1/call/sessions/:sessionId (GET)',
     updateCallSession: '/v1/call/sessions/:sessionId/state (POST json)',
+codex/add-policy-checks-for-sensitive-actions
+    executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
+=======
+    reconnectCallSession: '/v1/call/sessions/:sessionId/reconnect (POST json)',
+prod
   },
 }));
 
@@ -373,12 +385,65 @@ function parseRequestMetadata(raw) {
   return safe;
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function createPolicyDecision({ actionId, actionType, riskTier, userConfirmation, userId, metadata = {} }) {
+  const normalizedActionType = String(actionType || '').toLowerCase();
+  const isOutreachSendAction = normalizedActionType.includes('outreach') || normalizedActionType.includes('send');
+  const isSensitive = riskTier === ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND || isOutreachSendAction;
+
+  if (isSensitive && userConfirmation !== true) {
+    return {
+      approved: false,
+      eventType: 'safety.blocked',
+      policyId: SAFETY_POLICY_IDS.EXTERNAL_SEND_CONFIRMATION,
+      reason: 'explicit_user_confirmation_required',
+      decision: 'blocked',
+      audit: {
+        actionId,
+        actionType,
+        riskTier,
+        userId,
+        metadata,
+        userConfirmation: userConfirmation === true,
+      },
+    };
+  }
+
+  return {
+    approved: true,
+    eventType: 'safety.approved',
+    policyId: isSensitive ? SAFETY_POLICY_IDS.EXTERNAL_SEND_CONFIRMATION : SAFETY_POLICY_IDS.DEFAULT,
+    reason: isSensitive ? 'explicit_user_confirmation_received' : 'policy_pass_non_sensitive_action',
+    decision: 'approved',
+    audit: {
+      actionId,
+      actionType,
+      riskTier,
+      userId,
+      metadata,
+      userConfirmation: userConfirmation === true,
+    },
+  };
+}
+
+function executeOrchestrationAction({ actionType, payload }) {
+  const resultRef = `result_${stableId(actionType, JSON.stringify(payload || {}), Date.now()).slice(0, 18)}`;
+  return {
+    ok: true,
+    resultRef,
+  };
+}
+
 const realtimeMetrics = {
   emitted: 0,
   emittedInvalid: 0,
   emittedDuplicate: 0,
 };
 
+codex/enforce-event-envelope-in-backend
 function normalizeIncomingRealtimeEvent(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
 
@@ -397,6 +462,14 @@ function createRealtimeEvent({ sessionId, type, payload, eventId, ts, schemaVers
   const nowIso = new Date().toISOString();
   return {
     eventId: eventId || `evt_${stableId(sessionId, type, nowIso, Math.random()).slice(0, 20)}`,
+=======
+function createRealtimeEvent({ sessionId, type, actor, payload, eventId, timestamp, sequence, version = EVENT_VERSION }) {
+  const nowIso = new Date().toISOString();
+  return {
+    eventId: eventId || `evt_${stableId(sessionId, type, nowIso, Math.random()).slice(0, 20)}`,
+    sequence,
+    timestamp: timestamp || nowIso,
+ prod
     sessionId,
     ts: ts || nowIso,
     type,
@@ -413,10 +486,19 @@ function publishRealtimeEvent(event) {
     throw new Error(`REALTIME_EVENT_VALIDATION_FAILED:${validation.errors.join(';')}`);
   }
 
+  const nextSequence = Number(event.sequence) > 0
+    ? Math.trunc(Number(event.sequence))
+    : Number(dbCtx.getRealtimeSessionMaxSequence.get(event.sessionId)?.maxSequence || 0) + 1;
+
   const inserted = dbCtx.insertRealtimeEvent.run(
     event.eventId,
     event.sessionId,
+codex/enforce-event-envelope-in-backend
     event.ts,
+=======
+    nextSequence,
+    event.timestamp,
+prod
     event.type,
     JSON.stringify({}),
     JSON.stringify(event.payload),
@@ -430,12 +512,17 @@ function publishRealtimeEvent(event) {
   }
 
   realtimeMetrics.emitted += 1;
-  return { ok: true, deduped: false, event };
+  return { ok: true, deduped: false, event: { ...event, sequence: nextSequence } };
 }
 
 function normalizeRealtimeEventRow(row) {
   return {
     eventId: row.eventId,
+codex/enforce-event-envelope-in-backend
+=======
+    sequence: row.sequence,
+    timestamp: row.timestamp,
+ prod
     sessionId: row.sessionId,
     ts: row.timestamp,
     type: row.type,
@@ -463,6 +550,11 @@ function normalizeCallSessionRow(row) {
     status: row.status,
     correlationId: row.correlationId,
     resumeToken: row.resumeToken,
+    reconnectWindowMs: row.reconnectWindowMs,
+    resumeValidUntilMs: row.resumeValidUntilMs,
+    lastAckSequence: row.lastAckSequence,
+    lastAckTimestamp: row.lastAckTimestamp,
+    lastAckEventId: row.lastAckEventId,
     provider: row.provider,
     providerRoomId: row.providerRoomId,
     providerParticipantId: row.providerParticipantId,
@@ -495,6 +587,9 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
   const correlationId = body.correlationId ? String(body.correlationId) : `corr_${stableId(sessionId, createdAtMs).slice(0, 16)}`;
   const resumeToken = `resume_${stableId(sessionId, userId, createdAtMs).slice(0, 24)}`;
   const provider = body.provider ? String(body.provider) : 'livekit';
+  const reconnectWindowMsRaw = body.reconnectWindowMs === undefined ? DEFAULT_RECONNECT_WINDOW_MS : Number(body.reconnectWindowMs);
+  const reconnectWindowMs = Number.isFinite(reconnectWindowMsRaw) ? Math.max(10_000, Math.min(10 * 60 * 1000, Math.trunc(reconnectWindowMsRaw))) : DEFAULT_RECONNECT_WINDOW_MS;
+  const resumeValidUntilMs = createdAtMs + reconnectWindowMs;
   const providerRoomId = body.providerRoomId ? String(body.providerRoomId) : null;
   const providerParticipantId = body.providerParticipantId ? String(body.providerParticipantId) : null;
   const providerCallId = body.providerCallId ? String(body.providerCallId) : null;
@@ -506,6 +601,11 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
     CALL_SESSION_STATUS.CREATED,
     correlationId,
     resumeToken,
+    reconnectWindowMs,
+    resumeValidUntilMs,
+    null,
+    null,
+    null,
     provider,
     providerRoomId,
     providerParticipantId,
@@ -585,6 +685,51 @@ fastify.get('/v1/call/sessions/:sessionId', async (req, reply) => {
   };
 });
 
+
+fastify.post('/v1/call/sessions/:sessionId/reconnect', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+  if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
+  if (existing.userId !== auth.userId) return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'Session does not belong to authenticated user', false);
+
+  const resumeToken = String(body.resumeToken || '').trim();
+  if (!resumeToken) return sendError(req, reply, 400, 'INVALID_REQUEST', 'resumeToken is required', false);
+  if (resumeToken !== existing.resumeToken) return sendError(req, reply, 403, 'INVALID_RESUME_TOKEN', 'resumeToken is invalid for this session', false);
+
+  const nowMs = Date.now();
+  if (existing.resumeValidUntilMs && nowMs > existing.resumeValidUntilMs) {
+    return sendError(req, reply, 410, 'RECONNECT_WINDOW_EXPIRED', 'reconnect window expired for this session', false);
+  }
+
+  const requestedAckSequence = body.lastAckSequence !== undefined ? Number(body.lastAckSequence) : null;
+  const ackSequence = Number.isFinite(requestedAckSequence)
+    ? Math.max(0, Math.trunc(requestedAckSequence))
+    : Math.max(0, Number(existing.lastAckSequence || 0));
+
+  const limitRaw = body.limit !== undefined ? Number(body.limit) : 100;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
+  const rows = dbCtx.listRealtimeEventsAfterSequence.all(sessionId, ackSequence, limit);
+  const events = rows.map(normalizeRealtimeEventRow);
+  const latestSequence = Number(dbCtx.getRealtimeSessionMaxSequence.get(sessionId)?.maxSequence || 0);
+
+  return {
+    ok: true,
+    session: normalizeCallSessionRow(existing),
+    replay: {
+      fromSequence: ackSequence,
+      latestSequence,
+      events,
+      transcriptState: mergeTranscriptEvents(events),
+    },
+  };
+});
+
 fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
   const body = req.body || {};
   const auth = getAuthenticatedUserId(req, body);
@@ -640,9 +785,17 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
   const failedAtMs = nextStatus === CALL_SESSION_STATUS.FAILED ? (existing.failedAtMs || updatedAtMs) : existing.failedAtMs;
   const mergedMetadata = { ...parseStoredMetadata(existing.metadataJson), ...parseRequestMetadata(body.metadata) };
   const lastError = nextStatus === CALL_SESSION_STATUS.FAILED ? String(body.error || existing.lastError || 'call session failed') : existing.lastError;
+  const reconnectWindowMs = existing.reconnectWindowMs || DEFAULT_RECONNECT_WINDOW_MS;
+  const resumeValidUntilMs = nextStatus === CALL_SESSION_STATUS.ACTIVE
+    ? (existing.resumeValidUntilMs || (updatedAtMs + reconnectWindowMs))
+    : null;
 
   dbCtx.updateCallSession.run(
     nextStatus,
+    resumeValidUntilMs,
+    existing.lastAckSequence || null,
+    existing.lastAckTimestamp || null,
+    existing.lastAckEventId || null,
     updateProvider,
     updateProviderRoomId,
     updateProviderParticipantId,
@@ -696,6 +849,17 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
         retryable: false,
       },
     }));
+    publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.terminal_failure',
+      actor: { role: 'system', id: 'backend' },
+      payload: {
+        callId: sessionId,
+        failedAt: new Date(failedAtMs).toISOString(),
+        code: 'CALL_SESSION_IRRECOVERABLE',
+        message: session.lastError || 'call session failed',
+      },
+    }));
   }
 
   return {
@@ -709,12 +873,23 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
 fastify.post('/v1/realtime/events', async (req, reply) => {
   const body = normalizeIncomingRealtimeEvent(req.body || {});
   const event = createRealtimeEvent({
+codex/enforce-event-envelope-in-backend
     sessionId: body?.sessionId !== undefined ? String(body.sessionId) : '',
     type: body?.type !== undefined ? String(body.type) : '',
     payload: body?.payload,
     eventId: body?.eventId !== undefined ? String(body.eventId) : undefined,
     ts: body?.ts !== undefined ? String(body.ts) : undefined,
     schemaVersion: body?.schemaVersion || EVENT_VERSION,
+=======
+    sessionId: String(body.sessionId || ''),
+    type: String(body.type || ''),
+    actor: body.actor,
+    payload: body.payload,
+    eventId: body.eventId ? String(body.eventId) : undefined,
+    timestamp: body.timestamp ? String(body.timestamp) : undefined,
+    sequence: body.sequence !== undefined ? Number(body.sequence) : undefined,
+    version: body.version || EVENT_VERSION,
+prod
   });
 
   try {
@@ -729,16 +904,44 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
   const sessionId = String(req.params?.sessionId || '').trim();
   if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
 
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+
   const consumerId = req.query?.consumerId ? String(req.query.consumerId) : null;
+codex/enforce-event-envelope-in-backend
   const afterTsInput = req.query?.afterTs ? String(req.query.afterTs) : null;
+=======
+  const resumeToken = req.query?.resumeToken ? String(req.query.resumeToken) : null;
+  const afterSequenceInput = req.query?.afterSequence !== undefined ? Number(req.query.afterSequence) : null;
+  const afterTimestampInput = req.query?.afterTimestamp ? String(req.query.afterTimestamp) : null;
+
+  prod
   const afterEventIdInput = req.query?.afterEventId ? String(req.query.afterEventId) : null;
   const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 100;
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
 
+ codex/enforce-event-envelope-in-backend
   let watermarkTs = afterTsInput || '';
   let watermarkEventId = afterEventIdInput || '';
 
   if (consumerId && !afterTsInput && !afterEventIdInput) {
+=======
+  const nowMs = Date.now();
+  if (resumeToken) {
+    if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
+    if (resumeToken !== existing.resumeToken) {
+      return sendError(req, reply, 403, 'INVALID_RESUME_TOKEN', 'resumeToken is invalid for this session', false);
+    }
+    if (existing.resumeValidUntilMs && nowMs > existing.resumeValidUntilMs) {
+      return sendError(req, reply, 410, 'RECONNECT_WINDOW_EXPIRED', 'reconnect window expired for this session', false);
+    }
+  }
+
+  let afterSequence = Number.isFinite(afterSequenceInput) ? Math.max(0, Math.trunc(afterSequenceInput)) : null;
+  let watermarkTimestamp = afterTimestampInput || '';
+  let watermarkEventId = afterEventIdInput || '';
+
+  if (afterSequence === null && consumerId) {
+prod
     const cp = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
     if (cp) {
       watermarkTs = cp.watermarkTimestamp;
@@ -746,6 +949,7 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
     }
   }
 
+ codex/enforce-event-envelope-in-backend
   const rows = dbCtx.listRealtimeEventsAfterWatermark.all(
     sessionId,
     watermarkTs || '',
@@ -753,14 +957,43 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
     watermarkEventId || '',
     limit,
   );
+=======
+  if (afterSequence === null && existing && existing.lastAckSequence !== null && existing.lastAckSequence !== undefined) {
+    afterSequence = Math.max(afterSequence || 0, Number(existing.lastAckSequence) || 0);
+  }
+
+  let rows;
+  if (afterSequence !== null) {
+    rows = dbCtx.listRealtimeEventsAfterSequence.all(sessionId, afterSequence, limit);
+  } else {
+    rows = dbCtx.listRealtimeEventsAfterWatermark.all(
+      sessionId,
+      watermarkTimestamp || '',
+      watermarkTimestamp || '',
+      watermarkEventId || '',
+      limit,
+    );
+  }
+ prod
 
   const events = rows.map(normalizeRealtimeEventRow);
   const transcriptState = mergeTranscriptEvents(events);
+  const latestSequence = Number(dbCtx.getRealtimeSessionMaxSequence.get(sessionId)?.maxSequence || 0);
 
   return {
     ok: true,
     sessionId,
+ codex/enforce-event-envelope-in-backend
     watermark: { ts: watermarkTs || null, eventId: watermarkEventId || null },
+=======
+    resume: {
+      reconnectWindowMs: existing?.reconnectWindowMs || null,
+      resumeValidUntilMs: existing?.resumeValidUntilMs || null,
+      lastAckSequence: existing?.lastAckSequence || null,
+      latestSequence,
+    },
+    watermark: { timestamp: watermarkTimestamp || null, eventId: watermarkEventId || null, sequence: afterSequence },
+prod
     events,
     transcriptState,
   };
@@ -774,6 +1007,7 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
   const consumerId = String(body.consumerId || '').trim();
   const watermarkTs = String(body.watermarkTs || '').trim();
   const watermarkEventId = String(body.watermarkEventId || '').trim();
+ codex/enforce-event-envelope-in-backend
   if (!consumerId || !watermarkTs || !watermarkEventId) {
     return sendError(req, reply, 400, 'INVALID_REQUEST', 'consumerId, watermarkTs, and watermarkEventId are required', false);
   }
@@ -792,6 +1026,22 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
         }
       : null,
   };
+=======
+  const watermarkSequenceRaw = body.watermarkSequence !== undefined ? Number(body.watermarkSequence) : null;
+  const watermarkSequence = Number.isFinite(watermarkSequenceRaw) ? Math.max(0, Math.trunc(watermarkSequenceRaw)) : null;
+  if (!consumerId || !watermarkTimestamp || !watermarkEventId) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'consumerId, watermarkTimestamp, and watermarkEventId are required', false);
+  }
+
+  const updatedAtMs = Date.now();
+  dbCtx.upsertRealtimeCheckpoint.run(sessionId, consumerId, watermarkTimestamp, watermarkEventId, updatedAtMs);
+  if (watermarkSequence !== null && dbCtx.getCallSessionById.get(sessionId)) {
+    dbCtx.updateCallSessionAck.run(watermarkSequence, watermarkTimestamp, watermarkEventId, updatedAtMs, sessionId);
+  }
+  const checkpoint = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
+  const session = normalizeCallSessionRow(dbCtx.getCallSessionById.get(sessionId));
+  return { ok: true, checkpoint, sessionAck: { sequence: session?.lastAckSequence || null, timestamp: session?.lastAckTimestamp || null, eventId: session?.lastAckEventId || null } };
+prod
 });
 
 fastify.post('/v1/actions/decision', async (req, reply) => {
@@ -837,6 +1087,145 @@ fastify.post('/v1/actions/decision', async (req, reply) => {
         riskTier,
         decisionTimestamp,
       },
+    },
+  };
+});
+
+fastify.post('/v1/orchestration/actions/execute', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const sessionId = String(body.sessionId || '').trim();
+  const actionId = String(body.actionId || '').trim();
+  const actionType = String(body.actionType || '').trim();
+  const summary = String(body.summary || actionType || 'Execute orchestration action').trim();
+  const riskTier = String(body.riskTier || ACTION_RISK_TIERS.LOW_RISK_WRITE);
+  const userConfirmation = body.userConfirmation === true;
+  const metadata = parseRequestMetadata(body.metadata);
+  const actor = { role: 'system', id: auth.userId };
+
+  if (!sessionId || !actionId || !actionType) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId, actionId, and actionType are required', false);
+  }
+
+  const requestedEvent = createRealtimeEvent({
+    sessionId,
+    type: 'orchestration.action.requested',
+    actor,
+    payload: {
+      actionId,
+      actionType,
+      summary,
+      riskTier,
+      metadata,
+    },
+    timestamp: nowIso(),
+  });
+  publishRealtimeEvent(requestedEvent);
+
+  const decision = createPolicyDecision({
+    actionId,
+    actionType,
+    riskTier,
+    userConfirmation,
+    userId: auth.userId,
+    metadata,
+  });
+
+  const decisionTimestampMs = Date.now();
+  const safetyEvent = createRealtimeEvent({
+    sessionId,
+    type: decision.eventType,
+    actor,
+    payload: {
+      policyId: decision.policyId,
+      reason: decision.reason,
+      decision: decision.decision,
+      actionId,
+      actionType,
+      riskTier,
+      auditMetadata: {
+        userId: auth.userId,
+        decisionTimestampMs,
+        metadata,
+      },
+    },
+    timestamp: nowIso(),
+  });
+  publishRealtimeEvent(safetyEvent);
+
+  const auditId = stableId(sessionId, actionId, decisionTimestampMs, decision.decision, decision.reason);
+  dbCtx.insertActionAudit.run(
+    auditId,
+    actionId,
+    body.conversationId ? String(body.conversationId) : null,
+    toTsMs(body.callTimestamp),
+    decisionTimestampMs,
+    actionType,
+    riskTier,
+    decision.decision,
+    decision.approved ? 'approved' : 'blocked',
+    JSON.stringify({
+      sessionId,
+      policyId: decision.policyId,
+      reason: decision.reason,
+      userId: auth.userId,
+      userConfirmation,
+      metadata,
+    }),
+  );
+
+  if (!decision.approved) {
+    return reply.code(403).send({
+      ok: false,
+      blocked: true,
+      code: 'SAFETY_BLOCKED',
+      message: 'Action blocked by policy gate before execution',
+      decision: {
+        policyId: decision.policyId,
+        reason: decision.reason,
+        actionId,
+      },
+      events: {
+        requested: requestedEvent,
+        safety: safetyEvent,
+      },
+    });
+  }
+
+  const startedAtMs = Date.now();
+  const execution = executeOrchestrationAction({ actionType, payload: body.payload });
+  const durationMs = Math.max(0, Date.now() - startedAtMs);
+
+  const executedEvent = createRealtimeEvent({
+    sessionId,
+    type: 'action.executed',
+    actor,
+    payload: {
+      actionId,
+      durationMs,
+      resultRef: execution.resultRef,
+    },
+    timestamp: nowIso(),
+  });
+  publishRealtimeEvent(executedEvent);
+
+  return {
+    ok: true,
+    blocked: false,
+    actionId,
+    actionType,
+    result: execution,
+    decision: {
+      policyId: decision.policyId,
+      decision: decision.decision,
+      reason: decision.reason,
+    },
+    events: {
+      requested: requestedEvent,
+      safety: safetyEvent,
+      executed: executedEvent,
     },
   };
 });
