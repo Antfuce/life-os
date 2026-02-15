@@ -49,7 +49,9 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       correlationId TEXT,
       resumeToken TEXT,
       provider TEXT,
-      providerRoomName TEXT,
+      providerRoomId TEXT,
+      providerParticipantId TEXT,
+      providerCallId TEXT,
       metadataJson TEXT,
       lastError TEXT,
       createdAtMs INTEGER NOT NULL,
@@ -64,6 +66,10 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_status_updated ON call_session(status, updatedAtMs);
   `);
+
+  try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN providerParticipantId TEXT;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN providerCallId TEXT;'); } catch {}
 
   const upsertConv = db.prepare(
     `INSERT INTO conversation (id, createdAtMs, updatedAtMs, defaultPersona)
@@ -85,9 +91,9 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
 
   const insertCallSession = db.prepare(
     `INSERT OR IGNORE INTO call_session (
-      id, userId, status, correlationId, resumeToken, provider, providerRoomName,
+      id, userId, status, correlationId, resumeToken, provider, providerRoomId, providerParticipantId, providerCallId,
       metadataJson, lastError, createdAtMs, updatedAtMs, startedAtMs, endedAtMs, failedAtMs
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const getCallSessionById = db.prepare(
@@ -105,7 +111,9 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     `UPDATE call_session
        SET status = ?,
            provider = ?,
-           providerRoomName = ?,
+           providerRoomId = ?,
+           providerParticipantId = ?,
+           providerCallId = ?,
            metadataJson = ?,
            lastError = ?,
            updatedAtMs = ?,

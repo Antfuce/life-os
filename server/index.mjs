@@ -332,11 +332,33 @@ const CALL_SESSION_STATUS = {
 };
 
 const CALL_SESSION_TRANSITIONS = {
-  [CALL_SESSION_STATUS.CREATED]: new Set([CALL_SESSION_STATUS.ACTIVE, CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED]),
+  [CALL_SESSION_STATUS.CREATED]: new Set([CALL_SESSION_STATUS.ACTIVE]),
   [CALL_SESSION_STATUS.ACTIVE]: new Set([CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED]),
   [CALL_SESSION_STATUS.ENDED]: new Set(),
   [CALL_SESSION_STATUS.FAILED]: new Set(),
 };
+
+function sendError(req, reply, statusCode, code, message, retryable = false) {
+  return reply.code(statusCode).send({
+    ok: false,
+    code,
+    message,
+    retryable,
+    requestId: req.id,
+  });
+}
+
+function getAuthenticatedUserId(req, body = {}) {
+  const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']).trim() : '';
+  const bodyUserId = body?.userId ? String(body.userId).trim() : '';
+
+  if (!headerUserId) return { code: 'AUTH_REQUIRED', message: 'x-user-id header is required' };
+  if (bodyUserId && bodyUserId !== headerUserId) {
+    return { code: 'CROSS_USER_FORBIDDEN', message: 'userId in body must match authenticated x-user-id' };
+  }
+
+  return { userId: headerUserId };
+}
 
 function parseRequestMetadata(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
@@ -348,22 +370,6 @@ function parseRequestMetadata(raw) {
     }
   }
   return safe;
-}
-
-function currentUserId(req, body) {
-  const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']).trim() : '';
-  const bodyUserId = body?.userId ? String(body.userId).trim() : '';
-  const userId = bodyUserId || headerUserId;
-
-  if (!userId) {
-    return { error: 'userId is required (send x-user-id header or body.userId)' };
-  }
-
-  if (headerUserId && bodyUserId && headerUserId !== bodyUserId) {
-    return { error: 'x-user-id header must match body.userId when both are provided' };
-  }
-
-  return { userId };
 }
 
 function parseStoredMetadata(rawJson) {
@@ -386,7 +392,9 @@ function normalizeCallSessionRow(row) {
     correlationId: row.correlationId,
     resumeToken: row.resumeToken,
     provider: row.provider,
-    providerRoomName: row.providerRoomName,
+    providerRoomId: row.providerRoomId,
+    providerParticipantId: row.providerParticipantId,
+    providerCallId: row.providerCallId,
     metadata,
     lastError: row.lastError,
     createdAtMs: row.createdAtMs,
@@ -399,8 +407,15 @@ function normalizeCallSessionRow(row) {
 
 fastify.post('/v1/call/sessions', async (req, reply) => {
   const body = req.body || {};
-  const auth = currentUserId(req, body);
-  if (auth.error) return reply.code(400).send({ ok: false, error: auth.error });
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  if (body.sessionId !== undefined && String(body.sessionId).trim() === '') {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId cannot be empty', false);
+  }
+  if (body.correlationId !== undefined && String(body.correlationId).trim() === '') {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'correlationId cannot be empty', false);
+  }
 
   const createdAtMs = Date.now();
   const userId = auth.userId;
@@ -408,7 +423,9 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
   const correlationId = body.correlationId ? String(body.correlationId) : `corr_${stableId(sessionId, createdAtMs).slice(0, 16)}`;
   const resumeToken = `resume_${stableId(sessionId, userId, createdAtMs).slice(0, 24)}`;
   const provider = body.provider ? String(body.provider) : 'livekit';
-  const providerRoomName = body.providerRoomName ? String(body.providerRoomName) : null;
+  const providerRoomId = body.providerRoomId ? String(body.providerRoomId) : null;
+  const providerParticipantId = body.providerParticipantId ? String(body.providerParticipantId) : null;
+  const providerCallId = body.providerCallId ? String(body.providerCallId) : null;
   const metadata = parseRequestMetadata(body.metadata);
 
   const created = dbCtx.insertCallSession.run(
@@ -418,7 +435,9 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
     correlationId,
     resumeToken,
     provider,
-    providerRoomName,
+    providerRoomId,
+    providerParticipantId,
+    providerCallId,
     JSON.stringify(metadata),
     null,
     createdAtMs,
@@ -429,11 +448,11 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
   );
 
   if (!created?.changes) {
-    return reply.code(409).send({ ok: false, error: 'Session already exists; retry without sessionId override' });
+    return sendError(req, reply, 409, 'SESSION_EXISTS', 'Session already exists; retry without sessionId override', true);
   }
 
   const row = dbCtx.getCallSessionById.get(sessionId);
-  if (!row) return reply.code(500).send({ ok: false, error: 'Failed to create call session' });
+  if (!row) return sendError(req, reply, 500, 'SESSION_CREATE_FAILED', 'Failed to create call session', true);
 
   return {
     ok: true,
@@ -443,10 +462,14 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
 
 
 fastify.get('/v1/call/sessions', async (req, reply) => {
-  const userId = req.headers['x-user-id'] ? String(req.headers['x-user-id']).trim() : '';
-  if (!userId) return reply.code(400).send({ ok: false, error: 'x-user-id header is required' });
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  const userId = auth.userId;
 
-  const limitRaw = Number(req.query?.limit);
+  const limitRaw = req.query?.limit === undefined ? undefined : Number(req.query.limit);
+  if (req.query?.limit !== undefined && !Number.isFinite(limitRaw)) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'limit must be a number', false);
+  }
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.trunc(limitRaw))) : 20;
 
   const rows = dbCtx.listCallSessionsByUser.all(userId, limit);
@@ -462,14 +485,15 @@ fastify.get('/v1/call/sessions', async (req, reply) => {
 
 fastify.get('/v1/call/sessions/:sessionId', async (req, reply) => {
   const sessionId = String(req.params?.sessionId || '').trim();
-  if (!sessionId) return reply.code(400).send({ ok: false, error: 'sessionId is required' });
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
 
-  const userId = req.headers['x-user-id'] ? String(req.headers['x-user-id']).trim() : '';
-  if (!userId) return reply.code(400).send({ ok: false, error: 'x-user-id header is required' });
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  const userId = auth.userId;
 
   const existing = dbCtx.getCallSessionById.get(sessionId);
-  if (!existing) return reply.code(404).send({ ok: false, error: 'Session not found' });
-  if (existing.userId !== userId) return reply.code(403).send({ ok: false, error: 'Session does not belong to authenticated user' });
+  if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
+  if (existing.userId !== userId) return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'Session does not belong to authenticated user', false);
 
   return {
     ok: true,
@@ -479,38 +503,66 @@ fastify.get('/v1/call/sessions/:sessionId', async (req, reply) => {
 
 fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
   const body = req.body || {};
-  const auth = currentUserId(req, body);
-  if (auth.error) return reply.code(400).send({ ok: false, error: auth.error });
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
 
   const sessionId = String(req.params?.sessionId || '').trim();
-  if (!sessionId) return reply.code(400).send({ ok: false, error: 'sessionId is required' });
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
 
   const nextStatus = String(body.status || '').trim();
   if (!Object.values(CALL_SESSION_STATUS).includes(nextStatus)) {
-    return reply.code(400).send({ ok: false, error: 'status must be one of created|active|ended|failed' });
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'status must be one of created|active|ended|failed', false);
   }
 
   const existing = dbCtx.getCallSessionById.get(sessionId);
-  if (!existing) return reply.code(404).send({ ok: false, error: 'Session not found' });
-  if (existing.userId !== auth.userId) return reply.code(403).send({ ok: false, error: 'Session does not belong to authenticated user' });
+  if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
+  if (existing.userId !== auth.userId) return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'Session does not belong to authenticated user', false);
 
   if (existing.status !== nextStatus && !CALL_SESSION_TRANSITIONS[existing.status]?.has(nextStatus)) {
-    return reply.code(409).send({ ok: false, error: `Invalid transition from ${existing.status} to ${nextStatus}` });
+    return sendError(req, reply, 409, 'INVALID_TRANSITION', `Invalid transition from ${existing.status} to ${nextStatus}`, false);
   }
+
+  const isIdempotentReplay = existing.status === nextStatus;
+  const requestedProvider = body.provider ? String(body.provider) : existing.provider;
+  const requestedProviderRoomId = body.providerRoomId ? String(body.providerRoomId) : existing.providerRoomId;
+  const requestedProviderParticipantId = body.providerParticipantId ? String(body.providerParticipantId) : existing.providerParticipantId;
+  const requestedProviderCallId = body.providerCallId ? String(body.providerCallId) : existing.providerCallId;
+
+  if (nextStatus === CALL_SESSION_STATUS.ACTIVE) {
+    if (!requestedProviderRoomId || !requestedProviderParticipantId || !requestedProviderCallId) {
+      return sendError(req, reply, 400, 'INVALID_REQUEST', 'active transition requires providerRoomId, providerParticipantId, and providerCallId', false);
+    }
+    if (existing.status === CALL_SESSION_STATUS.ACTIVE) {
+      const mismatch = (
+        (body.provider && existing.provider && existing.provider !== requestedProvider)
+        || (body.providerRoomId && existing.providerRoomId && existing.providerRoomId !== requestedProviderRoomId)
+        || (body.providerParticipantId && existing.providerParticipantId && existing.providerParticipantId !== requestedProviderParticipantId)
+        || (body.providerCallId && existing.providerCallId && existing.providerCallId !== requestedProviderCallId)
+      );
+      if (mismatch) {
+        return sendError(req, reply, 409, 'PROVIDER_CORRELATION_MISMATCH', 'provider correlation fields are immutable once activation has occurred', false);
+      }
+    }
+  }
+
+  const updateProvider = existing.startedAtMs ? existing.provider : requestedProvider;
+  const updateProviderRoomId = existing.startedAtMs ? existing.providerRoomId : requestedProviderRoomId;
+  const updateProviderParticipantId = existing.startedAtMs ? existing.providerParticipantId : requestedProviderParticipantId;
+  const updateProviderCallId = existing.startedAtMs ? existing.providerCallId : requestedProviderCallId;
 
   const updatedAtMs = Date.now();
   const startedAtMs = nextStatus === CALL_SESSION_STATUS.ACTIVE ? (existing.startedAtMs || updatedAtMs) : existing.startedAtMs;
-  const endedAtMs = nextStatus === CALL_SESSION_STATUS.ENDED ? updatedAtMs : existing.endedAtMs;
-  const failedAtMs = nextStatus === CALL_SESSION_STATUS.FAILED ? updatedAtMs : existing.failedAtMs;
-  const provider = body.provider ? String(body.provider) : existing.provider;
-  const providerRoomName = body.providerRoomName ? String(body.providerRoomName) : existing.providerRoomName;
+  const endedAtMs = nextStatus === CALL_SESSION_STATUS.ENDED ? (existing.endedAtMs || updatedAtMs) : existing.endedAtMs;
+  const failedAtMs = nextStatus === CALL_SESSION_STATUS.FAILED ? (existing.failedAtMs || updatedAtMs) : existing.failedAtMs;
   const mergedMetadata = { ...parseStoredMetadata(existing.metadataJson), ...parseRequestMetadata(body.metadata) };
   const lastError = nextStatus === CALL_SESSION_STATUS.FAILED ? String(body.error || existing.lastError || 'call session failed') : existing.lastError;
 
   dbCtx.updateCallSession.run(
     nextStatus,
-    provider,
-    providerRoomName,
+    updateProvider,
+    updateProviderRoomId,
+    updateProviderParticipantId,
+    updateProviderCallId,
     JSON.stringify(mergedMetadata),
     lastError,
     updatedAtMs,
@@ -523,6 +575,7 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
   const row = dbCtx.getCallSessionById.get(sessionId);
   return {
     ok: true,
+    idempotentReplay: isIdempotentReplay,
     session: normalizeCallSessionRow(row),
   };
 });
