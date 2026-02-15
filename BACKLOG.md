@@ -211,6 +211,21 @@
 
 ---
 
+## Next 5 Tasks (Execution Order)
+
+1. **Finish Call Session Service wiring (P0 #1)**
+   - Complete LiveKit-issued identifier/token wiring on activation path and ensure correlation metadata remains immutable after activation.
+2. **Implement LiveKit Session Bridge (P0 #2)**
+   - Add backend token issuance endpoint(s), room/participant mapping, and provider state fan-in to canonical `call.*` events.
+3. **Finalize Realtime Event Schema v1 enforcement (P0 #3)**
+   - Lock envelope fields and required event families across emit, replay, and checkpoint paths with versioned validation.
+4. **Ship Failure Recovery + Reconnect semantics (P0 #4)**
+   - Enforce reconnect windows, resume token validation, idempotent replay from last acknowledged sequence, and terminal failure signaling.
+5. **Start In-Call Orchestration Actions (P1 #5)**
+   - Emit `orchestration.action.requested`, execute backend tool actions, and return deterministic success/failure acknowledgment events.
+
+---
+
 ## Next Action
 
 **Backend:** Finish P0 #1 by wiring LiveKit-issued identifiers/tokens to activation path, then implement P0 #2 LiveKit Session Bridge and P0 #3 Event Schema in parallel

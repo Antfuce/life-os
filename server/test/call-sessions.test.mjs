@@ -29,6 +29,9 @@ async function startServer() {
       PORT: String(port),
       LIFE_OS_DB: dbFile,
       OPENCLAW_GATEWAY_TOKEN: 'test-token',
+      LIVEKIT_API_KEY: 'lk_test_key',
+      LIVEKIT_API_SECRET: 'lk_test_secret',
+      LIVEKIT_WS_URL: 'wss://livekit.example.test',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -114,6 +117,14 @@ test('invalid lifecycle transitions are blocked', async () => {
       }),
     });
     assert.equal(activate.status, 200);
+    const activated = await activate.json();
+    assert.equal(activated.session.providerRoomId, 'room-1');
+    assert.equal(activated.session.providerParticipantId, 'part-1');
+    assert.equal(activated.session.providerCallId, 'call-1');
+    assert.equal(activated.providerAuth.provider, 'livekit');
+    assert.equal(activated.providerAuth.room, 'room-1');
+    assert.equal(activated.providerAuth.identity, 'part-1');
+    assert.equal(typeof activated.providerAuth.token, 'string');
 
     const invalidBack = await fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/state`, {
       method: 'POST',
@@ -123,6 +134,43 @@ test('invalid lifecycle transitions are blocked', async () => {
     const invalidBackJson = await invalidBack.json();
     assert.equal(invalidBack.status, 409);
     assert.equal(invalidBackJson.code, 'INVALID_TRANSITION');
+  } finally {
+    await srv.stop();
+  }
+});
+
+
+
+test('provider correlation fields are immutable after activation', async () => {
+  const srv = await startServer();
+  try {
+    const created = await createSession(srv.baseUrl, 'user-a', {});
+    const sessionId = created.json.session.sessionId;
+
+    const activate = await fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({
+        status: 'active',
+        provider: 'livekit',
+        providerRoomId: 'room-1',
+        providerParticipantId: 'part-1',
+        providerCallId: 'call-1',
+      }),
+    });
+    assert.equal(activate.status, 200);
+
+    const mismatch = await fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({
+        status: 'active',
+        providerRoomId: 'room-2',
+      }),
+    });
+    const mismatchJson = await mismatch.json();
+    assert.equal(mismatch.status, 409);
+    assert.equal(mismatchJson.code, 'PROVIDER_CORRELATION_MISMATCH');
   } finally {
     await srv.stop();
   }
