@@ -49,3 +49,13 @@ If you are Codex reading this:
 - Updated `docs/REALTIME_EVENT_CONTRACT.md` as single canonical schema doc including versioning/compatibility guidance for v1.x evolution.
 - Next: wire LiveKit bridge producers to publish through the same realtime event publisher and expose validation/replay metrics to observability backend.
 - Risk: test suite requires Node runtime with `node:sqlite` support.
+
+### 2026-02-15 22:09 UTC
+- Codex: Added `docs/PR_MERGE_PLAYBOOK.md` with dependency-ordered merge guidance for open PRs (#14, #17, #19, #9), likely merge blockers, and a production unblocking checklist.
+- Recommended merge sequence: #14 → #17 → #19 → #9 (contract/persistence first, billing last).
+- Risk: local environment has no GitHub CLI remote context, so guidance is dependency-based from backlog/contracts rather than inline PR diff review.
+
+### 2026-02-15 22:19 UTC
+- Codex: Expanded `docs/PR_MERGE_PLAYBOOK.md` from advisory guidance into an execution runbook with explicit TL;DR, exact git commands, exact GitHub UI merge steps, blocker-specific remediations, and merge go/no-go criteria.
+- Next: owner executes merges in order #14 → #17 → #19 → #9 and ships #14+#17 first if time constrained.
+- Risk: cannot inspect live GitHub checks from this environment; follow-up should confirm branch protection status per PR.
