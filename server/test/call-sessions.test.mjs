@@ -187,6 +187,57 @@ test('duplicate activate/end updates are replay-safe', async () => {
 });
 
 
+
+test('livekit token endpoint issues short-lived token for owned session', async () => {
+  const srv = await startServer();
+  try {
+    const created = await createSession(srv.baseUrl, 'user-a', {});
+    const sessionId = created.json.session.sessionId;
+
+    const tokenResp = await fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/livekit/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({ roomName: 'room-test', participantIdentity: 'user-a-device-1', ttlSeconds: 300 }),
+    });
+    const tokenJson = await tokenResp.json();
+    assert.equal(tokenResp.status, 503);
+    assert.equal(tokenJson.code, 'LIVEKIT_NOT_CONFIGURED');
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('provider-state fan-in emits canonical call events', async () => {
+  const srv = await startServer();
+  try {
+    const created = await createSession(srv.baseUrl, 'user-a', {});
+    const sessionId = created.json.session.sessionId;
+
+    const connectResp = await fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/provider-state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({ provider: 'livekit', providerState: 'connected', providerCallId: 'lk_call_1' }),
+    });
+    assert.equal(connectResp.status, 200);
+
+    const endResp = await fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/provider-state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({ provider: 'livekit', providerState: 'ended', endReason: 'user_hangup' }),
+    });
+    assert.equal(endResp.status, 200);
+
+    const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
+    const replayJson = await replay.json();
+    assert.equal(replay.status, 200);
+    const types = replayJson.events.map((evt) => evt.type);
+    assert.ok(types.includes('call.connected'));
+    assert.ok(types.includes('call.ended'));
+  } finally {
+    await srv.stop();
+  }
+});
+
 test('reconnect requires valid resume token and replays from acknowledged sequence', async () => {
   const srv = await startServer();
   try {

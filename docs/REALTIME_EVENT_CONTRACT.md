@@ -9,11 +9,6 @@ All events MUST use exactly these keys:
 ```json
 {
   "eventId": "evt_01JABCDEF1234567890",
-codex/enforce-event-envelope-in-backend
-=======
-  "sequence": 42,
-  "timestamp": "2026-02-16T10:00:00.000Z",
-prod
   "sessionId": "sess_123",
   "ts": "2026-02-16T10:00:00.000Z",
   "type": "call.started",
@@ -25,11 +20,6 @@ prod
 ### Field rules
 
 - `eventId` (string, required): globally unique per event. Used as dedupe key.
-codex/enforce-event-envelope-in-backend
-=======
-- `sequence` (integer, server-assigned): monotonic per-session ordering key used for reconnect replay.
-- `timestamp` (string, required): ISO-8601 UTC emit timestamp.
-prod
 - `sessionId` (string, required): session stream partition key.
 - `ts` (string, required): ISO-8601 UTC emit timestamp.
 - `type` (string, required): event discriminator.
@@ -42,109 +32,9 @@ Canonical emission only supports these six keys. Ingestion boundaries MAY normal
 
 ## Required event families and payload schemas
 
-## `call.*`
+- `call.*`, `transcript.*`, `orchestration.*`, `action.*`, `safety.*`, `billing.*`, `usage.*`
 
-- `call.started`
-  - `callId` (string)
-  - `channel` (`voice | video`)
-  - `direction` (`inbound | outbound`)
-  - `provider` (string)
-- `call.connected`
-  - `callId` (string)
-  - `connectedAt` (ISO-8601)
-  - `providerSessionId` (string, optional)
-- `call.ended`
-  - `callId` (string)
-  - `endedAt` (ISO-8601)
-  - `durationSeconds` (integer >= 0)
-  - `endReason` (`completed | user_hangup | timeout | agent_handover`)
-- `call.error`
-  - `callId` (string, optional)
-  - `code` (string)
-  - `message` (string)
-  - `retryable` (boolean)
-- `call.terminal_failure`
-  - `callId` (string)
-  - `failedAt` (ISO-8601)
-  - `code` (string)
-  - `message` (string)
-
-## `transcript.*`
-
-- `transcript.partial`
-  - `utteranceId` (string)
-  - `speaker` (`user | agent | unknown`)
-  - `text` (string)
-  - `startMs` (integer >= 0)
-  - `endMs` (integer >= 0)
-  - `confidence` (number, optional)
-- `transcript.final`
-  - `utteranceId` (string)
-  - `speaker` (`user | agent`)
-  - `text` (string)
-  - `startMs` (integer >= 0)
-  - `endMs` (integer >= 0)
-  - `confidence` (number, optional)
-
-Determinism rule: `transcript.final` always supersedes all `transcript.partial` events for the same `utteranceId`.
-
-## `orchestration.*` / `action.*`
-
-- `orchestration.action.requested`
-  - `actionId` (string)
-  - `actionType` (string)
-  - `summary` (string)
-- `action.proposed`
-  - `actionId` (string)
-  - `actionType` (string)
-  - `summary` (string)
-- `action.requires_confirmation`
-  - `actionId` (string)
-  - `reason` (string)
-  - `confirmationToken` (string)
-- `action.executed`
-  - `actionId` (string)
-  - `durationMs` (integer >= 0)
-  - `resultRef` (string, optional)
-- `action.failed`
-  - `actionId` (string)
-  - `code` (string)
-  - `message` (string)
-  - `retryable` (boolean)
-
-## `safety.*`
-
-- `safety.blocked`
-  - `policyId` (string)
-  - `reason` (string)
-  - `decision` (string)
-- `safety.approved`
-  - `policyId` (string)
-  - `decision` (string)
-
-## `billing.*` / `usage.*`
-
-- `billing.usage.recorded`
-  - `meterId` (string)
-  - `billableSeconds` (integer >= 0)
-- `billing.adjustment.created`
-  - `adjustmentId` (string)
-  - `meterId` (string)
-  - `amount` (number)
-  - `currency` (string)
-- `usage.tick`
-  - `meterId` (string)
-  - `billableSeconds` (integer >= 0)
-- `usage.warning`
-  - `meterId` (string)
-  - `thresholdType` (`seconds | cost`)
-  - `thresholdValue` (number)
-  - `currentValue` (number)
-  - `message` (string)
-- `usage.stopped`
-  - `meterId` (string)
-  - `finalBillableSeconds` (integer >= 0)
-  - `reason` (`budget_exceeded | policy_limit | manual_stop`)
+See backend validator in `server/realtime-events.mjs` for exact payload constraints.
 
 ## Runtime validation at emission boundary
 
@@ -154,32 +44,17 @@ Backend publisher validates every event envelope + payload before persistence/fa
 - Server logs `realtime_event_validation_failed` with errors.
 - In-memory counters track emitted, invalid, and deduped events.
 
-## Replay, watermark, and dedupe semantics
+## Replay, watermark, dedupe, reconnect
 
 - Event store is append-only and session-scoped.
 - Dedupe key is `eventId` (idempotent insert).
-codex/enforce-event-envelope-in-backend
-- Consumers store watermark tuple `(ts, eventId)` per `sessionId`.
-- Replay query returns only events strictly newer than watermark:
-  - `(event.ts > watermark.ts)` OR
-  - `(event.ts == watermark.ts AND event.eventId > watermark.eventId)`
-- Sorting is deterministic: `ts ASC`, then `eventId ASC`.
-=======
-- Consumers should store `sequence` as primary checkpoint; timestamp/eventId tuple remains supported fallback.
-- Replay by sequence returns events where `event.sequence > lastAckSequence`.
-- Watermark replay fallback returns only events strictly newer than `(timestamp, eventId)`:
-  - `(event.timestamp > watermark.timestamp)` OR
-  - `(event.timestamp == watermark.timestamp AND event.eventId > watermark.eventId)`
-- Sorting is deterministic: `sequence ASC` for sequence replay, otherwise `timestamp ASC` then `eventId ASC`.
-prod
-- Transcript state materialization prefers `transcript.final` over partials for same `utteranceId`.
+- Each persisted event is assigned a per-session `sequence` for reconnect replay.
+- Primary replay semantics: events where `sequence > afterSequence`.
+- Watermark fallback semantics: events strictly newer than `(ts, eventId)`.
+- Transcript materialization always prefers `transcript.final` over partial events for same `utteranceId`.
 
 ## Versioning + compatibility (v1.x)
 
 - `schemaVersion` is semantic contract version for envelope + payload rules.
-- v1.x guarantees:
-  - existing required envelope keys remain stable,
-  - existing event types remain backward compatible,
-  - added payload fields are additive/optional by default.
-- breaking changes (field removals/renames, incompatible type changes, alias removal after temporary support) require a major version bump (`2.0`).
-- If temporary compatibility aliases are introduced in future, they must be explicitly documented with deprecation window and test coverage.
+- v1.x guarantees stable envelope keys and backward-compatible payload evolution.
+- Breaking changes require a major version bump (`2.0`).
