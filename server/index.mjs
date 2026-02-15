@@ -295,6 +295,7 @@ fastify.get('/', async () => ({
     chatTurn: '/v1/chat/turn (POST json)',
     chatStream: '/v1/chat/stream (POST SSE)',
     createCallSession: '/v1/call/sessions (POST json)',
+    listCallSessions: '/v1/call/sessions (GET with x-user-id header)',
     getCallSession: '/v1/call/sessions/:sessionId (GET)',
     updateCallSession: '/v1/call/sessions/:sessionId/state (POST json)',
   },
@@ -437,6 +438,25 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
   return {
     ok: true,
     session: normalizeCallSessionRow(row),
+  };
+});
+
+
+fastify.get('/v1/call/sessions', async (req, reply) => {
+  const userId = req.headers['x-user-id'] ? String(req.headers['x-user-id']).trim() : '';
+  if (!userId) return reply.code(400).send({ ok: false, error: 'x-user-id header is required' });
+
+  const limitRaw = Number(req.query?.limit);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.trunc(limitRaw))) : 20;
+
+  const rows = dbCtx.listCallSessionsByUser.all(userId, limit);
+  return {
+    ok: true,
+    sessions: rows.map(normalizeCallSessionRow),
+    page: {
+      limit,
+      returned: rows.length,
+    },
   };
 });
 
