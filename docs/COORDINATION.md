@@ -54,3 +54,10 @@ If you are Codex reading this:
 - Codex: Added `docs/PR_MERGE_PLAYBOOK.md` with dependency-ordered merge guidance for open PRs (#14, #17, #19, #9), likely merge blockers, and a production unblocking checklist.
 - Recommended merge sequence: #14 → #17 → #19 → #9 (contract/persistence first, billing last).
 - Risk: local environment has no GitHub CLI remote context, so guidance is dependency-based from backlog/contracts rather than inline PR diff review.
+
+### 2026-02-15 22:38 UTC
+- Codex: Implemented LiveKit session bridge scaffolding in backend with backend-only token issuance endpoint (`POST /v1/call/sessions/:sessionId/livekit/token`) that mints short-lived provider tokens and persists session↔room/participant mapping in call session metadata/correlation fields.
+- Added LiveKit event ingestion endpoint (`POST /v1/call/livekit/events`) that translates provider transport signals into canonical backend event families (`call.*`, `transcript.*`, `orchestration.*`) before publishing via existing realtime fanout/event store.
+- Added provider-correlation DB lookup statements and backend tests covering token issuance metadata mapping + canonical translation ingestion path.
+- Risk: local runtime is Node v20 without `node:sqlite`, so integration tests cannot boot the server in this environment.
+- Next: wire webhook authenticity verification for LiveKit events (signature/timestamp checks) and add provider lifecycle mappings for richer call end reasons.

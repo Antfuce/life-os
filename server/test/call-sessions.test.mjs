@@ -17,7 +17,7 @@ async function waitForHealth(baseUrl) {
   throw new Error('server did not become healthy in time');
 }
 
-async function startServer() {
+async function startServer(extraEnv = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'life-os-test-'));
   const port = 3100 + Math.floor(Math.random() * 1000);
   const dbFile = path.join(dir, 'test.db');
@@ -29,6 +29,7 @@ async function startServer() {
       PORT: String(port),
       LIFE_OS_DB: dbFile,
       OPENCLAW_GATEWAY_TOKEN: 'test-token',
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -181,6 +182,87 @@ test('duplicate activate/end updates are replay-safe', async () => {
     assert.equal(end2.status, 200);
     assert.equal(ended2.idempotentReplay, true);
     assert.equal(ended2.session.endedAtMs, ended1.session.endedAtMs);
+  } finally {
+    await srv.stop();
+  }
+});
+
+
+test('livekit token endpoint mints short-lived token and persists mapping metadata', async () => {
+  const srv = await startServer({
+    LIVEKIT_WS_URL: 'wss://example.livekit.local',
+    LIVEKIT_API_KEY: 'lk_test_key',
+    LIVEKIT_API_SECRET: 'lk_test_secret',
+  });
+
+  try {
+    const created = await createSession(srv.baseUrl, 'user-a', {});
+    assert.equal(created.status, 200);
+    const sessionId = created.json.session.sessionId;
+
+    const tokenResp = await fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/livekit/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({ ttlSeconds: 90, participantName: 'Antonio' }),
+    });
+    const tokenJson = await tokenResp.json();
+    assert.equal(tokenResp.status, 200);
+    assert.equal(tokenJson.ok, true);
+    assert.equal(tokenJson.transport.provider, 'livekit');
+    assert.equal(tokenJson.transport.wsUrl, 'wss://example.livekit.local');
+    assert.equal(tokenJson.transport.expiresInSeconds, 90);
+    assert.equal(typeof tokenJson.transport.accessToken, 'string');
+    assert.equal(tokenJson.transport.accessToken.split('.').length, 3);
+
+    assert.equal(tokenJson.session.provider, 'livekit');
+    assert.ok(tokenJson.session.providerRoomId);
+    assert.ok(tokenJson.session.providerParticipantId);
+    assert.ok(tokenJson.session.providerCallId);
+    assert.equal(tokenJson.session.metadata.livekit.roomName, tokenJson.session.providerRoomId);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('livekit media events are translated into canonical event families before fanout', async () => {
+  const srv = await startServer();
+
+  try {
+    const created = await createSession(srv.baseUrl, 'user-a', {
+      providerRoomId: 'room-translate-1',
+      providerParticipantId: 'participant-42',
+      providerCallId: 'call-translate-1',
+    });
+    assert.equal(created.status, 200);
+    const sessionId = created.json.session.sessionId;
+
+    const events = [
+      { event: 'participant_connected', roomName: 'room-translate-1', participantIdentity: 'participant-42' },
+      { event: 'transcription_received', roomName: 'room-translate-1', participantIdentity: 'participant-42', utteranceId: 'utt-1', role: 'participant', text: 'hello', startMs: 0, endMs: 120, final: false },
+      { event: 'data_received', roomName: 'room-translate-1', participantIdentity: 'participant-42', actionId: 'a-1', actionType: 'cv.generate', summary: 'generate cv now' },
+    ];
+
+    for (const item of events) {
+      const ingest = await fetch(`${srv.baseUrl}/v1/call/livekit/events`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(item),
+      });
+      const ingestJson = await ingest.json();
+      assert.equal(ingest.status, 200);
+      assert.equal(ingestJson.ok, true);
+      assert.equal(ingestJson.ignored, false);
+    }
+
+    const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
+    const replayJson = await replay.json();
+    assert.equal(replay.status, 200);
+    const types = replayJson.events.map((e) => e.type);
+
+    assert.ok(types.includes('call.started'));
+    assert.ok(types.includes('call.connected'));
+    assert.ok(types.includes('transcript.partial'));
+    assert.ok(types.includes('orchestration.action.requested'));
   } finally {
     await srv.stop();
   }
