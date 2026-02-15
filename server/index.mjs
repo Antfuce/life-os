@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import { readFile } from 'node:fs/promises';
 
 import { initDb, stableId, toTsMs } from './db.mjs';
+import { EVENT_VERSION, validateRealtimeEventEnvelope, mergeTranscriptEvents } from './realtime-events.mjs';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -283,7 +284,7 @@ const dbCtx = await initDb(process.env.LIFE_OS_DB);
 fastify.get('/health', async () => ({ 
   ok: true, 
   contract: 'v1.0',
-  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit']
+  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay']
 }));
 
 fastify.get('/', async () => ({
@@ -372,6 +373,65 @@ function parseRequestMetadata(raw) {
   return safe;
 }
 
+const realtimeMetrics = {
+  emitted: 0,
+  emittedInvalid: 0,
+  emittedDuplicate: 0,
+};
+
+function createRealtimeEvent({ sessionId, type, actor, payload, eventId, timestamp, version = EVENT_VERSION }) {
+  const nowIso = new Date().toISOString();
+  return {
+    eventId: eventId || `evt_${stableId(sessionId, type, nowIso, Math.random()).slice(0, 20)}`,
+    timestamp: timestamp || nowIso,
+    sessionId,
+    type,
+    actor,
+    payload,
+    version,
+  };
+}
+
+function publishRealtimeEvent(event) {
+  const validation = validateRealtimeEventEnvelope(event);
+  if (!validation.ok) {
+    realtimeMetrics.emittedInvalid += 1;
+    fastify.log.error({ event, errors: validation.errors }, 'realtime_event_validation_failed');
+    throw new Error(`REALTIME_EVENT_VALIDATION_FAILED:${validation.errors.join(';')}`);
+  }
+
+  const inserted = dbCtx.insertRealtimeEvent.run(
+    event.eventId,
+    event.sessionId,
+    event.timestamp,
+    event.type,
+    JSON.stringify(event.actor),
+    JSON.stringify(event.payload),
+    event.version,
+    Date.now(),
+  );
+
+  if (!inserted?.changes) {
+    realtimeMetrics.emittedDuplicate += 1;
+    return { ok: true, deduped: true, event };
+  }
+
+  realtimeMetrics.emitted += 1;
+  return { ok: true, deduped: false, event };
+}
+
+function normalizeRealtimeEventRow(row) {
+  return {
+    eventId: row.eventId,
+    timestamp: row.timestamp,
+    sessionId: row.sessionId,
+    type: row.type,
+    actor: JSON.parse(row.actorJson),
+    payload: JSON.parse(row.payloadJson),
+    version: row.version,
+  };
+}
+
 function parseStoredMetadata(rawJson) {
   if (!rawJson || typeof rawJson !== 'string') return {};
   try {
@@ -454,9 +514,22 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
   const row = dbCtx.getCallSessionById.get(sessionId);
   if (!row) return sendError(req, reply, 500, 'SESSION_CREATE_FAILED', 'Failed to create call session', true);
 
+  const session = normalizeCallSessionRow(row);
+  publishRealtimeEvent(createRealtimeEvent({
+    sessionId: session.sessionId,
+    type: 'call.started',
+    actor: { role: 'system', id: 'backend' },
+    payload: {
+      callId: session.sessionId,
+      channel: 'voice',
+      direction: 'outbound',
+      provider: session.provider || 'livekit',
+    },
+  }));
+
   return {
     ok: true,
-    session: normalizeCallSessionRow(row),
+    session,
   };
 });
 
@@ -573,13 +646,135 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
   );
 
   const row = dbCtx.getCallSessionById.get(sessionId);
+  const session = normalizeCallSessionRow(row);
+
+  if (nextStatus === CALL_SESSION_STATUS.ACTIVE) {
+    publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.connected',
+      actor: { role: 'provider', id: session.provider || 'livekit' },
+      payload: {
+        callId: sessionId,
+        connectedAt: new Date(startedAtMs).toISOString(),
+        providerSessionId: session.providerCallId || undefined,
+      },
+    }));
+  }
+
+  if (nextStatus === CALL_SESSION_STATUS.ENDED) {
+    const durationSeconds = session.startedAtMs ? Math.max(0, Math.floor((session.endedAtMs - session.startedAtMs) / 1000)) : 0;
+    publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.ended',
+      actor: { role: 'system', id: 'backend' },
+      payload: {
+        callId: sessionId,
+        endedAt: new Date(endedAtMs).toISOString(),
+        durationSeconds,
+        endReason: 'completed',
+      },
+    }));
+  }
+
+  if (nextStatus === CALL_SESSION_STATUS.FAILED) {
+    publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.error',
+      actor: { role: 'system', id: 'backend' },
+      payload: {
+        callId: sessionId,
+        code: 'CALL_SESSION_FAILED',
+        message: session.lastError || 'call session failed',
+        retryable: false,
+      },
+    }));
+  }
+
   return {
     ok: true,
     idempotentReplay: isIdempotentReplay,
-    session: normalizeCallSessionRow(row),
+    session,
   };
 });
 
+
+fastify.post('/v1/realtime/events', async (req, reply) => {
+  const body = req.body || {};
+  const event = createRealtimeEvent({
+    sessionId: String(body.sessionId || ''),
+    type: String(body.type || ''),
+    actor: body.actor,
+    payload: body.payload,
+    eventId: body.eventId ? String(body.eventId) : undefined,
+    timestamp: body.timestamp ? String(body.timestamp) : undefined,
+    version: body.version || EVENT_VERSION,
+  });
+
+  try {
+    const result = publishRealtimeEvent(event);
+    return { ok: true, deduped: result.deduped, event: result.event, metrics: realtimeMetrics };
+  } catch (err) {
+    return sendError(req, reply, 400, 'INVALID_REALTIME_EVENT', String(err.message || err), false);
+  }
+});
+
+fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const consumerId = req.query?.consumerId ? String(req.query.consumerId) : null;
+  const afterTimestampInput = req.query?.afterTimestamp ? String(req.query.afterTimestamp) : null;
+  const afterEventIdInput = req.query?.afterEventId ? String(req.query.afterEventId) : null;
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 100;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
+
+  let watermarkTimestamp = afterTimestampInput || '';
+  let watermarkEventId = afterEventIdInput || '';
+
+  if (consumerId && !afterTimestampInput && !afterEventIdInput) {
+    const cp = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
+    if (cp) {
+      watermarkTimestamp = cp.watermarkTimestamp;
+      watermarkEventId = cp.watermarkEventId;
+    }
+  }
+
+  const rows = dbCtx.listRealtimeEventsAfterWatermark.all(
+    sessionId,
+    watermarkTimestamp || '',
+    watermarkTimestamp || '',
+    watermarkEventId || '',
+    limit,
+  );
+
+  const events = rows.map(normalizeRealtimeEventRow);
+  const transcriptState = mergeTranscriptEvents(events);
+
+  return {
+    ok: true,
+    sessionId,
+    watermark: { timestamp: watermarkTimestamp || null, eventId: watermarkEventId || null },
+    events,
+    transcriptState,
+  };
+});
+
+fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const body = req.body || {};
+  const consumerId = String(body.consumerId || '').trim();
+  const watermarkTimestamp = String(body.watermarkTimestamp || '').trim();
+  const watermarkEventId = String(body.watermarkEventId || '').trim();
+  if (!consumerId || !watermarkTimestamp || !watermarkEventId) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'consumerId, watermarkTimestamp, and watermarkEventId are required', false);
+  }
+
+  dbCtx.upsertRealtimeCheckpoint.run(sessionId, consumerId, watermarkTimestamp, watermarkEventId, Date.now());
+  const checkpoint = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
+  return { ok: true, checkpoint };
+});
 
 fastify.post('/v1/actions/decision', async (req, reply) => {
   const body = req.body || {};

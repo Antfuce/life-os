@@ -61,10 +61,31 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       failedAtMs INTEGER
     );
 
+    CREATE TABLE IF NOT EXISTS realtime_event (
+      eventId TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL,
+      timestamp TEXT NOT NULL,
+      type TEXT NOT NULL,
+      actorJson TEXT NOT NULL,
+      payloadJson TEXT NOT NULL,
+      version TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS realtime_checkpoint (
+      sessionId TEXT NOT NULL,
+      consumerId TEXT NOT NULL,
+      watermarkTimestamp TEXT NOT NULL,
+      watermarkEventId TEXT NOT NULL,
+      updatedAtMs INTEGER NOT NULL,
+      PRIMARY KEY (sessionId, consumerId)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_status_updated ON call_session(status, updatedAtMs);
+    CREATE INDEX IF NOT EXISTS idx_realtime_event_session_ts_id ON realtime_event(sessionId, timestamp, eventId);
   `);
 
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
@@ -123,6 +144,35 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
      WHERE id = ?`
   );
 
+  const insertRealtimeEvent = db.prepare(
+    `INSERT OR IGNORE INTO realtime_event (
+      eventId, sessionId, timestamp, type, actorJson, payloadJson, version, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const listRealtimeEventsAfterWatermark = db.prepare(
+    `SELECT * FROM realtime_event
+      WHERE sessionId = ?
+        AND (timestamp > ? OR (timestamp = ? AND eventId > ?))
+      ORDER BY timestamp ASC, eventId ASC
+      LIMIT ?`
+  );
+
+  const upsertRealtimeCheckpoint = db.prepare(
+    `INSERT INTO realtime_checkpoint (
+      sessionId, consumerId, watermarkTimestamp, watermarkEventId, updatedAtMs
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(sessionId, consumerId)
+    DO UPDATE SET
+      watermarkTimestamp = excluded.watermarkTimestamp,
+      watermarkEventId = excluded.watermarkEventId,
+      updatedAtMs = excluded.updatedAtMs`
+  );
+
+  const getRealtimeCheckpoint = db.prepare(
+    `SELECT * FROM realtime_checkpoint WHERE sessionId = ? AND consumerId = ?`
+  );
+
   return {
     db,
     upsertConv,
@@ -132,6 +182,10 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     getCallSessionById,
     listCallSessionsByUser,
     updateCallSession,
+    insertRealtimeEvent,
+    listRealtimeEventsAfterWatermark,
+    upsertRealtimeCheckpoint,
+    getRealtimeCheckpoint,
     dbFile,
   };
 }

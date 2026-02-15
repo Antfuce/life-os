@@ -41,3 +41,11 @@ If you are Codex reading this:
 - Added backend integration tests for ownership scoping, invalid transition blocking, and duplicate activate/end replay safety (requires Node runtime with `node:sqlite`).
 - Next: wire LiveKit token/room issuance path to these activation/correlation semantics and connect event schema v1 fanout.
 - Risk: local environment Node 20 lacks `node:sqlite`, so tests cannot execute here.
+
+### 2026-02-15 21:31 UTC
+- Codex: Implemented canonical realtime contract v1.0 enforcement in backend with strict envelope keys (`eventId`, `timestamp`, `sessionId`, `type`, `actor`, `payload`, `version`) and hard rejection of alias drift (`ts`, `schemaVersion`).
+- Added runtime emission validation + fail-fast path, append-only realtime event storage, per-session consumer checkpointing, and replay API semantics with strict `> watermark` filtering and `eventId` dedupe.
+- Added contract tests covering event family validation, replay strictness from watermark, and deterministic transcript.final precedence over partials.
+- Updated `docs/REALTIME_EVENT_CONTRACT.md` as single canonical schema doc including versioning/compatibility guidance for v1.x evolution.
+- Next: wire LiveKit bridge producers to publish through the same realtime event publisher and expose validation/replay metrics to observability backend.
+- Risk: test suite requires Node runtime with `node:sqlite` support.
