@@ -12,14 +12,14 @@ Life-OS is designed as a strict, layered recruitment workflow system:
    - Terminates client WebSocket connections.
    - Orchestrates realtime event flow between client, call provider, and OpenClaw.
    - Persists product data to the database and billing ledger.
-3. **Call Provider (RevRing)**
-   - Handles telephony/media connection state and provider-native call events.
+3. **Call Provider (LiveKit)**
+   - Handles telephony/media connection state and provider-native room and participant events.
    - Streams call events/media metadata to the backend gateway.
 4. **OpenClaw (AI Orchestrator)**
    - Performs LLM routing, tool orchestration, and structured AI outputs.
    - Returns candidate insights/actions to backend for persistence and downstream UX updates.
 
-In short: **Client UI ↔ Backend Realtime Gateway ↔ (RevRing + OpenClaw)**.
+In short: **Client UI ↔ Backend Realtime Gateway ↔ (LiveKit + OpenClaw)**.
 
 ## Strict Boundaries (Non-Negotiable)
 
@@ -52,9 +52,9 @@ The backend owns all writes and maintains clear source-of-truth tables/collectio
 
 ## Failure Modes and Recovery
 
-### 1) Provider Disconnect (RevRing drop / call interruption)
+### 1) Provider Disconnect (LiveKit disconnect / call interruption)
 
-**Failure mode:** RevRing connection is lost mid-session.
+**Failure mode:** LiveKit connection is lost mid-session.
 
 **Recovery strategy:**
 - Backend marks provider channel as `degraded` and emits status to client immediately.
@@ -73,7 +73,7 @@ The backend owns all writes and maintains clear source-of-truth tables/collectio
 
 ### 3) Duplicate Events (provider retries / at-least-once delivery)
 
-**Failure mode:** RevRing or internal workers deliver duplicate event payloads.
+**Failure mode:** LiveKit or internal workers deliver duplicate event payloads.
 
 **Recovery strategy:**
 - Enforce idempotency keys (`provider_event_id`, `session_id + sequence`, or hash fingerprint).
