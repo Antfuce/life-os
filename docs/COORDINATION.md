@@ -54,3 +54,10 @@ If you are Codex reading this:
 - Codex: Added `docs/PR_MERGE_PLAYBOOK.md` with dependency-ordered merge guidance for open PRs (#14, #17, #19, #9), likely merge blockers, and a production unblocking checklist.
 - Recommended merge sequence: #14 → #17 → #19 → #9 (contract/persistence first, billing last).
 - Risk: local environment has no GitHub CLI remote context, so guidance is dependency-based from backlog/contracts rather than inline PR diff review.
+
+### 2026-02-15 22:43 UTC
+- Codex: Implemented call-session resume semantics with reconnect window enforcement and a new authenticated reconnect endpoint (`POST /v1/call/sessions/:sessionId/reconnect`) that validates `resumeToken` and replays from acknowledged sequence.
+- Added per-session sequence + ack persistence (`realtime_event.sequence`, `call_session.lastAck*`) so clients can resume replay from `lastAckSequence`; checkpoint API now accepts `watermarkSequence` and persists session-level ack metadata.
+- Added explicit irrecoverable terminal event emission (`call.terminal_failure`) when session transitions to `failed`, in addition to `call.error`, to keep UI terminal state deterministic.
+- Added integration tests for reconnect token validation/replay and terminal failure event emission.
+- Risk: runtime/tests remain blocked in this environment because Node 20 lacks `node:sqlite`; requires newer Node runtime to execute backend tests.

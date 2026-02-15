@@ -11,6 +11,7 @@ const EVENT_PAYLOAD_VALIDATORS = {
     && isNonNegInt(p.durationSeconds)
     && inEnum(p.endReason, ['completed', 'user_hangup', 'timeout', 'agent_handover']),
   'call.error': (p) => req(p, ['code', 'message', 'retryable']) && typeof p.retryable === 'boolean',
+  'call.terminal_failure': (p) => req(p, ['callId', 'failedAt', 'code', 'message']) && isIsoTs(p.failedAt),
 
   'transcript.partial': (p) => req(p, ['utteranceId', 'speaker', 'text', 'startMs', 'endMs'])
     && inEnum(p.speaker, ['user', 'agent', 'unknown'])
