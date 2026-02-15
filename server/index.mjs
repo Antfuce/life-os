@@ -10,7 +10,12 @@ const HOST = process.env.HOST || '127.0.0.1';
 
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || null;
 const OPENCLAW_RESPONSES_URL = process.env.OPENCLAW_RESPONSES_URL || 'http://127.0.0.1:18789/v1/responses';
+codex/add-backend-entities-and-logging-features
+const METERING_WARNING_MS = process.env.LIFE_OS_METERING_WARNING_MS ? Number(process.env.LIFE_OS_METERING_WARNING_MS) : 5 * 60 * 1000;
+const METERING_HARD_STOP_MS = process.env.LIFE_OS_METERING_HARD_STOP_MS ? Number(process.env.LIFE_OS_METERING_HARD_STOP_MS) : 20 * 60 * 1000;
+=======
 const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || null;
+prod
 
 // UI Contract v1.0 Event Types
 const UI_EVENTS = {
@@ -1251,6 +1256,16 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
     const persona = 'executor';
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const cvData = body.cvData && typeof body.cvData === 'object' ? body.cvData : {};
+    const callSession = dbCtx.startCallSession({
+      conversationId,
+      route: '/v1/chat/stream',
+      provider: 'openclaw',
+      model: process.env.LIFE_OS_MODEL || 'openai-codex/gpt-5.2',
+      metadata: { contract: 'v1.0', requestedPersona, stream: true },
+    });
+    let lastMeterTs = callSession.startedAtMs;
+    let hardStopTriggered = false;
+    let warningEmitted = false;
 
     // Persist last user message
     const last = messages[messages.length - 1];
@@ -1298,6 +1313,12 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
       signal: ac.signal,
     });
 
+    dbCtx.recordBillingAudit({
+      eventType: 'billing.provider_request_sent',
+      callSessionId: callSession.id,
+      payload: { route: '/v1/chat/stream', upstreamOk: upstream.ok, model: process.env.LIFE_OS_MODEL || 'openai-codex/gpt-5.2' },
+    });
+
     if (!upstream.ok || !upstream.body) {
       const detail = await upstream.text().catch(() => '');
       sseWrite(reply.raw, UI_EVENTS.ERROR, { ok: false, error: 'OpenClaw responses failed', detail: detail.slice(0, 1200) });
@@ -1321,6 +1342,28 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+
+      {
+        const nowTs = Date.now();
+        const metering = dbCtx.meterUsageInterval({
+          callSessionId: callSession.id,
+          startAtMs: lastMeterTs,
+          endAtMs: nowTs,
+          usageType: 'llm_wall_clock_ms',
+          metadata: { route: '/v1/chat/stream', phase: 'stream_read_loop' },
+        });
+        lastMeterTs = nowTs;
+        if (!warningEmitted && (metering.warningReached || (nowTs - callSession.startedAtMs >= METERING_WARNING_MS))) {
+          warningEmitted = true;
+          sseWrite(reply.raw, UI_EVENTS.STATUS, { type: 'warning', message: 'Usage warning threshold reached', conversationId });
+        }
+        if (metering.hardStopReached || (nowTs - callSession.startedAtMs >= METERING_HARD_STOP_MS)) {
+          hardStopTriggered = true;
+          ac.abort();
+          sseWrite(reply.raw, UI_EVENTS.ERROR, { ok: false, error: 'Hard stop threshold reached for this request' });
+          break;
+        }
+      }
       buf += dec.decode(value, { stream: true });
 
       let sep;
@@ -1420,15 +1463,24 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
       speaker 
     });
     
-    sseWrite(reply.raw, UI_EVENTS.DONE, { 
+    sseWrite(reply.raw, UI_EVENTS.DONE, {
       ok: true, 
       conversationId, 
       speaker,
       contract: 'v1.0'
     });
+
+    const providerDurationMs = Date.now() - callSession.startedAtMs;
+    dbCtx.stopCallSession({
+      callSessionId: callSession.id,
+      startedAtMs: callSession.startedAtMs,
+      providerDurationMs,
+      status: hardStopTriggered ? 'hard_stopped' : 'completed',
+    });
     
     reply.raw.end();
   } catch (e) {
+    // best effort metering audit is recorded in db helpers; this branch preserves endpoint behavior.
     sseWrite(reply.raw, UI_EVENTS.ERROR, { ok: false, error: String(e) });
     try { sseWrite(reply.raw, UI_EVENTS.DONE, { ok: false }); } catch {}
     try { reply.raw.end(); } catch {}
@@ -1445,6 +1497,13 @@ fastify.post('/v1/chat/turn', async (req, reply) => {
   const persona = 'executor';
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const cvData = body.cvData && typeof body.cvData === 'object' ? body.cvData : {};
+  const callSession = dbCtx.startCallSession({
+    conversationId,
+    route: '/v1/chat/turn',
+    provider: 'openclaw',
+    model: process.env.LIFE_OS_MODEL || 'openai-codex/gpt-5.2',
+    metadata: { contract: 'v1.0', requestedPersona, stream: false },
+  });
 
   // Persist the last user message
   const last = messages[messages.length - 1];
@@ -1483,9 +1542,39 @@ fastify.post('/v1/chat/turn', async (req, reply) => {
   });
 
   const rawText = await r.text();
+  const providerCompletedAt = Date.now();
+  const metering = dbCtx.meterUsageInterval({
+    callSessionId: callSession.id,
+    startAtMs: callSession.startedAtMs,
+    endAtMs: providerCompletedAt,
+    usageType: 'llm_wall_clock_ms',
+    metadata: { route: '/v1/chat/turn', phase: 'full_request' },
+  });
+  if (metering.hardStopReached || providerCompletedAt - callSession.startedAtMs >= METERING_HARD_STOP_MS) {
+    dbCtx.stopCallSession({
+      callSessionId: callSession.id,
+      startedAtMs: callSession.startedAtMs,
+      providerDurationMs: providerCompletedAt - callSession.startedAtMs,
+      status: 'hard_stopped',
+    });
+    return reply.code(429).send({ ok: false, error: 'Hard stop threshold reached for this request' });
+  }
+  if (metering.warningReached || providerCompletedAt - callSession.startedAtMs >= METERING_WARNING_MS) {
+    dbCtx.recordBillingAudit({
+      eventType: 'billing.warning_threshold_reached',
+      callSessionId: callSession.id,
+      payload: { route: '/v1/chat/turn', durationMs: providerCompletedAt - callSession.startedAtMs, totalCostCents: metering.totalCostCents },
+    });
+  }
   let json;
   try { json = JSON.parse(rawText); } catch { json = null; }
   if (!r.ok) {
+    dbCtx.stopCallSession({
+      callSessionId: callSession.id,
+      startedAtMs: callSession.startedAtMs,
+      providerDurationMs: providerCompletedAt - callSession.startedAtMs,
+      status: 'provider_error',
+    });
     return reply.code(500).send({ ok: false, error: 'OpenClaw responses failed', detail: json || rawText.slice(0, 1200) });
   }
 
@@ -1528,6 +1617,13 @@ fastify.post('/v1/chat/turn', async (req, reply) => {
       text: cleanedText,
     }
   };
+
+  dbCtx.stopCallSession({
+    callSessionId: callSession.id,
+    startedAtMs: callSession.startedAtMs,
+    providerDurationMs: providerCompletedAt - callSession.startedAtMs,
+    status: 'completed',
+  });
 
   return response;
 });

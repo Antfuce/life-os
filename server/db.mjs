@@ -88,11 +88,111 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     );
 
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
+codex/add-backend-entities-and-logging-features
+
+    CREATE TABLE IF NOT EXISTS call_session (
+      id TEXT PRIMARY KEY,
+      conversationId TEXT NOT NULL,
+      userId TEXT,
+      route TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT,
+      startedAtMs INTEGER NOT NULL,
+      endedAtMs INTEGER,
+      internalDurationMs INTEGER,
+      providerDurationMs INTEGER,
+      status TEXT NOT NULL,
+      metadataJson TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_call_session_conversation ON call_session(conversationId, startedAtMs);
+    CREATE INDEX IF NOT EXISTS idx_call_session_status ON call_session(status, startedAtMs);
+
+    CREATE TABLE IF NOT EXISTS usage_interval (
+      id TEXT PRIMARY KEY,
+      callSessionId TEXT NOT NULL,
+      usageType TEXT NOT NULL,
+      source TEXT NOT NULL,
+      startAtMs INTEGER NOT NULL,
+      endAtMs INTEGER NOT NULL,
+      quantityMs INTEGER NOT NULL,
+      unitCostCents REAL NOT NULL,
+      costCents REAL NOT NULL,
+      metadataJson TEXT,
+      createdAtMs INTEGER NOT NULL,
+      FOREIGN KEY (callSessionId) REFERENCES call_session(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_usage_interval_session ON usage_interval(callSessionId, startAtMs);
+
+    CREATE TABLE IF NOT EXISTS rating_rule (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      usageType TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      unitCostCents REAL NOT NULL,
+      warningThresholdCents REAL,
+      hardStopThresholdCents REAL,
+      effectiveFromMs INTEGER NOT NULL,
+      effectiveToMs INTEGER,
+      isActive INTEGER NOT NULL DEFAULT 1,
+      metadataJson TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rating_rule_active ON rating_rule(usageType, isActive, effectiveFromMs);
+
+    CREATE TABLE IF NOT EXISTS invoice_record (
+      id TEXT PRIMARY KEY,
+      invoiceNumber TEXT NOT NULL,
+      periodStartMs INTEGER NOT NULL,
+      periodEndMs INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      subtotalCents REAL NOT NULL,
+      adjustmentsCents REAL NOT NULL,
+      totalCents REAL NOT NULL,
+      providerDurationMs INTEGER,
+      internalDurationMs INTEGER,
+      createdAtMs INTEGER NOT NULL,
+      finalizedAtMs INTEGER,
+      metadataJson TEXT
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_number ON invoice_record(invoiceNumber);
+
+    CREATE TABLE IF NOT EXISTS billing_adjustment (
+      id TEXT PRIMARY KEY,
+      invoiceRecordId TEXT NOT NULL,
+      adjustmentType TEXT NOT NULL,
+      amountCents REAL NOT NULL,
+      reason TEXT NOT NULL,
+      createdBy TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL,
+      metadataJson TEXT,
+      FOREIGN KEY (invoiceRecordId) REFERENCES invoice_record(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_adjustment_invoice ON billing_adjustment(invoiceRecordId, createdAtMs);
+
+    CREATE TABLE IF NOT EXISTS billing_audit_event (
+      id TEXT PRIMARY KEY,
+      eventType TEXT NOT NULL,
+      callSessionId TEXT,
+      invoiceRecordId TEXT,
+      occurredAtMs INTEGER NOT NULL,
+      actor TEXT NOT NULL,
+      payloadJson TEXT NOT NULL,
+      FOREIGN KEY (callSessionId) REFERENCES call_session(id),
+      FOREIGN KEY (invoiceRecordId) REFERENCES invoice_record(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_billing_audit_occurred ON billing_audit_event(occurredAtMs);
+=======
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_status_updated ON call_session(status, updatedAtMs);
     CREATE INDEX IF NOT EXISTS idx_realtime_event_session_ts_id ON realtime_event(sessionId, timestamp, eventId);
     CREATE INDEX IF NOT EXISTS idx_realtime_event_session_sequence ON realtime_event(sessionId, sequence);
+prod
   `);
 
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
@@ -116,6 +216,159 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
      VALUES (?, ?, ?, ?, ?, ?)`
   );
 
+ codex/add-backend-entities-and-logging-features
+  const insertCallSession = db.prepare(
+    `INSERT INTO call_session (
+      id, conversationId, userId, route, provider, model, startedAtMs, status, metadataJson
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const closeCallSession = db.prepare(
+    `UPDATE call_session
+     SET endedAtMs=?, internalDurationMs=?, providerDurationMs=?, status=?
+     WHERE id=?`
+  );
+
+  const insertUsageInterval = db.prepare(
+    `INSERT INTO usage_interval (
+      id, callSessionId, usageType, source, startAtMs, endAtMs, quantityMs,
+      unitCostCents, costCents, metadataJson, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const insertBillingAuditEvent = db.prepare(
+    `INSERT INTO billing_audit_event (
+      id, eventType, callSessionId, invoiceRecordId, occurredAtMs, actor, payloadJson
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const getSessionCostCents = db.prepare(
+    `SELECT COALESCE(SUM(costCents), 0) AS total FROM usage_interval WHERE callSessionId=?`
+  );
+
+  const getActiveRatingRule = db.prepare(
+    `SELECT id, usageType, unitCostCents, warningThresholdCents, hardStopThresholdCents
+     FROM rating_rule
+     WHERE usageType=? AND isActive=1
+       AND effectiveFromMs <= ?
+       AND (effectiveToMs IS NULL OR effectiveToMs > ?)
+     ORDER BY effectiveFromMs DESC
+     LIMIT 1`
+  );
+
+  const seedDefaultRatingRule = db.prepare(
+    `INSERT OR IGNORE INTO rating_rule (
+      id, name, usageType, unit, unitCostCents, warningThresholdCents, hardStopThresholdCents,
+      effectiveFromMs, isActive, metadataJson
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+  );
+
+  const now = Date.now();
+  seedDefaultRatingRule.run(
+    'default-backend-wallclock-ms',
+    'Default backend wall-clock metering',
+    'llm_wall_clock_ms',
+    'ms',
+    Number(process.env.LIFE_OS_COST_PER_MS_CENTS || 0.0005),
+    Number(process.env.LIFE_OS_WARNING_THRESHOLD_CENTS || 500),
+    Number(process.env.LIFE_OS_HARD_STOP_THRESHOLD_CENTS || 2000),
+    now,
+    JSON.stringify({ managedBy: 'server/db.mjs' })
+  );
+
+  function recordBillingAudit({ eventType, callSessionId = null, invoiceRecordId = null, actor = 'backend', payload = {} }) {
+    const tsMs = Date.now();
+    const id = stableId(eventType, callSessionId, invoiceRecordId, tsMs, JSON.stringify(payload));
+    insertBillingAuditEvent.run(id, eventType, callSessionId, invoiceRecordId, tsMs, actor, JSON.stringify(payload));
+  }
+
+  function startCallSession({ conversationId, userId = null, route, provider, model = null, metadata = {} }) {
+    const startedAtMs = Date.now();
+    const id = stableId(conversationId, route, startedAtMs, provider);
+    insertCallSession.run(
+      id,
+      conversationId,
+      userId,
+      route,
+      provider,
+      model,
+      startedAtMs,
+      'in_progress',
+      JSON.stringify(metadata || {})
+    );
+    recordBillingAudit({ eventType: 'billing.call_session_started', callSessionId: id, payload: { route, provider, model, startedAtMs } });
+    return { id, startedAtMs };
+  }
+
+  function stopCallSession({ callSessionId, startedAtMs, providerDurationMs = null, status = 'completed' }) {
+    const endedAtMs = Date.now();
+    const internalDurationMs = Math.max(0, endedAtMs - startedAtMs);
+    closeCallSession.run(endedAtMs, internalDurationMs, providerDurationMs, status, callSessionId);
+    recordBillingAudit({
+      eventType: 'billing.call_session_stopped',
+      callSessionId,
+      payload: { endedAtMs, internalDurationMs, providerDurationMs, status },
+    });
+    return { endedAtMs, internalDurationMs };
+  }
+
+  function meterUsageInterval({ callSessionId, startAtMs, endAtMs, usageType = 'llm_wall_clock_ms', metadata = {} }) {
+    const safeStart = toTsMs(startAtMs);
+    const safeEnd = Math.max(safeStart, toTsMs(endAtMs));
+    const quantityMs = Math.max(0, safeEnd - safeStart);
+    const nowTs = Date.now();
+    const rule = getActiveRatingRule.get(usageType, nowTs, nowTs) || {
+      unitCostCents: Number(process.env.LIFE_OS_COST_PER_MS_CENTS || 0.0005),
+      warningThresholdCents: Number(process.env.LIFE_OS_WARNING_THRESHOLD_CENTS || 500),
+      hardStopThresholdCents: Number(process.env.LIFE_OS_HARD_STOP_THRESHOLD_CENTS || 2000),
+    };
+    const costCents = quantityMs * Number(rule.unitCostCents || 0);
+    const usageIntervalId = stableId(callSessionId, safeStart, safeEnd, usageType, quantityMs);
+    insertUsageInterval.run(
+      usageIntervalId,
+      callSessionId,
+      usageType,
+      'backend_authoritative_window',
+      safeStart,
+      safeEnd,
+      quantityMs,
+      Number(rule.unitCostCents || 0),
+      costCents,
+      JSON.stringify(metadata || {}),
+      nowTs
+    );
+    const totalCostCents = Number(getSessionCostCents.get(callSessionId)?.total || 0);
+    const threshold = {
+      warningThresholdCents: rule.warningThresholdCents == null ? null : Number(rule.warningThresholdCents),
+      hardStopThresholdCents: rule.hardStopThresholdCents == null ? null : Number(rule.hardStopThresholdCents),
+    };
+    const warningReached = threshold.warningThresholdCents != null && totalCostCents >= threshold.warningThresholdCents;
+    const hardStopReached = threshold.hardStopThresholdCents != null && totalCostCents >= threshold.hardStopThresholdCents;
+
+    recordBillingAudit({
+      eventType: 'billing.usage_interval_recorded',
+      callSessionId,
+      payload: { usageIntervalId, usageType, safeStart, safeEnd, quantityMs, costCents, totalCostCents, threshold },
+    });
+    if (warningReached) {
+      recordBillingAudit({
+        eventType: 'billing.warning_threshold_reached',
+        callSessionId,
+        payload: { totalCostCents, warningThresholdCents: threshold.warningThresholdCents },
+      });
+    }
+    if (hardStopReached) {
+      recordBillingAudit({
+        eventType: 'billing.hard_stop_threshold_reached',
+        callSessionId,
+        payload: { totalCostCents, hardStopThresholdCents: threshold.hardStopThresholdCents },
+      });
+    }
+    return { usageIntervalId, quantityMs, costCents, totalCostCents, warningReached, hardStopReached, threshold };
+  }
+
+  return { db, upsertConv, insertMsg, dbFile, startCallSession, stopCallSession, meterUsageInterval, recordBillingAudit };
+=======
   const insertActionAudit = db.prepare(
     `INSERT OR IGNORE INTO action_audit (
       id, actionId, conversationId, callTimestampMs, decisionTimestampMs,
@@ -231,6 +484,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     getRealtimeCheckpoint,
     dbFile,
   };
+ prod
 }
 
 export function stableId(...parts) {
