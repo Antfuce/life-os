@@ -9,6 +9,7 @@ All events MUST use exactly these keys:
 ```json
 {
   "eventId": "evt_01JABCDEF1234567890",
+  "sequence": 42,
   "timestamp": "2026-02-16T10:00:00.000Z",
   "sessionId": "sess_123",
   "type": "call.started",
@@ -24,6 +25,7 @@ All events MUST use exactly these keys:
 ### Field rules
 
 - `eventId` (string, required): globally unique per event. Used as dedupe key.
+- `sequence` (integer, server-assigned): monotonic per-session ordering key used for reconnect replay.
 - `timestamp` (string, required): ISO-8601 UTC emit timestamp.
 - `sessionId` (string, required): session stream partition key.
 - `type` (string, required): event discriminator.
@@ -60,6 +62,11 @@ The aliases `ts` and `schemaVersion` are **not supported** in canonical v1.0 emi
   - `code` (string)
   - `message` (string)
   - `retryable` (boolean)
+- `call.terminal_failure`
+  - `callId` (string)
+  - `failedAt` (ISO-8601)
+  - `code` (string)
+  - `message` (string)
 
 ## `transcript.*`
 
@@ -150,11 +157,12 @@ Backend publisher validates every event envelope + payload before persistence/fa
 
 - Event store is append-only and session-scoped.
 - Dedupe key is `eventId` (idempotent insert).
-- Consumers store watermark tuple `(timestamp, eventId)` per `sessionId`.
-- Replay query returns only events strictly newer than watermark:
+- Consumers should store `sequence` as primary checkpoint; timestamp/eventId tuple remains supported fallback.
+- Replay by sequence returns events where `event.sequence > lastAckSequence`.
+- Watermark replay fallback returns only events strictly newer than `(timestamp, eventId)`:
   - `(event.timestamp > watermark.timestamp)` OR
   - `(event.timestamp == watermark.timestamp AND event.eventId > watermark.eventId)`
-- Sorting is deterministic: `timestamp ASC`, then `eventId ASC`.
+- Sorting is deterministic: `sequence ASC` for sequence replay, otherwise `timestamp ASC` then `eventId ASC`.
 - Transcript state materialization prefers `transcript.final` over partials for same `utteranceId`.
 
 ## Versioning + compatibility (v1.x)

@@ -48,6 +48,11 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       status TEXT NOT NULL,
       correlationId TEXT,
       resumeToken TEXT,
+      reconnectWindowMs INTEGER,
+      resumeValidUntilMs INTEGER,
+      lastAckSequence INTEGER,
+      lastAckTimestamp TEXT,
+      lastAckEventId TEXT,
       provider TEXT,
       providerRoomId TEXT,
       providerParticipantId TEXT,
@@ -64,6 +69,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     CREATE TABLE IF NOT EXISTS realtime_event (
       eventId TEXT PRIMARY KEY,
       sessionId TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
       timestamp TEXT NOT NULL,
       type TEXT NOT NULL,
       actorJson TEXT NOT NULL,
@@ -86,11 +92,18 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_status_updated ON call_session(status, updatedAtMs);
     CREATE INDEX IF NOT EXISTS idx_realtime_event_session_ts_id ON realtime_event(sessionId, timestamp, eventId);
+    CREATE INDEX IF NOT EXISTS idx_realtime_event_session_sequence ON realtime_event(sessionId, sequence);
   `);
 
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerParticipantId TEXT;'); } catch {}
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerCallId TEXT;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN reconnectWindowMs INTEGER;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN resumeValidUntilMs INTEGER;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN lastAckSequence INTEGER;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN lastAckTimestamp TEXT;'); } catch {}
+  try { db.exec('ALTER TABLE call_session ADD COLUMN lastAckEventId TEXT;'); } catch {}
+  try { db.exec('ALTER TABLE realtime_event ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0;'); } catch {}
 
   const upsertConv = db.prepare(
     `INSERT INTO conversation (id, createdAtMs, updatedAtMs, defaultPersona)
@@ -112,9 +125,9 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
 
   const insertCallSession = db.prepare(
     `INSERT OR IGNORE INTO call_session (
-      id, userId, status, correlationId, resumeToken, provider, providerRoomId, providerParticipantId, providerCallId,
+      id, userId, status, correlationId, resumeToken, reconnectWindowMs, resumeValidUntilMs, lastAckSequence, lastAckTimestamp, lastAckEventId, provider, providerRoomId, providerParticipantId, providerCallId,
       metadataJson, lastError, createdAtMs, updatedAtMs, startedAtMs, endedAtMs, failedAtMs
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const getCallSessionById = db.prepare(
@@ -131,6 +144,10 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
   const updateCallSession = db.prepare(
     `UPDATE call_session
        SET status = ?,
+           resumeValidUntilMs = ?,
+           lastAckSequence = ?,
+           lastAckTimestamp = ?,
+           lastAckEventId = ?,
            provider = ?,
            providerRoomId = ?,
            providerParticipantId = ?,
@@ -144,10 +161,33 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
      WHERE id = ?`
   );
 
+  const updateCallSessionAck = db.prepare(
+    `UPDATE call_session
+       SET lastAckSequence = ?,
+           lastAckTimestamp = ?,
+           lastAckEventId = ?,
+           updatedAtMs = ?
+     WHERE id = ?`
+  );
+
   const insertRealtimeEvent = db.prepare(
     `INSERT OR IGNORE INTO realtime_event (
-      eventId, sessionId, timestamp, type, actorJson, payloadJson, version, createdAtMs
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      eventId, sessionId, sequence, timestamp, type, actorJson, payloadJson, version, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const getRealtimeSessionMaxSequence = db.prepare(
+    `SELECT COALESCE(MAX(sequence), 0) AS maxSequence
+       FROM realtime_event
+      WHERE sessionId = ?`
+  );
+
+  const listRealtimeEventsAfterSequence = db.prepare(
+    `SELECT * FROM realtime_event
+      WHERE sessionId = ?
+        AND sequence > ?
+      ORDER BY sequence ASC
+      LIMIT ?`
   );
 
   const listRealtimeEventsAfterWatermark = db.prepare(
@@ -182,7 +222,10 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     getCallSessionById,
     listCallSessionsByUser,
     updateCallSession,
+    updateCallSessionAck,
     insertRealtimeEvent,
+    getRealtimeSessionMaxSequence,
+    listRealtimeEventsAfterSequence,
     listRealtimeEventsAfterWatermark,
     upsertRealtimeCheckpoint,
     getRealtimeCheckpoint,
