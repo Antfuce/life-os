@@ -54,3 +54,10 @@ If you are Codex reading this:
 - Codex: Added `docs/PR_MERGE_PLAYBOOK.md` with dependency-ordered merge guidance for open PRs (#14, #17, #19, #9), likely merge blockers, and a production unblocking checklist.
 - Recommended merge sequence: #14 → #17 → #19 → #9 (contract/persistence first, billing last).
 - Risk: local environment has no GitHub CLI remote context, so guidance is dependency-based from backlog/contracts rather than inline PR diff review.
+
+### 2026-02-15 22:41 UTC
+- Codex: Added backend policy gate endpoint `POST /v1/orchestration/actions/execute` that emits `orchestration.action.requested` then `safety.blocked|safety.approved` before any action execution.
+- Enforced explicit `userConfirmation=true` for send/outreach and other high-risk external-send actions; blocked actions now return `403 SAFETY_BLOCKED` and never emit `action.executed`.
+- Persisted audit metadata for every policy decision (`sessionId`, `policyId`, `reason`, `userId`, `metadata`, confirmation flag) into `action_audit`.
+- Added integration tests (`server/test/safety-gates.test.mjs`) covering blocked vs approved flow ordering and execution gating.
+- Risk: local runtime is Node 20 and lacks `node:sqlite`, so server/test suite cannot execute in this environment.
