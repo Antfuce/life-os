@@ -1,6 +1,6 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { Users, Calendar, MapPin, Sparkles, ExternalLink, ThumbsUp, X } from "lucide-react";
+import { Users, Calendar, MapPin, Sparkles, ThumbsUp, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
