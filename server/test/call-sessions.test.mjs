@@ -188,6 +188,7 @@ test('duplicate activate/end updates are replay-safe', async () => {
 });
 
 
+ codex/add-livekit-integration-endpoints
 test('livekit token endpoint mints short-lived token and persists mapping metadata', async () => {
   const srv = await startServer({
     LIVEKIT_WS_URL: 'wss://example.livekit.local',
@@ -219,11 +220,73 @@ test('livekit token endpoint mints short-lived token and persists mapping metada
     assert.ok(tokenJson.session.providerParticipantId);
     assert.ok(tokenJson.session.providerCallId);
     assert.equal(tokenJson.session.metadata.livekit.roomName, tokenJson.session.providerRoomId);
+=======
+test('reconnect requires valid resume token and replays from acknowledged sequence', async () => {
+  const srv = await startServer();
+  try {
+    const created = await createSession(srv.baseUrl, 'user-a', { reconnectWindowMs: 120000 });
+    assert.equal(created.status, 200);
+    const sessionId = created.json.session.sessionId;
+    const resumeToken = created.json.session.resumeToken;
+
+    await fetch(`${srv.baseUrl}/v1/realtime/events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sessionId,
+        type: 'transcript.partial',
+        actor: { role: 'agent', id: 'agent-1' },
+        payload: { utteranceId: 'u1', speaker: 'agent', text: 'hello', startMs: 0, endMs: 300 },
+      }),
+    });
+    await fetch(`${srv.baseUrl}/v1/realtime/events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sessionId,
+        type: 'transcript.final',
+        actor: { role: 'agent', id: 'agent-1' },
+        payload: { utteranceId: 'u1', speaker: 'agent', text: 'hello world', startMs: 0, endMs: 600 },
+      }),
+    });
+
+    const invalidReconnect = await fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/reconnect`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({ resumeToken: 'bad-token' }),
+    });
+    assert.equal(invalidReconnect.status, 403);
+
+    const reconnect = await fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/reconnect`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({ resumeToken, lastAckSequence: 1 }),
+    });
+    const reconnectJson = await reconnect.json();
+    assert.equal(reconnect.status, 200);
+    assert.equal(reconnectJson.replay.events.length, 2);
+    assert.equal(reconnectJson.replay.events[0].sequence, 2);
+
+    const checkpoint = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/checkpoint`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        consumerId: 'web-client',
+        watermarkTimestamp: reconnectJson.replay.events[0].timestamp,
+        watermarkEventId: reconnectJson.replay.events[0].eventId,
+        watermarkSequence: reconnectJson.replay.events[0].sequence,
+      }),
+    });
+    const checkpointJson = await checkpoint.json();
+    assert.equal(checkpoint.status, 200);
+    assert.equal(checkpointJson.sessionAck.sequence, reconnectJson.replay.events[0].sequence);
+ prod
   } finally {
     await srv.stop();
   }
 });
 
+ codex/add-livekit-integration-endpoints
 test('livekit media events are translated into canonical event families before fanout', async () => {
   const srv = await startServer();
 
@@ -263,6 +326,39 @@ test('livekit media events are translated into canonical event families before f
     assert.ok(types.includes('call.connected'));
     assert.ok(types.includes('transcript.partial'));
     assert.ok(types.includes('orchestration.action.requested'));
+=======
+test('failing a session emits terminal failure event', async () => {
+  const srv = await startServer();
+  try {
+    const created = await createSession(srv.baseUrl, 'user-a', {});
+    const sessionId = created.json.session.sessionId;
+
+    const activate = await fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({
+        status: 'active',
+        provider: 'livekit',
+        providerRoomId: 'room-1',
+        providerParticipantId: 'part-1',
+        providerCallId: 'call-1',
+      }),
+    });
+    assert.equal(activate.status, 200);
+
+    const failed = await fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({ status: 'failed', error: 'provider disconnected permanently' }),
+    });
+    assert.equal(failed.status, 200);
+
+    const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
+    const replayJson = await replay.json();
+    const terminal = replayJson.events.find((evt) => evt.type === 'call.terminal_failure');
+    assert.ok(terminal);
+    assert.equal(terminal.payload.code, 'CALL_SESSION_IRRECOVERABLE');
+prod
   } finally {
     await srv.stop();
   }
