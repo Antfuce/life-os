@@ -7,8 +7,9 @@ import { initDb, stableId, toTsMs } from './db.mjs';
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const HOST = process.env.HOST || '127.0.0.1';
 
-const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || '/root/.openclaw/openclaw.json';
+const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || null;
 const OPENCLAW_RESPONSES_URL = process.env.OPENCLAW_RESPONSES_URL || 'http://127.0.0.1:18789/v1/responses';
+const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || null;
 
 // UI Contract v1.0 Event Types
 const UI_EVENTS = {
@@ -49,9 +50,16 @@ const UI_MODES = {
 };
 
 async function getGatewayToken() {
-  const raw = await readFile(OPENCLAW_CONFIG, 'utf8');
-  const cfg = JSON.parse(raw);
-  return cfg?.gateway?.auth?.token || null;
+  if (OPENCLAW_GATEWAY_TOKEN) return OPENCLAW_GATEWAY_TOKEN;
+  if (!OPENCLAW_CONFIG) return null;
+
+  try {
+    const raw = await readFile(OPENCLAW_CONFIG, 'utf8');
+    const cfg = JSON.parse(raw);
+    return cfg?.gateway?.auth?.token || null;
+  } catch {
+    return null;
+  }
 }
 
 function extractOutputText(respJson) {
