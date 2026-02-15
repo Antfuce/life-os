@@ -1,6 +1,6 @@
 import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { FileText, Download, Sparkles, Edit, Copy, Check } from "lucide-react";
+import { FileText, Download, Sparkles, Edit, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 /**
