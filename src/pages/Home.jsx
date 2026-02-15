@@ -245,6 +245,38 @@ export default function Home() {
     executeModuleAction(actionName, deliverable, processEvent);
   };
 
+  const submitConfirmationDecision = async (decision, pending) => {
+    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
+
+    try {
+      await fetch(`${API_ORIGIN}/v1/actions/confirm`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actionId: pending?.actionId,
+          decision,
+          conversationId,
+          details: pending?.details || {},
+        }),
+      });
+    } catch (e) {
+      processEvent({
+        type: UI_EVENT_TYPES.ERROR,
+        payload: {
+          message: `Failed to submit action decision (${decision}).`,
+          recoverable: true,
+          details: String(e),
+        },
+      });
+    }
+
+    if (decision === "confirm") {
+      confirmAction(pending?.actionId);
+    } else {
+      cancelAction(pending?.actionId);
+    }
+  };
+
   // Reset conversation
   const handleReset = () => {
     clearConversation();
@@ -443,13 +475,13 @@ export default function Home() {
                   <p className="text-neutral-600 mb-4">{pendingConfirmation.message}</p>
                   <div className="flex gap-3">
                     <button
-                      onClick={() => confirmAction(pendingConfirmation.actionId)}
+                      onClick={() => submitConfirmationDecision('confirm', pendingConfirmation)}
                       className="flex-1 bg-slate-900 text-white py-2 rounded-lg"
                     >
                       Confirm
                     </button>
                     <button
-                      onClick={() => cancelAction(pendingConfirmation.actionId)}
+                      onClick={() => submitConfirmationDecision('cancel', pendingConfirmation)}
                       className="flex-1 bg-neutral-100 text-neutral-700 py-2 rounded-lg"
                     >
                       Cancel
