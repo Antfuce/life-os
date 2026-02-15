@@ -23,7 +23,15 @@ const UI_EVENTS = {
   ERROR: 'error',
   STATUS: 'status',
   CONFIRM_REQUIRED: 'confirm.required',
+  ACTION_APPROVAL_STATE: 'action.approval.state',
+  ACTION_AUDIT: 'action.audit',
   DONE: 'done',
+};
+
+const ACTION_RISK_TIERS = {
+  READ_ONLY: 'read-only',
+  LOW_RISK_WRITE: 'low-risk-write',
+  HIGH_RISK_EXTERNAL_SEND: 'high-risk-external-send',
 };
 
 const UI_SPEAKERS = {
@@ -101,7 +109,7 @@ You MUST emit structured UI events by wrapping content in special tags:
    [/UI:DELIVERABLE_OUTREACH]
 
 4. CONFIRMATION GATES (before sending anything external):
-   [UI:CONFIRM_REQUIRED actionId="send-outreach-1" message="Send this message to Sarah?"]
+   [UI:CONFIRM_REQUIRED actionId="send-outreach-1" message="Send this message to Sarah?" riskTier="high-risk-external-send" timeout="30000"]
 
 Rules:
 - Always emit SPEAKER_CHANGE before text content
@@ -212,11 +220,20 @@ function parseUIEvents(text) {
   }
   
   // Parse CONFIRM_REQUIRED
-  const confirmMatch = text.match(/\[UI:CONFIRM_REQUIRED\s+actionId="([^"]+)"\s+message="([^"]+)"\]/);
+  const confirmMatch = text.match(/\[UI:CONFIRM_REQUIRED\s+actionId="([^"]+)"\s+message="([^"]+)"(?:\s+riskTier="([^"]+)")?(?:\s+timeout="([^"]+)")?\]/);
   if (confirmMatch) {
+    const timeout = confirmMatch[4] ? Number(confirmMatch[4]) : 30000;
+    const startedAt = Date.now();
     events.push({
       type: UI_EVENTS.CONFIRM_REQUIRED,
-      payload: { actionId: confirmMatch[1], message: confirmMatch[2] },
+      payload: {
+        actionId: confirmMatch[1],
+        message: confirmMatch[2],
+        riskTier: confirmMatch[3] || ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND,
+        timeout,
+        startedAt,
+        expiresAt: startedAt + timeout,
+      },
     });
     remainingText = remainingText.replace(confirmMatch[0], '');
   }
@@ -245,7 +262,7 @@ function generateOutreachActions(outreachData) {
     { label: 'Copy Text', action: 'outreach.copy', payload: outreachData },
   ];
   if (outreachData.requireConfirmation !== false) {
-    actions.push({ label: 'Send (Requires Confirm)', action: 'outreach.requestSend', payload: outreachData, requiresConfirm: true });
+    actions.push({ label: 'Send (Requires Confirm)', action: 'outreach.requestSend', payload: outreachData, requiresConfirm: true, riskTier: ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND });
   }
   return actions;
 }
@@ -258,7 +275,7 @@ const dbCtx = await initDb(process.env.LIFE_OS_DB);
 fastify.get('/health', async () => ({ 
   ok: true, 
   contract: 'v1.0',
-  features: ['structured-events', 'legacy-compat']
+  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit']
 }));
 
 fastify.get('/', async () => ({
@@ -292,6 +309,54 @@ function parseSseBlock(block) {
   const dataRaw = dataLines.join('\n');
   return { event, dataRaw };
 }
+
+
+fastify.post('/v1/actions/decision', async (req, reply) => {
+  const body = req.body || {};
+  const actionId = String(body.actionId || '');
+  const actionName = String(body.action || 'unknown');
+  const decision = String(body.decision || 'cancelled');
+  const result = String(body.result || 'cancelled');
+  const riskTier = String(body.riskTier || ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND);
+  const conversationId = body.conversationId ? String(body.conversationId) : null;
+  const callTimestamp = toTsMs(body.callTimestamp);
+  const decisionTimestamp = Date.now();
+
+  if (!actionId) {
+    return reply.code(400).send({ ok: false, error: 'actionId is required' });
+  }
+
+  const auditId = stableId(actionId, callTimestamp, decisionTimestamp, decision, result);
+  dbCtx.insertActionAudit.run(
+    auditId,
+    actionId,
+    conversationId,
+    callTimestamp,
+    decisionTimestamp,
+    actionName,
+    riskTier,
+    decision,
+    result,
+    JSON.stringify(body.details || {})
+  );
+
+  return {
+    ok: true,
+    event: {
+      v: '1.0',
+      type: UI_EVENTS.ACTION_AUDIT,
+      payload: {
+        actionId,
+        action: actionName,
+        callTimestamp,
+        decision,
+        result,
+        riskTier,
+        decisionTimestamp,
+      },
+    },
+  };
+});
 
 // v2: Structured UI event streaming
 fastify.post('/v1/chat/stream', async (req, reply) => {
