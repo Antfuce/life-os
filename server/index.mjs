@@ -286,10 +286,12 @@ await fastify.register(cors, { origin: true });
 
 const dbCtx = await initDb(process.env.LIFE_OS_DB);
 
+const DEFAULT_RECONNECT_WINDOW_MS = 2 * 60 * 1000;
+
 fastify.get('/health', async () => ({ 
   ok: true, 
   contract: 'v1.0',
-  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay']
+  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark']
 }));
 
 fastify.get('/', async () => ({
@@ -304,7 +306,11 @@ fastify.get('/', async () => ({
     listCallSessions: '/v1/call/sessions (GET with x-user-id header)',
     getCallSession: '/v1/call/sessions/:sessionId (GET)',
     updateCallSession: '/v1/call/sessions/:sessionId/state (POST json)',
+codex/add-policy-checks-for-sensitive-actions
     executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
+=======
+    reconnectCallSession: '/v1/call/sessions/:sessionId/reconnect (POST json)',
+prod
   },
 }));
 
@@ -437,10 +443,11 @@ const realtimeMetrics = {
   emittedDuplicate: 0,
 };
 
-function createRealtimeEvent({ sessionId, type, actor, payload, eventId, timestamp, version = EVENT_VERSION }) {
+function createRealtimeEvent({ sessionId, type, actor, payload, eventId, timestamp, sequence, version = EVENT_VERSION }) {
   const nowIso = new Date().toISOString();
   return {
     eventId: eventId || `evt_${stableId(sessionId, type, nowIso, Math.random()).slice(0, 20)}`,
+    sequence,
     timestamp: timestamp || nowIso,
     sessionId,
     type,
@@ -458,9 +465,14 @@ function publishRealtimeEvent(event) {
     throw new Error(`REALTIME_EVENT_VALIDATION_FAILED:${validation.errors.join(';')}`);
   }
 
+  const nextSequence = Number(event.sequence) > 0
+    ? Math.trunc(Number(event.sequence))
+    : Number(dbCtx.getRealtimeSessionMaxSequence.get(event.sessionId)?.maxSequence || 0) + 1;
+
   const inserted = dbCtx.insertRealtimeEvent.run(
     event.eventId,
     event.sessionId,
+    nextSequence,
     event.timestamp,
     event.type,
     JSON.stringify(event.actor),
@@ -475,12 +487,13 @@ function publishRealtimeEvent(event) {
   }
 
   realtimeMetrics.emitted += 1;
-  return { ok: true, deduped: false, event };
+  return { ok: true, deduped: false, event: { ...event, sequence: nextSequence } };
 }
 
 function normalizeRealtimeEventRow(row) {
   return {
     eventId: row.eventId,
+    sequence: row.sequence,
     timestamp: row.timestamp,
     sessionId: row.sessionId,
     type: row.type,
@@ -509,6 +522,11 @@ function normalizeCallSessionRow(row) {
     status: row.status,
     correlationId: row.correlationId,
     resumeToken: row.resumeToken,
+    reconnectWindowMs: row.reconnectWindowMs,
+    resumeValidUntilMs: row.resumeValidUntilMs,
+    lastAckSequence: row.lastAckSequence,
+    lastAckTimestamp: row.lastAckTimestamp,
+    lastAckEventId: row.lastAckEventId,
     provider: row.provider,
     providerRoomId: row.providerRoomId,
     providerParticipantId: row.providerParticipantId,
@@ -541,6 +559,9 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
   const correlationId = body.correlationId ? String(body.correlationId) : `corr_${stableId(sessionId, createdAtMs).slice(0, 16)}`;
   const resumeToken = `resume_${stableId(sessionId, userId, createdAtMs).slice(0, 24)}`;
   const provider = body.provider ? String(body.provider) : 'livekit';
+  const reconnectWindowMsRaw = body.reconnectWindowMs === undefined ? DEFAULT_RECONNECT_WINDOW_MS : Number(body.reconnectWindowMs);
+  const reconnectWindowMs = Number.isFinite(reconnectWindowMsRaw) ? Math.max(10_000, Math.min(10 * 60 * 1000, Math.trunc(reconnectWindowMsRaw))) : DEFAULT_RECONNECT_WINDOW_MS;
+  const resumeValidUntilMs = createdAtMs + reconnectWindowMs;
   const providerRoomId = body.providerRoomId ? String(body.providerRoomId) : null;
   const providerParticipantId = body.providerParticipantId ? String(body.providerParticipantId) : null;
   const providerCallId = body.providerCallId ? String(body.providerCallId) : null;
@@ -552,6 +573,11 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
     CALL_SESSION_STATUS.CREATED,
     correlationId,
     resumeToken,
+    reconnectWindowMs,
+    resumeValidUntilMs,
+    null,
+    null,
+    null,
     provider,
     providerRoomId,
     providerParticipantId,
@@ -632,6 +658,51 @@ fastify.get('/v1/call/sessions/:sessionId', async (req, reply) => {
   };
 });
 
+
+fastify.post('/v1/call/sessions/:sessionId/reconnect', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+  if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
+  if (existing.userId !== auth.userId) return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'Session does not belong to authenticated user', false);
+
+  const resumeToken = String(body.resumeToken || '').trim();
+  if (!resumeToken) return sendError(req, reply, 400, 'INVALID_REQUEST', 'resumeToken is required', false);
+  if (resumeToken !== existing.resumeToken) return sendError(req, reply, 403, 'INVALID_RESUME_TOKEN', 'resumeToken is invalid for this session', false);
+
+  const nowMs = Date.now();
+  if (existing.resumeValidUntilMs && nowMs > existing.resumeValidUntilMs) {
+    return sendError(req, reply, 410, 'RECONNECT_WINDOW_EXPIRED', 'reconnect window expired for this session', false);
+  }
+
+  const requestedAckSequence = body.lastAckSequence !== undefined ? Number(body.lastAckSequence) : null;
+  const ackSequence = Number.isFinite(requestedAckSequence)
+    ? Math.max(0, Math.trunc(requestedAckSequence))
+    : Math.max(0, Number(existing.lastAckSequence || 0));
+
+  const limitRaw = body.limit !== undefined ? Number(body.limit) : 100;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
+  const rows = dbCtx.listRealtimeEventsAfterSequence.all(sessionId, ackSequence, limit);
+  const events = rows.map(normalizeRealtimeEventRow);
+  const latestSequence = Number(dbCtx.getRealtimeSessionMaxSequence.get(sessionId)?.maxSequence || 0);
+
+  return {
+    ok: true,
+    session: normalizeCallSessionRow(existing),
+    replay: {
+      fromSequence: ackSequence,
+      latestSequence,
+      events,
+      transcriptState: mergeTranscriptEvents(events),
+    },
+  };
+});
+
 fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
   const body = req.body || {};
   const auth = getAuthenticatedUserId(req, body);
@@ -687,9 +758,17 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
   const failedAtMs = nextStatus === CALL_SESSION_STATUS.FAILED ? (existing.failedAtMs || updatedAtMs) : existing.failedAtMs;
   const mergedMetadata = { ...parseStoredMetadata(existing.metadataJson), ...parseRequestMetadata(body.metadata) };
   const lastError = nextStatus === CALL_SESSION_STATUS.FAILED ? String(body.error || existing.lastError || 'call session failed') : existing.lastError;
+  const reconnectWindowMs = existing.reconnectWindowMs || DEFAULT_RECONNECT_WINDOW_MS;
+  const resumeValidUntilMs = nextStatus === CALL_SESSION_STATUS.ACTIVE
+    ? (existing.resumeValidUntilMs || (updatedAtMs + reconnectWindowMs))
+    : null;
 
   dbCtx.updateCallSession.run(
     nextStatus,
+    resumeValidUntilMs,
+    existing.lastAckSequence || null,
+    existing.lastAckTimestamp || null,
+    existing.lastAckEventId || null,
     updateProvider,
     updateProviderRoomId,
     updateProviderParticipantId,
@@ -746,6 +825,17 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
         retryable: false,
       },
     }));
+    publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.terminal_failure',
+      actor: { role: 'system', id: 'backend' },
+      payload: {
+        callId: sessionId,
+        failedAt: new Date(failedAtMs).toISOString(),
+        code: 'CALL_SESSION_IRRECOVERABLE',
+        message: session.lastError || 'call session failed',
+      },
+    }));
   }
 
   return {
@@ -765,6 +855,7 @@ fastify.post('/v1/realtime/events', async (req, reply) => {
     payload: body.payload,
     eventId: body.eventId ? String(body.eventId) : undefined,
     timestamp: body.timestamp ? String(body.timestamp) : undefined,
+    sequence: body.sequence !== undefined ? Number(body.sequence) : undefined,
     version: body.version || EVENT_VERSION,
   });
 
@@ -780,16 +871,32 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
   const sessionId = String(req.params?.sessionId || '').trim();
   if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
 
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+
   const consumerId = req.query?.consumerId ? String(req.query.consumerId) : null;
+  const resumeToken = req.query?.resumeToken ? String(req.query.resumeToken) : null;
+  const afterSequenceInput = req.query?.afterSequence !== undefined ? Number(req.query.afterSequence) : null;
   const afterTimestampInput = req.query?.afterTimestamp ? String(req.query.afterTimestamp) : null;
   const afterEventIdInput = req.query?.afterEventId ? String(req.query.afterEventId) : null;
   const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 100;
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
 
+  const nowMs = Date.now();
+  if (resumeToken) {
+    if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
+    if (resumeToken !== existing.resumeToken) {
+      return sendError(req, reply, 403, 'INVALID_RESUME_TOKEN', 'resumeToken is invalid for this session', false);
+    }
+    if (existing.resumeValidUntilMs && nowMs > existing.resumeValidUntilMs) {
+      return sendError(req, reply, 410, 'RECONNECT_WINDOW_EXPIRED', 'reconnect window expired for this session', false);
+    }
+  }
+
+  let afterSequence = Number.isFinite(afterSequenceInput) ? Math.max(0, Math.trunc(afterSequenceInput)) : null;
   let watermarkTimestamp = afterTimestampInput || '';
   let watermarkEventId = afterEventIdInput || '';
 
-  if (consumerId && !afterTimestampInput && !afterEventIdInput) {
+  if (afterSequence === null && consumerId) {
     const cp = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
     if (cp) {
       watermarkTimestamp = cp.watermarkTimestamp;
@@ -797,21 +904,37 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
     }
   }
 
-  const rows = dbCtx.listRealtimeEventsAfterWatermark.all(
-    sessionId,
-    watermarkTimestamp || '',
-    watermarkTimestamp || '',
-    watermarkEventId || '',
-    limit,
-  );
+  if (afterSequence === null && existing && existing.lastAckSequence !== null && existing.lastAckSequence !== undefined) {
+    afterSequence = Math.max(afterSequence || 0, Number(existing.lastAckSequence) || 0);
+  }
+
+  let rows;
+  if (afterSequence !== null) {
+    rows = dbCtx.listRealtimeEventsAfterSequence.all(sessionId, afterSequence, limit);
+  } else {
+    rows = dbCtx.listRealtimeEventsAfterWatermark.all(
+      sessionId,
+      watermarkTimestamp || '',
+      watermarkTimestamp || '',
+      watermarkEventId || '',
+      limit,
+    );
+  }
 
   const events = rows.map(normalizeRealtimeEventRow);
   const transcriptState = mergeTranscriptEvents(events);
+  const latestSequence = Number(dbCtx.getRealtimeSessionMaxSequence.get(sessionId)?.maxSequence || 0);
 
   return {
     ok: true,
     sessionId,
-    watermark: { timestamp: watermarkTimestamp || null, eventId: watermarkEventId || null },
+    resume: {
+      reconnectWindowMs: existing?.reconnectWindowMs || null,
+      resumeValidUntilMs: existing?.resumeValidUntilMs || null,
+      lastAckSequence: existing?.lastAckSequence || null,
+      latestSequence,
+    },
+    watermark: { timestamp: watermarkTimestamp || null, eventId: watermarkEventId || null, sequence: afterSequence },
     events,
     transcriptState,
   };
@@ -825,13 +948,20 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
   const consumerId = String(body.consumerId || '').trim();
   const watermarkTimestamp = String(body.watermarkTimestamp || '').trim();
   const watermarkEventId = String(body.watermarkEventId || '').trim();
+  const watermarkSequenceRaw = body.watermarkSequence !== undefined ? Number(body.watermarkSequence) : null;
+  const watermarkSequence = Number.isFinite(watermarkSequenceRaw) ? Math.max(0, Math.trunc(watermarkSequenceRaw)) : null;
   if (!consumerId || !watermarkTimestamp || !watermarkEventId) {
     return sendError(req, reply, 400, 'INVALID_REQUEST', 'consumerId, watermarkTimestamp, and watermarkEventId are required', false);
   }
 
-  dbCtx.upsertRealtimeCheckpoint.run(sessionId, consumerId, watermarkTimestamp, watermarkEventId, Date.now());
+  const updatedAtMs = Date.now();
+  dbCtx.upsertRealtimeCheckpoint.run(sessionId, consumerId, watermarkTimestamp, watermarkEventId, updatedAtMs);
+  if (watermarkSequence !== null && dbCtx.getCallSessionById.get(sessionId)) {
+    dbCtx.updateCallSessionAck.run(watermarkSequence, watermarkTimestamp, watermarkEventId, updatedAtMs, sessionId);
+  }
   const checkpoint = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
-  return { ok: true, checkpoint };
+  const session = normalizeCallSessionRow(dbCtx.getCallSessionById.get(sessionId));
+  return { ok: true, checkpoint, sessionAck: { sequence: session?.lastAckSequence || null, timestamp: session?.lastAckTimestamp || null, eventId: session?.lastAckEventId || null } };
 });
 
 fastify.post('/v1/actions/decision', async (req, reply) => {
