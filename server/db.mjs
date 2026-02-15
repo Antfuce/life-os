@@ -31,6 +31,18 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
 
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
 
+    CREATE TABLE IF NOT EXISTS action_audit (
+      id TEXT PRIMARY KEY,
+      action TEXT NOT NULL,
+      callId TEXT,
+      conversationId TEXT,
+      payload TEXT,
+      result TEXT,
+      tsMs INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(action, callId, tsMs);
+
     CREATE TABLE IF NOT EXISTS confirmation_event (
       id TEXT PRIMARY KEY,
       conversationId TEXT,
@@ -54,12 +66,17 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
      VALUES (?, ?, ?, ?, ?, ?)`
   );
 
+  const insertActionAudit = db.prepare(
+    `INSERT OR IGNORE INTO action_audit (id, action, callId, conversationId, payload, result, tsMs)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+
   const insertConfirmation = db.prepare(
     `INSERT OR IGNORE INTO confirmation_event (id, conversationId, actionId, decision, details, tsMs)
      VALUES (?, ?, ?, ?, ?, ?)`
   );
 
-  return { db, upsertConv, insertMsg, insertConfirmation, dbFile };
+  return { db, upsertConv, insertMsg, insertActionAudit, insertConfirmation, dbFile };
 }
 
 export function stableId(...parts) {

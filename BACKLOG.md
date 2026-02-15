@@ -20,14 +20,14 @@
 - **Blocked by:** Stable tunnel URL
 
 #### 2. Interview Module Wiring
-- **Status:** Not started
+- **Status:** In progress (UI wired, needs end-to-end verification)
 - **What:** Wire `deliverable.interview` into LiveInterviewPrep
 - **Pattern:** Same as CV module (deliverable → component)
 - **Components:** LiveInterviewPrep.jsx
 - **Owner:** Atlas
 
 #### 3. Outreach Module + Confirmation Gates
-- **Status:** Not started  
+- **Status:** In progress (module + confirm endpoint added, needs integrated QA)  
 - **What:** Create OutreachModule + wire `confirm.required` events
 - **Critical:** Must implement execution gates before any send capability
 - **Owner:** Atlas

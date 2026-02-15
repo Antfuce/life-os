@@ -249,7 +249,7 @@ export default function Home() {
     const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
 
     try {
-      await fetch(`${API_ORIGIN}/v1/actions/confirm`, {
+      const response = await fetch(`${API_ORIGIN}/v1/actions/confirm`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -259,6 +259,16 @@ export default function Home() {
           details: pending?.details || {},
         }),
       });
+
+      if (!response.ok) {
+        throw new Error(`confirm endpoint returned ${response.status}`);
+      }
+
+      if (decision === "confirm") {
+        confirmAction(pending?.actionId);
+      } else {
+        cancelAction(pending?.actionId);
+      }
     } catch (e) {
       processEvent({
         type: UI_EVENT_TYPES.ERROR,
@@ -268,12 +278,6 @@ export default function Home() {
           details: String(e),
         },
       });
-    }
-
-    if (decision === "confirm") {
-      confirmAction(pending?.actionId);
-    } else {
-      cancelAction(pending?.actionId);
     }
   };
 
