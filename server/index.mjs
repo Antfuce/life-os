@@ -36,6 +36,11 @@ const ACTION_RISK_TIERS = {
   HIGH_RISK_EXTERNAL_SEND: 'high-risk-external-send',
 };
 
+const SAFETY_POLICY_IDS = {
+  EXTERNAL_SEND_CONFIRMATION: 'policy.external-send.confirmation',
+  DEFAULT: 'policy.default.allow',
+};
+
 const UI_SPEAKERS = {
   ANTONIO: 'antonio',
   MARIANA: 'mariana',
@@ -301,7 +306,11 @@ fastify.get('/', async () => ({
     listCallSessions: '/v1/call/sessions (GET with x-user-id header)',
     getCallSession: '/v1/call/sessions/:sessionId (GET)',
     updateCallSession: '/v1/call/sessions/:sessionId/state (POST json)',
+codex/add-policy-checks-for-sensitive-actions
+    executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
+=======
     reconnectCallSession: '/v1/call/sessions/:sessionId/reconnect (POST json)',
+prod
   },
 }));
 
@@ -374,6 +383,58 @@ function parseRequestMetadata(raw) {
     }
   }
   return safe;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function createPolicyDecision({ actionId, actionType, riskTier, userConfirmation, userId, metadata = {} }) {
+  const normalizedActionType = String(actionType || '').toLowerCase();
+  const isOutreachSendAction = normalizedActionType.includes('outreach') || normalizedActionType.includes('send');
+  const isSensitive = riskTier === ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND || isOutreachSendAction;
+
+  if (isSensitive && userConfirmation !== true) {
+    return {
+      approved: false,
+      eventType: 'safety.blocked',
+      policyId: SAFETY_POLICY_IDS.EXTERNAL_SEND_CONFIRMATION,
+      reason: 'explicit_user_confirmation_required',
+      decision: 'blocked',
+      audit: {
+        actionId,
+        actionType,
+        riskTier,
+        userId,
+        metadata,
+        userConfirmation: userConfirmation === true,
+      },
+    };
+  }
+
+  return {
+    approved: true,
+    eventType: 'safety.approved',
+    policyId: isSensitive ? SAFETY_POLICY_IDS.EXTERNAL_SEND_CONFIRMATION : SAFETY_POLICY_IDS.DEFAULT,
+    reason: isSensitive ? 'explicit_user_confirmation_received' : 'policy_pass_non_sensitive_action',
+    decision: 'approved',
+    audit: {
+      actionId,
+      actionType,
+      riskTier,
+      userId,
+      metadata,
+      userConfirmation: userConfirmation === true,
+    },
+  };
+}
+
+function executeOrchestrationAction({ actionType, payload }) {
+  const resultRef = `result_${stableId(actionType, JSON.stringify(payload || {}), Date.now()).slice(0, 18)}`;
+  return {
+    ok: true,
+    resultRef,
+  };
 }
 
 const realtimeMetrics = {
@@ -946,6 +1007,145 @@ fastify.post('/v1/actions/decision', async (req, reply) => {
         riskTier,
         decisionTimestamp,
       },
+    },
+  };
+});
+
+fastify.post('/v1/orchestration/actions/execute', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const sessionId = String(body.sessionId || '').trim();
+  const actionId = String(body.actionId || '').trim();
+  const actionType = String(body.actionType || '').trim();
+  const summary = String(body.summary || actionType || 'Execute orchestration action').trim();
+  const riskTier = String(body.riskTier || ACTION_RISK_TIERS.LOW_RISK_WRITE);
+  const userConfirmation = body.userConfirmation === true;
+  const metadata = parseRequestMetadata(body.metadata);
+  const actor = { role: 'system', id: auth.userId };
+
+  if (!sessionId || !actionId || !actionType) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId, actionId, and actionType are required', false);
+  }
+
+  const requestedEvent = createRealtimeEvent({
+    sessionId,
+    type: 'orchestration.action.requested',
+    actor,
+    payload: {
+      actionId,
+      actionType,
+      summary,
+      riskTier,
+      metadata,
+    },
+    timestamp: nowIso(),
+  });
+  publishRealtimeEvent(requestedEvent);
+
+  const decision = createPolicyDecision({
+    actionId,
+    actionType,
+    riskTier,
+    userConfirmation,
+    userId: auth.userId,
+    metadata,
+  });
+
+  const decisionTimestampMs = Date.now();
+  const safetyEvent = createRealtimeEvent({
+    sessionId,
+    type: decision.eventType,
+    actor,
+    payload: {
+      policyId: decision.policyId,
+      reason: decision.reason,
+      decision: decision.decision,
+      actionId,
+      actionType,
+      riskTier,
+      auditMetadata: {
+        userId: auth.userId,
+        decisionTimestampMs,
+        metadata,
+      },
+    },
+    timestamp: nowIso(),
+  });
+  publishRealtimeEvent(safetyEvent);
+
+  const auditId = stableId(sessionId, actionId, decisionTimestampMs, decision.decision, decision.reason);
+  dbCtx.insertActionAudit.run(
+    auditId,
+    actionId,
+    body.conversationId ? String(body.conversationId) : null,
+    toTsMs(body.callTimestamp),
+    decisionTimestampMs,
+    actionType,
+    riskTier,
+    decision.decision,
+    decision.approved ? 'approved' : 'blocked',
+    JSON.stringify({
+      sessionId,
+      policyId: decision.policyId,
+      reason: decision.reason,
+      userId: auth.userId,
+      userConfirmation,
+      metadata,
+    }),
+  );
+
+  if (!decision.approved) {
+    return reply.code(403).send({
+      ok: false,
+      blocked: true,
+      code: 'SAFETY_BLOCKED',
+      message: 'Action blocked by policy gate before execution',
+      decision: {
+        policyId: decision.policyId,
+        reason: decision.reason,
+        actionId,
+      },
+      events: {
+        requested: requestedEvent,
+        safety: safetyEvent,
+      },
+    });
+  }
+
+  const startedAtMs = Date.now();
+  const execution = executeOrchestrationAction({ actionType, payload: body.payload });
+  const durationMs = Math.max(0, Date.now() - startedAtMs);
+
+  const executedEvent = createRealtimeEvent({
+    sessionId,
+    type: 'action.executed',
+    actor,
+    payload: {
+      actionId,
+      durationMs,
+      resultRef: execution.resultRef,
+    },
+    timestamp: nowIso(),
+  });
+  publishRealtimeEvent(executedEvent);
+
+  return {
+    ok: true,
+    blocked: false,
+    actionId,
+    actionType,
+    result: execution,
+    decision: {
+      policyId: decision.policyId,
+      decision: decision.decision,
+      reason: decision.reason,
+    },
+    events: {
+      requested: requestedEvent,
+      safety: safetyEvent,
+      executed: executedEvent,
     },
   };
 });

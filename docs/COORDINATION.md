@@ -55,9 +55,18 @@ If you are Codex reading this:
 - Recommended merge sequence: #14 → #17 → #19 → #9 (contract/persistence first, billing last).
 - Risk: local environment has no GitHub CLI remote context, so guidance is dependency-based from backlog/contracts rather than inline PR diff review.
 
+ codex/add-policy-checks-for-sensitive-actions
+### 2026-02-15 22:41 UTC
+- Codex: Added backend policy gate endpoint `POST /v1/orchestration/actions/execute` that emits `orchestration.action.requested` then `safety.blocked|safety.approved` before any action execution.
+- Enforced explicit `userConfirmation=true` for send/outreach and other high-risk external-send actions; blocked actions now return `403 SAFETY_BLOCKED` and never emit `action.executed`.
+- Persisted audit metadata for every policy decision (`sessionId`, `policyId`, `reason`, `userId`, `metadata`, confirmation flag) into `action_audit`.
+- Added integration tests (`server/test/safety-gates.test.mjs`) covering blocked vs approved flow ordering and execution gating.
+- Risk: local runtime is Node 20 and lacks `node:sqlite`, so server/test suite cannot execute in this environment.
+=======
 ### 2026-02-15 22:43 UTC
 - Codex: Implemented call-session resume semantics with reconnect window enforcement and a new authenticated reconnect endpoint (`POST /v1/call/sessions/:sessionId/reconnect`) that validates `resumeToken` and replays from acknowledged sequence.
 - Added per-session sequence + ack persistence (`realtime_event.sequence`, `call_session.lastAck*`) so clients can resume replay from `lastAckSequence`; checkpoint API now accepts `watermarkSequence` and persists session-level ack metadata.
 - Added explicit irrecoverable terminal event emission (`call.terminal_failure`) when session transitions to `failed`, in addition to `call.error`, to keep UI terminal state deterministic.
 - Added integration tests for reconnect token validation/replay and terminal failure event emission.
 - Risk: runtime/tests remain blocked in this environment because Node 20 lacks `node:sqlite`; requires newer Node runtime to execute backend tests.
+ prod
