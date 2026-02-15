@@ -255,9 +255,17 @@ export default function Home() {
     setShowMemory(false);
   };
 
-  // Get latest CV deliverable
-  const latestCVDeliverable = deliverables.find(d => d.type === 'cv');
-  const latestInterviewDeliverable = deliverables.find(d => d.type === 'interview');
+  const getLatestDeliverable = (type) => {
+    for (let i = deliverables.length - 1; i >= 0; i -= 1) {
+      if (deliverables[i]?.type === type) return deliverables[i];
+    }
+    return null;
+  };
+
+  // Get latest deliverables
+  const latestCVDeliverable = getLatestDeliverable('cv');
+  const latestInterviewDeliverable = getLatestDeliverable('interview');
+  const latestOutreachDeliverable = getLatestDeliverable('outreach');
 
   return (
     <div className="relative h-screen overflow-hidden bg-gradient-to-b from-stone-50 via-neutral-50 to-stone-100">
@@ -410,6 +418,12 @@ export default function Home() {
                     deliverable: latestInterviewDeliverable,
                     onAction: handleModuleAction,
                   })}
+
+                  {/* Inline Outreach Preview */}
+                  {latestOutreachDeliverable && renderInlineModule('outreach', {
+                    deliverable: latestOutreachDeliverable,
+                    onAction: handleModuleAction,
+                  })}
                   
                   <div ref={messagesEndRef} />
                 </div>
@@ -489,7 +503,7 @@ export default function Home() {
                 {floatingModules.map((module) => (
                   <FloatingModule
                     key={module.id}
-                    title={module.type === "cv" ? "Your CV" : module.type === "interview" ? "Interview Prep" : "Module"}
+                    title={module.type === "cv" ? "Your CV" : module.type === "interview" ? "Interview Prep" : module.type === "outreach" ? "Outreach" : "Module"}
                     position={module.position}
                     onClose={() => closeModule(module.id)}
                     onMove={(pos) => updateModulePosition(module.id, pos)}
