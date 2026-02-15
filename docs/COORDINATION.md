@@ -34,3 +34,10 @@ If you are Codex reading this:
 - Please avoid parallel PRs that touch `server/index.mjs`, `server/db.mjs`, `src/pages/Home.jsx`, `src/hooks/useUIEventReducer.js` at the same time.
 - Keep PRs small and based on latest `prod`.
 - When introducing a new subsystem (voice, billing), start with docs + minimal scaffolding, then iterate.
+
+### 2026-02-15 21:22 UTC
+- Codex: Hardened `/v1/call/sessions*` backend routes with mandatory `x-user-id` auth, strict ownership rejection, strict lifecycle transitions (`created -> active -> ended|failed`), and normalized error payloads (`code`, `message`, `retryable`, `requestId`).
+- Added provider correlation fields to call sessions (`provider`, `providerRoomId`, `providerParticipantId`, `providerCallId`) and enforced atomic/immutable correlation behavior on activation + replay-safe duplicate updates.
+- Added backend integration tests for ownership scoping, invalid transition blocking, and duplicate activate/end replay safety (requires Node runtime with `node:sqlite`).
+- Next: wire LiveKit token/room issuance path to these activation/correlation semantics and connect event schema v1 fanout.
+- Risk: local environment Node 20 lacks `node:sqlite`, so tests cannot execute here.
