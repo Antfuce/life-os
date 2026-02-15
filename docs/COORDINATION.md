@@ -55,6 +55,14 @@ If you are Codex reading this:
 - Recommended merge sequence: #14 → #17 → #19 → #9 (contract/persistence first, billing last).
 - Risk: local environment has no GitHub CLI remote context, so guidance is dependency-based from backlog/contracts rather than inline PR diff review.
 
+codex/enforce-event-envelope-in-backend
+### 2026-02-15 22:42 UTC
+- Codex: Enforced canonical realtime envelope shape at backend emit/validate boundaries to match `eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`.
+- Added ingestion normalization for legacy request keys (`timestamp` -> `ts`, `version` -> `schemaVersion`) and hard rejection for unknown/extra envelope keys.
+- Updated realtime replay/checkpoint API semantics to use `afterTs`/`watermarkTs` and normalized checkpoint responses to the same naming.
+- Expanded realtime schema tests with normalization coverage plus duplicate-idempotency and out-of-order replay ordering assertions.
+- Risk: integration tests still depend on `node:sqlite`; current runtime is Node 20 without that module, so full server test execution remains blocked locally.
+=======
  codex/add-policy-checks-for-sensitive-actions
 ### 2026-02-15 22:41 UTC
 - Codex: Added backend policy gate endpoint `POST /v1/orchestration/actions/execute` that emits `orchestration.action.requested` then `safety.blocked|safety.approved` before any action execution.
@@ -70,3 +78,4 @@ If you are Codex reading this:
 - Added integration tests for reconnect token validation/replay and terminal failure event emission.
 - Risk: runtime/tests remain blocked in this environment because Node 20 lacks `node:sqlite`; requires newer Node runtime to execute backend tests.
  prod
+prod

@@ -443,17 +443,38 @@ const realtimeMetrics = {
   emittedDuplicate: 0,
 };
 
+codex/enforce-event-envelope-in-backend
+function normalizeIncomingRealtimeEvent(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+
+  const normalized = { ...input };
+  if (!normalized.ts && normalized.timestamp) normalized.ts = normalized.timestamp;
+  if (!normalized.schemaVersion && normalized.version) normalized.schemaVersion = normalized.version;
+
+  delete normalized.timestamp;
+  delete normalized.version;
+  delete normalized.actor;
+
+  return normalized;
+}
+
+function createRealtimeEvent({ sessionId, type, payload, eventId, ts, schemaVersion = EVENT_VERSION }) {
+  const nowIso = new Date().toISOString();
+  return {
+    eventId: eventId || `evt_${stableId(sessionId, type, nowIso, Math.random()).slice(0, 20)}`,
+=======
 function createRealtimeEvent({ sessionId, type, actor, payload, eventId, timestamp, sequence, version = EVENT_VERSION }) {
   const nowIso = new Date().toISOString();
   return {
     eventId: eventId || `evt_${stableId(sessionId, type, nowIso, Math.random()).slice(0, 20)}`,
     sequence,
     timestamp: timestamp || nowIso,
+ prod
     sessionId,
+    ts: ts || nowIso,
     type,
-    actor,
     payload,
-    version,
+    schemaVersion,
   };
 }
 
@@ -472,12 +493,16 @@ function publishRealtimeEvent(event) {
   const inserted = dbCtx.insertRealtimeEvent.run(
     event.eventId,
     event.sessionId,
+codex/enforce-event-envelope-in-backend
+    event.ts,
+=======
     nextSequence,
     event.timestamp,
+prod
     event.type,
-    JSON.stringify(event.actor),
+    JSON.stringify({}),
     JSON.stringify(event.payload),
-    event.version,
+    event.schemaVersion,
     Date.now(),
   );
 
@@ -493,13 +518,16 @@ function publishRealtimeEvent(event) {
 function normalizeRealtimeEventRow(row) {
   return {
     eventId: row.eventId,
+codex/enforce-event-envelope-in-backend
+=======
     sequence: row.sequence,
     timestamp: row.timestamp,
+ prod
     sessionId: row.sessionId,
+    ts: row.timestamp,
     type: row.type,
-    actor: JSON.parse(row.actorJson),
     payload: JSON.parse(row.payloadJson),
-    version: row.version,
+    schemaVersion: row.version,
   };
 }
 
@@ -602,7 +630,6 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
   publishRealtimeEvent(createRealtimeEvent({
     sessionId: session.sessionId,
     type: 'call.started',
-    actor: { role: 'system', id: 'backend' },
     payload: {
       callId: session.sessionId,
       channel: 'voice',
@@ -789,7 +816,6 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
     publishRealtimeEvent(createRealtimeEvent({
       sessionId,
       type: 'call.connected',
-      actor: { role: 'provider', id: session.provider || 'livekit' },
       payload: {
         callId: sessionId,
         connectedAt: new Date(startedAtMs).toISOString(),
@@ -803,8 +829,7 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
     publishRealtimeEvent(createRealtimeEvent({
       sessionId,
       type: 'call.ended',
-      actor: { role: 'system', id: 'backend' },
-      payload: {
+        payload: {
         callId: sessionId,
         endedAt: new Date(endedAtMs).toISOString(),
         durationSeconds,
@@ -817,8 +842,7 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
     publishRealtimeEvent(createRealtimeEvent({
       sessionId,
       type: 'call.error',
-      actor: { role: 'system', id: 'backend' },
-      payload: {
+        payload: {
         callId: sessionId,
         code: 'CALL_SESSION_FAILED',
         message: session.lastError || 'call session failed',
@@ -847,8 +871,16 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
 
 
 fastify.post('/v1/realtime/events', async (req, reply) => {
-  const body = req.body || {};
+  const body = normalizeIncomingRealtimeEvent(req.body || {});
   const event = createRealtimeEvent({
+codex/enforce-event-envelope-in-backend
+    sessionId: body?.sessionId !== undefined ? String(body.sessionId) : '',
+    type: body?.type !== undefined ? String(body.type) : '',
+    payload: body?.payload,
+    eventId: body?.eventId !== undefined ? String(body.eventId) : undefined,
+    ts: body?.ts !== undefined ? String(body.ts) : undefined,
+    schemaVersion: body?.schemaVersion || EVENT_VERSION,
+=======
     sessionId: String(body.sessionId || ''),
     type: String(body.type || ''),
     actor: body.actor,
@@ -857,6 +889,7 @@ fastify.post('/v1/realtime/events', async (req, reply) => {
     timestamp: body.timestamp ? String(body.timestamp) : undefined,
     sequence: body.sequence !== undefined ? Number(body.sequence) : undefined,
     version: body.version || EVENT_VERSION,
+prod
   });
 
   try {
@@ -874,13 +907,24 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
   const existing = dbCtx.getCallSessionById.get(sessionId);
 
   const consumerId = req.query?.consumerId ? String(req.query.consumerId) : null;
+codex/enforce-event-envelope-in-backend
+  const afterTsInput = req.query?.afterTs ? String(req.query.afterTs) : null;
+=======
   const resumeToken = req.query?.resumeToken ? String(req.query.resumeToken) : null;
   const afterSequenceInput = req.query?.afterSequence !== undefined ? Number(req.query.afterSequence) : null;
   const afterTimestampInput = req.query?.afterTimestamp ? String(req.query.afterTimestamp) : null;
+
+  prod
   const afterEventIdInput = req.query?.afterEventId ? String(req.query.afterEventId) : null;
   const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 100;
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
 
+ codex/enforce-event-envelope-in-backend
+  let watermarkTs = afterTsInput || '';
+  let watermarkEventId = afterEventIdInput || '';
+
+  if (consumerId && !afterTsInput && !afterEventIdInput) {
+=======
   const nowMs = Date.now();
   if (resumeToken) {
     if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
@@ -897,13 +941,23 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
   let watermarkEventId = afterEventIdInput || '';
 
   if (afterSequence === null && consumerId) {
+prod
     const cp = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
     if (cp) {
-      watermarkTimestamp = cp.watermarkTimestamp;
+      watermarkTs = cp.watermarkTimestamp;
       watermarkEventId = cp.watermarkEventId;
     }
   }
 
+ codex/enforce-event-envelope-in-backend
+  const rows = dbCtx.listRealtimeEventsAfterWatermark.all(
+    sessionId,
+    watermarkTs || '',
+    watermarkTs || '',
+    watermarkEventId || '',
+    limit,
+  );
+=======
   if (afterSequence === null && existing && existing.lastAckSequence !== null && existing.lastAckSequence !== undefined) {
     afterSequence = Math.max(afterSequence || 0, Number(existing.lastAckSequence) || 0);
   }
@@ -920,6 +974,7 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
       limit,
     );
   }
+ prod
 
   const events = rows.map(normalizeRealtimeEventRow);
   const transcriptState = mergeTranscriptEvents(events);
@@ -928,6 +983,9 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
   return {
     ok: true,
     sessionId,
+ codex/enforce-event-envelope-in-backend
+    watermark: { ts: watermarkTs || null, eventId: watermarkEventId || null },
+=======
     resume: {
       reconnectWindowMs: existing?.reconnectWindowMs || null,
       resumeValidUntilMs: existing?.resumeValidUntilMs || null,
@@ -935,6 +993,7 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
       latestSequence,
     },
     watermark: { timestamp: watermarkTimestamp || null, eventId: watermarkEventId || null, sequence: afterSequence },
+prod
     events,
     transcriptState,
   };
@@ -946,8 +1005,28 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
 
   const body = req.body || {};
   const consumerId = String(body.consumerId || '').trim();
-  const watermarkTimestamp = String(body.watermarkTimestamp || '').trim();
+  const watermarkTs = String(body.watermarkTs || '').trim();
   const watermarkEventId = String(body.watermarkEventId || '').trim();
+ codex/enforce-event-envelope-in-backend
+  if (!consumerId || !watermarkTs || !watermarkEventId) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'consumerId, watermarkTs, and watermarkEventId are required', false);
+  }
+
+  dbCtx.upsertRealtimeCheckpoint.run(sessionId, consumerId, watermarkTs, watermarkEventId, Date.now());
+  const checkpoint = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
+  return {
+    ok: true,
+    checkpoint: checkpoint
+      ? {
+          sessionId: checkpoint.sessionId,
+          consumerId: checkpoint.consumerId,
+          watermarkTs: checkpoint.watermarkTimestamp,
+          watermarkEventId: checkpoint.watermarkEventId,
+          updatedAtMs: checkpoint.updatedAtMs,
+        }
+      : null,
+  };
+=======
   const watermarkSequenceRaw = body.watermarkSequence !== undefined ? Number(body.watermarkSequence) : null;
   const watermarkSequence = Number.isFinite(watermarkSequenceRaw) ? Math.max(0, Math.trunc(watermarkSequenceRaw)) : null;
   if (!consumerId || !watermarkTimestamp || !watermarkEventId) {
@@ -962,6 +1041,7 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
   const checkpoint = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
   const session = normalizeCallSessionRow(dbCtx.getCallSessionById.get(sessionId));
   return { ok: true, checkpoint, sessionAck: { sequence: session?.lastAckSequence || null, timestamp: session?.lastAckTimestamp || null, eventId: session?.lastAckEventId || null } };
+prod
 });
 
 fastify.post('/v1/actions/decision', async (req, reply) => {
