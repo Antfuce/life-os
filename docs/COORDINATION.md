@@ -55,6 +55,8 @@ If you are Codex reading this:
 - Recommended merge sequence: #14 → #17 → #19 → #9 (contract/persistence first, billing last).
 - Risk: local environment has no GitHub CLI remote context, so guidance is dependency-based from backlog/contracts rather than inline PR diff review.
 
+codex/map-out-next-5-tasks
+=======
 codex/add-livekit-integration-endpoints
 ### 2026-02-15 22:38 UTC
 - Codex: Implemented LiveKit session bridge scaffolding in backend with backend-only token issuance endpoint (`POST /v1/call/sessions/:sessionId/livekit/token`) that mints short-lived provider tokens and persists session↔room/participant mapping in call session metadata/correlation fields.
@@ -64,27 +66,40 @@ codex/add-livekit-integration-endpoints
 - Next: wire webhook authenticity verification for LiveKit events (signature/timestamp checks) and add provider lifecycle mappings for richer call end reasons.
 =======
 codex/enforce-event-envelope-in-backend
+prod
 ### 2026-02-15 22:42 UTC
 - Codex: Enforced canonical realtime envelope shape at backend emit/validate boundaries to match `eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`.
 - Added ingestion normalization for legacy request keys (`timestamp` -> `ts`, `version` -> `schemaVersion`) and hard rejection for unknown/extra envelope keys.
 - Updated realtime replay/checkpoint API semantics to use `afterTs`/`watermarkTs` and normalized checkpoint responses to the same naming.
 - Expanded realtime schema tests with normalization coverage plus duplicate-idempotency and out-of-order replay ordering assertions.
 - Risk: integration tests still depend on `node:sqlite`; current runtime is Node 20 without that module, so full server test execution remains blocked locally.
-=======
- codex/add-policy-checks-for-sensitive-actions
 ### 2026-02-15 22:41 UTC
 - Codex: Added backend policy gate endpoint `POST /v1/orchestration/actions/execute` that emits `orchestration.action.requested` then `safety.blocked|safety.approved` before any action execution.
 - Enforced explicit `userConfirmation=true` for send/outreach and other high-risk external-send actions; blocked actions now return `403 SAFETY_BLOCKED` and never emit `action.executed`.
 - Persisted audit metadata for every policy decision (`sessionId`, `policyId`, `reason`, `userId`, `metadata`, confirmation flag) into `action_audit`.
 - Added integration tests (`server/test/safety-gates.test.mjs`) covering blocked vs approved flow ordering and execution gating.
 - Risk: local runtime is Node 20 and lacks `node:sqlite`, so server/test suite cannot execute in this environment.
-=======
 ### 2026-02-15 22:43 UTC
 - Codex: Implemented call-session resume semantics with reconnect window enforcement and a new authenticated reconnect endpoint (`POST /v1/call/sessions/:sessionId/reconnect`) that validates `resumeToken` and replays from acknowledged sequence.
 - Added per-session sequence + ack persistence (`realtime_event.sequence`, `call_session.lastAck*`) so clients can resume replay from `lastAckSequence`; checkpoint API now accepts `watermarkSequence` and persists session-level ack metadata.
 - Added explicit irrecoverable terminal event emission (`call.terminal_failure`) when session transitions to `failed`, in addition to `call.error`, to keep UI terminal state deterministic.
 - Added integration tests for reconnect token validation/replay and terminal failure event emission.
 - Risk: runtime/tests remain blocked in this environment because Node 20 lacks `node:sqlite`; requires newer Node runtime to execute backend tests.
+codex/map-out-next-5-tasks
+
+### 2026-02-15 23:10 UTC
+- Codex: Mapped the next 5 execution tasks directly from `BACKLOG.md` and published an explicit ordered list to keep merge planning clean.
+- Codex: Removed stray merge-marker artifacts from this coordination log so downstream merges are not blocked by conflict text.
+- Next: execute task #1 (finish LiveKit identifier/token wiring in call-session activation path), then start task #2 LiveKit bridge implementation.
+- Risk: backend integration tests still require a Node runtime with `node:sqlite`; current environment cannot run full server tests.
+
+### 2026-02-15 23:16 UTC
+- Codex: Implemented P0 #1 wiring by generating LiveKit provider auth material (room, identity, signed token) on call-session activation and returning it in `providerAuth` while preserving provider correlation immutability after first activation.
+- Codex: Removed remaining merge-marker artifacts from `server/index.mjs` and `docs/REALTIME_EVENT_CONTRACT.md` to unblock merges.
+- Codex: Expanded call-session tests to validate activation returns provider auth and to enforce immutable provider correlation mismatch behavior.
+- Risk: local environment runs Node 20 without `node:sqlite`, so server runtime and integration tests cannot execute until Node >=22.
+=======
  prod
 prod
  prod
+prod

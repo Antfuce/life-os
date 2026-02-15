@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { readFile } from 'node:fs/promises';
+import { createHmac } from 'node:crypto';
 
 import { initDb, stableId, toTsMs } from './db.mjs';
 import { EVENT_VERSION, validateRealtimeEventEnvelope, mergeTranscriptEvents } from './realtime-events.mjs';
@@ -12,6 +13,9 @@ const HOST = process.env.HOST || '127.0.0.1';
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || null;
 const OPENCLAW_RESPONSES_URL = process.env.OPENCLAW_RESPONSES_URL || 'http://127.0.0.1:18789/v1/responses';
 const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || null;
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || null;
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || null;
+const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL || null;
 
 const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL || null;
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || null;
@@ -312,16 +316,21 @@ fastify.get('/', async () => ({
     listCallSessions: '/v1/call/sessions (GET with x-user-id header)',
     getCallSession: '/v1/call/sessions/:sessionId (GET)',
     updateCallSession: '/v1/call/sessions/:sessionId/state (POST json)',
+codex/map-out-next-5-tasks
+=======
  codex/add-livekit-integration-endpoints
     issueLiveKitToken: '/v1/call/sessions/:sessionId/livekit/token (POST json)',
     ingestLiveKitEvent: '/v1/call/livekit/events (POST json)',
 =======
 codex/add-policy-checks-for-sensitive-actions
+prod
     executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
-=======
     reconnectCallSession: '/v1/call/sessions/:sessionId/reconnect (POST json)',
+ codex/map-out-next-5-tasks
+=======
 prod
 prod
+ prod
   },
 }));
 
@@ -454,7 +463,47 @@ const realtimeMetrics = {
   emittedDuplicate: 0,
 };
 
-codex/enforce-event-envelope-in-backend
+function toBase64Url(input) {
+  return Buffer.from(input).toString('base64url');
+}
+
+function signHs256(payload, secret) {
+  const headerB64 = toBase64Url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payloadB64 = toBase64Url(JSON.stringify(payload));
+  const signedInput = `${headerB64}.${payloadB64}`;
+  const signature = createHmac('sha256', secret).update(signedInput).digest('base64url');
+  return `${signedInput}.${signature}`;
+}
+
+function createLiveKitAccess(session, userId) {
+  if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET || !LIVEKIT_WS_URL) return null;
+  if ((session.provider || 'livekit') !== 'livekit') return null;
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const room = session.providerRoomId || `lk_room_${session.sessionId}`;
+  const identity = session.providerParticipantId || `lk_part_${stableId(session.sessionId, userId).slice(0, 16)}`;
+
+  return {
+    provider: 'livekit',
+    wsUrl: LIVEKIT_WS_URL,
+    room,
+    identity,
+    token: signHs256({
+      iss: LIVEKIT_API_KEY,
+      sub: identity,
+      nbf: nowSec - 5,
+      exp: nowSec + 60 * 10,
+      video: {
+        room,
+        roomJoin: true,
+        canPublish: true,
+        canSubscribe: true,
+      },
+      metadata: JSON.stringify({ sessionId: session.sessionId, userId }),
+    }, LIVEKIT_API_SECRET),
+  };
+}
+
 function normalizeIncomingRealtimeEvent(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
 
@@ -473,14 +522,6 @@ function createRealtimeEvent({ sessionId, type, payload, eventId, ts, schemaVers
   const nowIso = new Date().toISOString();
   return {
     eventId: eventId || `evt_${stableId(sessionId, type, nowIso, Math.random()).slice(0, 20)}`,
-=======
-function createRealtimeEvent({ sessionId, type, actor, payload, eventId, timestamp, sequence, version = EVENT_VERSION }) {
-  const nowIso = new Date().toISOString();
-  return {
-    eventId: eventId || `evt_${stableId(sessionId, type, nowIso, Math.random()).slice(0, 20)}`,
-    sequence,
-    timestamp: timestamp || nowIso,
- prod
     sessionId,
     ts: ts || nowIso,
     type,
@@ -504,12 +545,8 @@ function publishRealtimeEvent(event) {
   const inserted = dbCtx.insertRealtimeEvent.run(
     event.eventId,
     event.sessionId,
-codex/enforce-event-envelope-in-backend
-    event.ts,
-=======
     nextSequence,
-    event.timestamp,
-prod
+    event.ts,
     event.type,
     JSON.stringify({}),
     JSON.stringify(event.payload),
@@ -529,11 +566,8 @@ prod
 function normalizeRealtimeEventRow(row) {
   return {
     eventId: row.eventId,
-codex/enforce-event-envelope-in-backend
-=======
     sequence: row.sequence,
     timestamp: row.timestamp,
- prod
     sessionId: row.sessionId,
     ts: row.timestamp,
     type: row.type,
@@ -931,10 +965,16 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
   }
 
   const isIdempotentReplay = existing.status === nextStatus;
-  const requestedProvider = body.provider ? String(body.provider) : existing.provider;
-  const requestedProviderRoomId = body.providerRoomId ? String(body.providerRoomId) : existing.providerRoomId;
-  const requestedProviderParticipantId = body.providerParticipantId ? String(body.providerParticipantId) : existing.providerParticipantId;
-  const requestedProviderCallId = body.providerCallId ? String(body.providerCallId) : existing.providerCallId;
+  const requestedProvider = body.provider ? String(body.provider) : (existing.provider || 'livekit');
+  const requestedProviderRoomId = body.providerRoomId
+    ? String(body.providerRoomId)
+    : (existing.providerRoomId || (requestedProvider === 'livekit' ? `lk_room_${sessionId}` : null));
+  const requestedProviderParticipantId = body.providerParticipantId
+    ? String(body.providerParticipantId)
+    : (existing.providerParticipantId || `lk_part_${stableId(sessionId, auth.userId).slice(0, 16)}`);
+  const requestedProviderCallId = body.providerCallId
+    ? String(body.providerCallId)
+    : (existing.providerCallId || `lk_call_${stableId(sessionId, Date.now(), auth.userId).slice(0, 16)}`);
 
   if (nextStatus === CALL_SESSION_STATUS.ACTIVE) {
     if (!requestedProviderRoomId || !requestedProviderParticipantId || !requestedProviderCallId) {
@@ -990,6 +1030,7 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
 
   const row = dbCtx.getCallSessionById.get(sessionId);
   const session = normalizeCallSessionRow(row);
+  const providerAuth = nextStatus === CALL_SESSION_STATUS.ACTIVE ? createLiveKitAccess(session, auth.userId) : null;
 
   if (nextStatus === CALL_SESSION_STATUS.ACTIVE) {
     publishRealtimeEvent(createRealtimeEvent({
@@ -1045,6 +1086,7 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
     ok: true,
     idempotentReplay: isIdempotentReplay,
     session,
+    providerAuth,
   };
 });
 
@@ -1052,23 +1094,12 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
 fastify.post('/v1/realtime/events', async (req, reply) => {
   const body = normalizeIncomingRealtimeEvent(req.body || {});
   const event = createRealtimeEvent({
-codex/enforce-event-envelope-in-backend
     sessionId: body?.sessionId !== undefined ? String(body.sessionId) : '',
     type: body?.type !== undefined ? String(body.type) : '',
     payload: body?.payload,
     eventId: body?.eventId !== undefined ? String(body.eventId) : undefined,
     ts: body?.ts !== undefined ? String(body.ts) : undefined,
     schemaVersion: body?.schemaVersion || EVENT_VERSION,
-=======
-    sessionId: String(body.sessionId || ''),
-    type: String(body.type || ''),
-    actor: body.actor,
-    payload: body.payload,
-    eventId: body.eventId ? String(body.eventId) : undefined,
-    timestamp: body.timestamp ? String(body.timestamp) : undefined,
-    sequence: body.sequence !== undefined ? Number(body.sequence) : undefined,
-    version: body.version || EVENT_VERSION,
-prod
   });
 
   try {
@@ -1086,24 +1117,17 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
   const existing = dbCtx.getCallSessionById.get(sessionId);
 
   const consumerId = req.query?.consumerId ? String(req.query.consumerId) : null;
-codex/enforce-event-envelope-in-backend
   const afterTsInput = req.query?.afterTs ? String(req.query.afterTs) : null;
-=======
   const resumeToken = req.query?.resumeToken ? String(req.query.resumeToken) : null;
   const afterSequenceInput = req.query?.afterSequence !== undefined ? Number(req.query.afterSequence) : null;
   const afterTimestampInput = req.query?.afterTimestamp ? String(req.query.afterTimestamp) : null;
 
-  prod
   const afterEventIdInput = req.query?.afterEventId ? String(req.query.afterEventId) : null;
   const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 100;
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
 
- codex/enforce-event-envelope-in-backend
   let watermarkTs = afterTsInput || '';
-  let watermarkEventId = afterEventIdInput || '';
 
-  if (consumerId && !afterTsInput && !afterEventIdInput) {
-=======
   const nowMs = Date.now();
   if (resumeToken) {
     if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
@@ -1116,27 +1140,18 @@ codex/enforce-event-envelope-in-backend
   }
 
   let afterSequence = Number.isFinite(afterSequenceInput) ? Math.max(0, Math.trunc(afterSequenceInput)) : null;
-  let watermarkTimestamp = afterTimestampInput || '';
+  let watermarkTimestamp = afterTimestampInput || watermarkTs || '';
   let watermarkEventId = afterEventIdInput || '';
 
   if (afterSequence === null && consumerId) {
-prod
     const cp = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
     if (cp) {
       watermarkTs = cp.watermarkTimestamp;
+      watermarkTimestamp = cp.watermarkTimestamp;
       watermarkEventId = cp.watermarkEventId;
     }
   }
 
- codex/enforce-event-envelope-in-backend
-  const rows = dbCtx.listRealtimeEventsAfterWatermark.all(
-    sessionId,
-    watermarkTs || '',
-    watermarkTs || '',
-    watermarkEventId || '',
-    limit,
-  );
-=======
   if (afterSequence === null && existing && existing.lastAckSequence !== null && existing.lastAckSequence !== undefined) {
     afterSequence = Math.max(afterSequence || 0, Number(existing.lastAckSequence) || 0);
   }
@@ -1153,7 +1168,6 @@ prod
       limit,
     );
   }
- prod
 
   const events = rows.map(normalizeRealtimeEventRow);
   const transcriptState = mergeTranscriptEvents(events);
@@ -1162,9 +1176,7 @@ prod
   return {
     ok: true,
     sessionId,
- codex/enforce-event-envelope-in-backend
     watermark: { ts: watermarkTs || null, eventId: watermarkEventId || null },
-=======
     resume: {
       reconnectWindowMs: existing?.reconnectWindowMs || null,
       resumeValidUntilMs: existing?.resumeValidUntilMs || null,
@@ -1172,7 +1184,6 @@ prod
       latestSequence,
     },
     watermark: { timestamp: watermarkTimestamp || null, eventId: watermarkEventId || null, sequence: afterSequence },
-prod
     events,
     transcriptState,
   };
@@ -1184,15 +1195,21 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
 
   const body = req.body || {};
   const consumerId = String(body.consumerId || '').trim();
-  const watermarkTs = String(body.watermarkTs || '').trim();
+  const watermarkTs = String(body.watermarkTs || body.watermarkTimestamp || '').trim();
   const watermarkEventId = String(body.watermarkEventId || '').trim();
- codex/enforce-event-envelope-in-backend
+  const watermarkSequenceRaw = body.watermarkSequence !== undefined ? Number(body.watermarkSequence) : null;
+  const watermarkSequence = Number.isFinite(watermarkSequenceRaw) ? Math.max(0, Math.trunc(watermarkSequenceRaw)) : null;
   if (!consumerId || !watermarkTs || !watermarkEventId) {
-    return sendError(req, reply, 400, 'INVALID_REQUEST', 'consumerId, watermarkTs, and watermarkEventId are required', false);
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'consumerId, watermarkTs/watermarkTimestamp, and watermarkEventId are required', false);
   }
 
-  dbCtx.upsertRealtimeCheckpoint.run(sessionId, consumerId, watermarkTs, watermarkEventId, Date.now());
+  const updatedAtMs = Date.now();
+  dbCtx.upsertRealtimeCheckpoint.run(sessionId, consumerId, watermarkTs, watermarkEventId, updatedAtMs);
+  if (watermarkSequence !== null && dbCtx.getCallSessionById.get(sessionId)) {
+    dbCtx.updateCallSessionAck.run(watermarkSequence, watermarkTs, watermarkEventId, updatedAtMs, sessionId);
+  }
   const checkpoint = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
+  const session = normalizeCallSessionRow(dbCtx.getCallSessionById.get(sessionId));
   return {
     ok: true,
     checkpoint: checkpoint
@@ -1200,27 +1217,13 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
           sessionId: checkpoint.sessionId,
           consumerId: checkpoint.consumerId,
           watermarkTs: checkpoint.watermarkTimestamp,
+          watermarkTimestamp: checkpoint.watermarkTimestamp,
           watermarkEventId: checkpoint.watermarkEventId,
           updatedAtMs: checkpoint.updatedAtMs,
         }
       : null,
+    sessionAck: { sequence: session?.lastAckSequence || null, timestamp: session?.lastAckTimestamp || null, eventId: session?.lastAckEventId || null },
   };
-=======
-  const watermarkSequenceRaw = body.watermarkSequence !== undefined ? Number(body.watermarkSequence) : null;
-  const watermarkSequence = Number.isFinite(watermarkSequenceRaw) ? Math.max(0, Math.trunc(watermarkSequenceRaw)) : null;
-  if (!consumerId || !watermarkTimestamp || !watermarkEventId) {
-    return sendError(req, reply, 400, 'INVALID_REQUEST', 'consumerId, watermarkTimestamp, and watermarkEventId are required', false);
-  }
-
-  const updatedAtMs = Date.now();
-  dbCtx.upsertRealtimeCheckpoint.run(sessionId, consumerId, watermarkTimestamp, watermarkEventId, updatedAtMs);
-  if (watermarkSequence !== null && dbCtx.getCallSessionById.get(sessionId)) {
-    dbCtx.updateCallSessionAck.run(watermarkSequence, watermarkTimestamp, watermarkEventId, updatedAtMs, sessionId);
-  }
-  const checkpoint = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
-  const session = normalizeCallSessionRow(dbCtx.getCallSessionById.get(sessionId));
-  return { ok: true, checkpoint, sessionAck: { sequence: session?.lastAckSequence || null, timestamp: session?.lastAckTimestamp || null, eventId: session?.lastAckEventId || null } };
-prod
 });
 
 fastify.post('/v1/actions/decision', async (req, reply) => {

@@ -4,16 +4,11 @@ This is the single source of truth for backend-published realtime events.
 
 ## Envelope (required)
 
-All events MUST use exactly these keys:
+All ingested/published events MUST use exactly these keys:
 
 ```json
 {
   "eventId": "evt_01JABCDEF1234567890",
-codex/enforce-event-envelope-in-backend
-=======
-  "sequence": 42,
-  "timestamp": "2026-02-16T10:00:00.000Z",
-prod
   "sessionId": "sess_123",
   "ts": "2026-02-16T10:00:00.000Z",
   "type": "call.started",
@@ -25,11 +20,6 @@ prod
 ### Field rules
 
 - `eventId` (string, required): globally unique per event. Used as dedupe key.
-codex/enforce-event-envelope-in-backend
-=======
-- `sequence` (integer, server-assigned): monotonic per-session ordering key used for reconnect replay.
-- `timestamp` (string, required): ISO-8601 UTC emit timestamp.
-prod
 - `sessionId` (string, required): session stream partition key.
 - `ts` (string, required): ISO-8601 UTC emit timestamp.
 - `type` (string, required): event discriminator.
@@ -158,20 +148,12 @@ Backend publisher validates every event envelope + payload before persistence/fa
 
 - Event store is append-only and session-scoped.
 - Dedupe key is `eventId` (idempotent insert).
-codex/enforce-event-envelope-in-backend
-- Consumers store watermark tuple `(ts, eventId)` per `sessionId`.
-- Replay query returns only events strictly newer than watermark:
-  - `(event.ts > watermark.ts)` OR
-  - `(event.ts == watermark.ts AND event.eventId > watermark.eventId)`
-- Sorting is deterministic: `ts ASC`, then `eventId ASC`.
-=======
-- Consumers should store `sequence` as primary checkpoint; timestamp/eventId tuple remains supported fallback.
-- Replay by sequence returns events where `event.sequence > lastAckSequence`.
+- Server assigns per-session `sequence` and persists a timestamp (`timestamp`) for deterministic replay ordering.
+- Sequence replay returns events where `event.sequence > afterSequence`.
 - Watermark replay fallback returns only events strictly newer than `(timestamp, eventId)`:
   - `(event.timestamp > watermark.timestamp)` OR
   - `(event.timestamp == watermark.timestamp AND event.eventId > watermark.eventId)`
 - Sorting is deterministic: `sequence ASC` for sequence replay, otherwise `timestamp ASC` then `eventId ASC`.
-prod
 - Transcript state materialization prefers `transcript.final` over partials for same `utteranceId`.
 
 ## Versioning + compatibility (v1.x)
