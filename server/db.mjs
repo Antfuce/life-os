@@ -81,11 +81,31 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       PRIMARY KEY (sessionId, consumerId)
     );
 
+    CREATE TABLE IF NOT EXISTS orchestration_action (
+      sessionId TEXT NOT NULL,
+      actionId TEXT NOT NULL,
+      actionType TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      status TEXT NOT NULL,
+      requestEventId TEXT NOT NULL,
+      ackEventId TEXT,
+      terminalEventId TEXT,
+      resultJson TEXT,
+      errorCode TEXT,
+      errorMessage TEXT,
+      createdAtMs INTEGER NOT NULL,
+      startedAtMs INTEGER,
+      completedAtMs INTEGER,
+      updatedAtMs INTEGER NOT NULL,
+      PRIMARY KEY (sessionId, actionId)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_status_updated ON call_session(status, updatedAtMs);
     CREATE INDEX IF NOT EXISTS idx_realtime_event_session_ts_id ON realtime_event(sessionId, timestamp, eventId);
+    CREATE INDEX IF NOT EXISTS idx_orchestration_action_status_updated ON orchestration_action(status, updatedAtMs);
   `);
 
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
@@ -173,6 +193,43 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     `SELECT * FROM realtime_checkpoint WHERE sessionId = ? AND consumerId = ?`
   );
 
+  const insertOrchestrationAction = db.prepare(
+    `INSERT OR IGNORE INTO orchestration_action (
+      sessionId, actionId, actionType, summary, status, requestEventId,
+      ackEventId, terminalEventId, resultJson, errorCode, errorMessage,
+      createdAtMs, startedAtMs, completedAtMs, updatedAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, NULL, NULL, ?)`
+  );
+
+  const getOrchestrationAction = db.prepare(
+    `SELECT * FROM orchestration_action WHERE sessionId = ? AND actionId = ?`
+  );
+
+  const markOrchestrationActionAcknowledged = db.prepare(
+    `UPDATE orchestration_action
+       SET status = ?,
+           ackEventId = ?,
+           startedAtMs = ?,
+           updatedAtMs = ?
+     WHERE sessionId = ?
+       AND actionId = ?
+       AND status = 'requested'`
+  );
+
+  const markOrchestrationActionTerminal = db.prepare(
+    `UPDATE orchestration_action
+       SET status = ?,
+           terminalEventId = ?,
+           resultJson = ?,
+           errorCode = ?,
+           errorMessage = ?,
+           completedAtMs = ?,
+           updatedAtMs = ?
+     WHERE sessionId = ?
+       AND actionId = ?
+       AND status IN ('requested', 'acknowledged')`
+  );
+
   return {
     db,
     upsertConv,
@@ -186,6 +243,10 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     listRealtimeEventsAfterWatermark,
     upsertRealtimeCheckpoint,
     getRealtimeCheckpoint,
+    insertOrchestrationAction,
+    getOrchestrationAction,
+    markOrchestrationActionAcknowledged,
+    markOrchestrationActionTerminal,
     dbFile,
   };
 }

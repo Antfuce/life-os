@@ -208,3 +208,88 @@ test('transcript.final deterministically supersedes transcript.partial', async (
     await srv.stop();
   }
 });
+
+test('orchestration.action.requested emits deterministic acknowledgment and executed lifecycle', async () => {
+  const srv = await startServer();
+  try {
+    const sessionId = 'sess_orch_ok_1';
+    const actor = { role: 'agent', id: 'openclaw' };
+
+    const requested = await emit(srv.baseUrl, {
+      eventId: 'evt-orch-1',
+      timestamp: '2026-02-16T00:02:00.000Z',
+      sessionId,
+      type: 'orchestration.action.requested',
+      actor,
+      payload: { actionId: 'act-cv-1', actionType: 'generate_cv', summary: 'Generate CV draft for backend engineer' },
+      version: '1.0',
+    });
+    assert.equal(requested.status, 200);
+    assert.equal(requested.json.ok, true);
+    assert.equal(requested.json.lifecycle.emitted.length, 2);
+    assert.equal(requested.json.lifecycle.emitted[0].type, 'action.acknowledged');
+    assert.equal(requested.json.lifecycle.emitted[1].type, 'action.executed');
+
+    const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
+    const replayJson = await replay.json();
+    assert.equal(replay.status, 200);
+    assert.equal(replayJson.events.length, 3);
+    assert.deepEqual(
+      replayJson.events.map((evt) => evt.type),
+      ['orchestration.action.requested', 'action.acknowledged', 'action.executed'],
+    );
+
+    const executed = replayJson.events[2];
+    assert.equal(executed.payload.actionId, 'act-cv-1');
+    assert.equal(executed.payload.status, 'succeeded');
+    assert.equal(typeof executed.payload.durationMs, 'number');
+    assert.equal(executed.payload.resultRef, 'cv:sess_orch_ok_1:act-cv-1');
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('unsupported orchestration action deterministically fails and duplicate requests are replay-safe', async () => {
+  const srv = await startServer();
+  try {
+    const sessionId = 'sess_orch_fail_1';
+    const actor = { role: 'agent', id: 'openclaw' };
+
+    const first = await emit(srv.baseUrl, {
+      eventId: 'evt-orch-unsupported-1',
+      timestamp: '2026-02-16T00:03:00.000Z',
+      sessionId,
+      type: 'orchestration.action.requested',
+      actor,
+      payload: { actionId: 'act-unknown-1', actionType: 'do_magic', summary: 'Unsupported action' },
+      version: '1.0',
+    });
+    assert.equal(first.status, 200);
+    assert.equal(first.json.lifecycle.emitted.length, 2);
+    assert.equal(first.json.lifecycle.emitted[1].type, 'action.failed');
+    assert.equal(first.json.lifecycle.emitted[1].payload.code, 'ACTION_TYPE_UNSUPPORTED');
+
+    const duplicate = await emit(srv.baseUrl, {
+      eventId: 'evt-orch-unsupported-1',
+      timestamp: '2026-02-16T00:03:00.000Z',
+      sessionId,
+      type: 'orchestration.action.requested',
+      actor,
+      payload: { actionId: 'act-unknown-1', actionType: 'do_magic', summary: 'Unsupported action' },
+      version: '1.0',
+    });
+    assert.equal(duplicate.status, 200);
+    assert.equal(duplicate.json.deduped, true);
+    assert.equal(duplicate.json.lifecycle, null);
+
+    const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
+    const replayJson = await replay.json();
+    assert.equal(replay.status, 200);
+    assert.deepEqual(
+      replayJson.events.map((evt) => evt.type),
+      ['orchestration.action.requested', 'action.acknowledged', 'action.failed'],
+    );
+  } finally {
+    await srv.stop();
+  }
+});

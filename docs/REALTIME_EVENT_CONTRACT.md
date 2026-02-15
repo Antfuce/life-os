@@ -90,19 +90,35 @@ Determinism rule: `transcript.final` always supersedes all `transcript.partial` 
   - `actionId` (string)
   - `actionType` (string)
   - `summary` (string)
+- `action.acknowledged`
+  - `actionId` (string)
+  - `actionType` (string)
+  - `status` (`acknowledged`)
+  - `requestedEventId` (string)
+  - `summary` (string, optional)
 - `action.requires_confirmation`
   - `actionId` (string)
   - `reason` (string)
   - `confirmationToken` (string)
 - `action.executed`
   - `actionId` (string)
+  - `actionType` (string, optional)
+  - `status` (`succeeded`, optional)
+  - `requestedEventId` (string, optional)
+  - `acknowledgedEventId` (string, optional)
   - `durationMs` (integer >= 0)
   - `resultRef` (string, optional)
 - `action.failed`
   - `actionId` (string)
+  - `actionType` (string, optional)
+  - `status` (`failed`, optional)
+  - `requestedEventId` (string, optional)
+  - `acknowledgedEventId` (string, optional)
   - `code` (string)
   - `message` (string)
   - `retryable` (boolean)
+
+Determinism rule: backend handles `orchestration.action.requested` as the policy/persistence authority and emits exactly one `action.acknowledged` plus exactly one terminal event (`action.executed` or `action.failed`) for each unique `(sessionId, actionId)`.
 
 ## `safety.*`
 

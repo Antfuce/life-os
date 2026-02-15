@@ -54,3 +54,9 @@ If you are Codex reading this:
 - Codex: Added `docs/PR_MERGE_PLAYBOOK.md` with dependency-ordered merge guidance for open PRs (#14, #17, #19, #9), likely merge blockers, and a production unblocking checklist.
 - Recommended merge sequence: #14 → #17 → #19 → #9 (contract/persistence first, billing last).
 - Risk: local environment has no GitHub CLI remote context, so guidance is dependency-based from backlog/contracts rather than inline PR diff review.
+### 2026-02-15 22:42 UTC
+- Codex: Implemented backend handling for `orchestration.action.requested` with deterministic tool lifecycle orchestration in backend only (OpenClaw remains request emitter).
+- Added persisted orchestration action state table and idempotent transitions (`requested -> acknowledged -> succeeded|failed`) keyed by `(sessionId, actionId)`.
+- Backend now emits structured reducer-friendly lifecycle events: `action.acknowledged` then terminal `action.executed` or `action.failed` with linkage metadata (`requestedEventId`, `acknowledgedEventId`).
+- Added integration tests for success/failure lifecycle fanout and duplicate request replay-safety behavior.
+- Risk: local runtime is Node 20 and lacks `node:sqlite`, so server boot + tests remain blocked until Node with `node:sqlite` support is used.
