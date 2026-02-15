@@ -245,6 +245,38 @@ export default function Home() {
     executeModuleAction(actionName, deliverable, processEvent);
   };
 
+  const submitConfirmationDecision = async (decision, pending) => {
+    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
+
+    try {
+      await fetch(`${API_ORIGIN}/v1/actions/confirm`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actionId: pending?.actionId,
+          decision,
+          conversationId,
+          details: pending?.details || {},
+        }),
+      });
+    } catch (e) {
+      processEvent({
+        type: UI_EVENT_TYPES.ERROR,
+        payload: {
+          message: `Failed to submit action decision (${decision}).`,
+          recoverable: true,
+          details: String(e),
+        },
+      });
+    }
+
+    if (decision === "confirm") {
+      confirmAction(pending?.actionId);
+    } else {
+      cancelAction(pending?.actionId);
+    }
+  };
+
   // Reset conversation
   const handleReset = () => {
     clearConversation();
@@ -255,9 +287,17 @@ export default function Home() {
     setShowMemory(false);
   };
 
-  // Get latest CV deliverable
-  const latestCVDeliverable = deliverables.find(d => d.type === 'cv');
-  const latestInterviewDeliverable = deliverables.find(d => d.type === 'interview');
+  const getLatestDeliverable = (type) => {
+    for (let i = deliverables.length - 1; i >= 0; i -= 1) {
+      if (deliverables[i]?.type === type) return deliverables[i];
+    }
+    return null;
+  };
+
+  // Get latest deliverables
+  const latestCVDeliverable = getLatestDeliverable('cv');
+  const latestInterviewDeliverable = getLatestDeliverable('interview');
+  const latestOutreachDeliverable = getLatestDeliverable('outreach');
 
   return (
     <div className="relative h-screen overflow-hidden bg-gradient-to-b from-stone-50 via-neutral-50 to-stone-100">
@@ -410,6 +450,12 @@ export default function Home() {
                     deliverable: latestInterviewDeliverable,
                     onAction: handleModuleAction,
                   })}
+
+                  {/* Inline Outreach Preview */}
+                  {latestOutreachDeliverable && renderInlineModule('outreach', {
+                    deliverable: latestOutreachDeliverable,
+                    onAction: handleModuleAction,
+                  })}
                   
                   <div ref={messagesEndRef} />
                 </div>
@@ -429,13 +475,13 @@ export default function Home() {
                   <p className="text-neutral-600 mb-4">{pendingConfirmation.message}</p>
                   <div className="flex gap-3">
                     <button
-                      onClick={() => confirmAction(pendingConfirmation.actionId)}
+                      onClick={() => submitConfirmationDecision('confirm', pendingConfirmation)}
                       className="flex-1 bg-slate-900 text-white py-2 rounded-lg"
                     >
                       Confirm
                     </button>
                     <button
-                      onClick={() => cancelAction(pendingConfirmation.actionId)}
+                      onClick={() => submitConfirmationDecision('cancel', pendingConfirmation)}
                       className="flex-1 bg-neutral-100 text-neutral-700 py-2 rounded-lg"
                     >
                       Cancel
@@ -489,7 +535,7 @@ export default function Home() {
                 {floatingModules.map((module) => (
                   <FloatingModule
                     key={module.id}
-                    title={module.type === "cv" ? "Your CV" : module.type === "interview" ? "Interview Prep" : "Module"}
+                    title={module.type === "cv" ? "Your CV" : module.type === "interview" ? "Interview Prep" : module.type === "outreach" ? "Outreach" : "Module"}
                     position={module.position}
                     onClose={() => closeModule(module.id)}
                     onMove={(pos) => updateModulePosition(module.id, pos)}

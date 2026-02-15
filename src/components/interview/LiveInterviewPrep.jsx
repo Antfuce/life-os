@@ -1,23 +1,101 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Video, Lightbulb, X, MessageCircle, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
-export default function LiveInterviewPrep({ questions, onClose, onAnswer }) {
+function normalizeQuestions(data = {}) {
+  const candidates = [
+    data?.questions,
+    data?.questionPack,
+    data?.interview?.questions,
+    data?.items,
+  ];
+
+  const firstArray = candidates.find((value) => Array.isArray(value));
+  if (!firstArray) return [];
+
+  return firstArray
+    .map((q) => {
+      if (typeof q === "string") return { question: q };
+      if (!q || typeof q !== "object") return null;
+      return {
+        question: q.question || q.prompt || q.title || "",
+        tip: q.tip || q.hint || "",
+        followup: q.followup || q.followUp || q.next || "",
+      };
+    })
+    .filter((q) => q?.question);
+}
+
+/**
+ * LiveInterviewPrep - Event-driven interview prep display
+ * Supports both module/floating and inline preview modes.
+ */
+export default function LiveInterviewPrep({ deliverable, data, questions: rawQuestions, onClose, onAction, inline = false }) {
   const [mockMode, setMockMode] = useState(false);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [answer, setAnswer] = useState("");
 
+  const interviewData = deliverable?.data || data || {};
+  const actions = deliverable?.actions || [];
+  const questions = useMemo(
+    () => (Array.isArray(rawQuestions) ? normalizeQuestions({ questions: rawQuestions }) : normalizeQuestions(interviewData)),
+    [rawQuestions, interviewData],
+  );
+
+  const handleAction = (actionName, e) => {
+    if (e) e.stopPropagation();
+    if (onAction && deliverable) {
+      onAction(actionName, deliverable);
+    }
+  };
+
   const handleNextQuestion = () => {
     if (currentQuestionIndex < questions.length - 1) {
       setAnswer("");
-      setCurrentQuestionIndex(prev => prev + 1);
+      setCurrentQuestionIndex((prev) => prev + 1);
     } else {
       setMockMode(false);
       setCurrentQuestionIndex(0);
     }
   };
+
+  if (inline) {
+    if (questions.length === 0) return null;
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="my-3 p-3 bg-gradient-to-r from-indigo-50 to-white border border-indigo-100 rounded-xl"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-neutral-800 truncate">Interview prep ready</p>
+            <p className="text-xs text-neutral-500">{questions.length} tailored questions generated</p>
+          </div>
+          <div className="flex gap-1">
+            {actions.some((a) => a.action === "interview.practice") && (
+              <button
+                onClick={(e) => handleAction("interview.practice", e)}
+                className="px-2 py-1 text-xs rounded-md bg-indigo-100 text-indigo-700 hover:bg-indigo-200"
+              >
+                Practice
+              </button>
+            )}
+            {actions.some((a) => a.action === "interview.save") && (
+              <button
+                onClick={(e) => handleAction("interview.save", e)}
+                className="px-2 py-1 text-xs rounded-md bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-50"
+              >
+                Save
+              </button>
+            )}
+          </div>
+        </div>
+      </motion.div>
+    );
+  }
 
   return (
     <motion.div
@@ -46,9 +124,11 @@ export default function LiveInterviewPrep({ questions, onClose, onAnswer }) {
                 Start Mock Interview
               </Button>
             )}
-            <Button onClick={onClose} variant="ghost" size="sm">
-              <X className="w-4 h-4" />
-            </Button>
+            {onClose && (
+              <Button onClick={onClose} variant="ghost" size="sm">
+                <X className="w-4 h-4" />
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -105,7 +185,7 @@ export default function LiveInterviewPrep({ questions, onClose, onAnswer }) {
                     placeholder="Take your time and craft your response..."
                     className="min-h-[160px] text-sm"
                   />
-                  
+
                   {questions[currentQuestionIndex].followup && answer.length > 50 && (
                     <motion.div
                       initial={{ opacity: 0, y: -5 }}

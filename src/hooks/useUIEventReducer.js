@@ -232,6 +232,22 @@ function uiEventReducer(state, action) {
       };
     }
     
+
+    case 'OUTREACH_SEND_REQUESTED': {
+      const count = Array.isArray(payload?.messages) ? payload.messages.length : 0;
+      return {
+        ...state,
+        pendingConfirmation: {
+          actionId: `send-outreach-${payload?.deliverableId || Date.now()}`,
+          message: `Send ${count || 'these'} outreach ${count === 1 ? 'message' : 'messages'}? This action requires your confirmation.`,
+          details: {
+            deliverableId: payload?.deliverableId,
+            messages: payload?.messages || [],
+          },
+        },
+      };
+    }
+
     case 'UPDATE_MODULE_POSITION': {
       return {
         ...state,

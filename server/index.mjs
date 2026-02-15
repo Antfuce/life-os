@@ -272,6 +272,49 @@ fastify.get('/', async () => ({
   },
 }));
 
+
+fastify.post('/v1/actions/confirm', async (req, reply) => {
+  const body = req.body || {};
+  const tsMs = Date.now();
+  const actionId = body.actionId ? String(body.actionId) : '';
+  const conversationId = body.conversationId ? String(body.conversationId) : null;
+  const decision = body.decision === 'confirm' ? 'confirm' : body.decision === 'cancel' ? 'cancel' : null;
+
+  if (!actionId || !decision) {
+    reply.code(400);
+    return {
+      ok: false,
+      error: 'actionId and decision (confirm|cancel) are required',
+    };
+  }
+
+  const details = body.details && typeof body.details === 'object' ? body.details : {};
+  const confirmationId = stableId(conversationId || 'global', actionId, decision, tsMs);
+
+  try {
+    dbCtx.insertConfirmation.run(
+      confirmationId,
+      conversationId,
+      actionId,
+      decision,
+      JSON.stringify(details),
+      tsMs,
+    );
+  } catch (error) {
+    req.log.error({ error: String(error), actionId, conversationId }, 'failed to persist confirmation_event');
+  }
+
+  return {
+    ok: true,
+    confirmationId,
+    actionId,
+    decision,
+    conversationId,
+    tsMs,
+  };
+});
+
+
 function sseWrite(res, event, data) {
   try {
     res.write(`event: ${event}\n`);
