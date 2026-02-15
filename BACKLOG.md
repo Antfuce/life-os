@@ -10,7 +10,7 @@
 ### P0 — Critical Path (Do First)
 
 #### 1. Call Session Service (Backend)
-- **Status:** Not started
+- **Status:** In progress
 - **What:** Implement API service that creates, tracks, and terminates call sessions.
 - **Scope:**
 - Create session lifecycle (`created`, `active`, `ended`, `failed`)
@@ -19,14 +19,14 @@
 - **Owner:** Backend
 - **Dependencies:** None (foundational)
 
-#### 2. WebSocket Gateway (Realtime Transport)
+#### 2. LiveKit Session Bridge (Realtime Transport)
 - **Status:** Not started
-- **What:** Build realtime gateway for bidirectional events between frontend and backend.
+- **What:** Integrate LiveKit as the realtime voice/media layer with backend-owned session control.
 - **Scope:**
-  - Session-authenticated websocket upgrade
-  - Heartbeats/ping-pong
-  - Server fan-out for session events
-  - Backpressure/basic rate limits
+  - Generate short-lived LiveKit access tokens via backend-only endpoints
+  - Map backend `sessionId` ↔ LiveKit room/participant metadata
+  - Forward provider call state into canonical `call.*` events
+  - Keep backend websocket fan-out for non-media orchestration and UI state events
 - **Owner:** Backend
 - **Dependencies:** Depends on **1. Call Session Service**
 
@@ -160,9 +160,9 @@
 
 ## Dependency Chain (Explicit)
 
-1. **Call Session Service (#1)** → required by WebSocket Gateway (#2) and Metering (#8)
-2. **Event Schema v1 (#3)** → required by Gateway (#2), Recovery (#4), Orchestration (#5), Persistence (#7), Metering (#8)
-3. **WebSocket Gateway (#2)** + **Schema (#3)** → required by In-Call Orchestration (#5)
+1. **Call Session Service (#1)** → required by LiveKit Session Bridge (#2) and Metering (#8)
+2. **Event Schema v1 (#3)** → required by LiveKit Session Bridge (#2), Recovery (#4), Orchestration (#5), Persistence (#7), Metering (#8)
+3. **LiveKit Session Bridge (#2)** + **Schema (#3)** → required by In-Call Orchestration (#5)
 4. **In-Call Orchestration (#5)** → required by Safety Gates (#6)
 5. **Persistence (#7)** + **Metering (#8)** → required by Billing Events (#9)
 6. **Billing Events (#9)** → required by Hourly Reconciliation (#10)
@@ -177,6 +177,7 @@
 4. Module registry created (moduleRegistry.js)
 5. CV components wired to event system (LiveCVPreview, InlineCVPreview)
 6. GitHub prod branch updated
+7. Call session API scaffolding added (`/v1/call/sessions*`)
 
 ---
 
@@ -200,8 +201,12 @@
 - Frontend only renders based on events
 - Backward compatibility maintained
 
+**2026-02-16:** Voice/media provider locked to LiveKit for realtime calls
+- Source: product announcement and architecture alignment
+- Implication: P0 transport work now targets LiveKit token issuance, room mapping, and backend event bridge
+
 ---
 
 ## Next Action
 
-**Backend:** Start P0 #1 Call Session Service, then implement P0 #3 Event Schema in parallel
+**Backend:** Start P0 #1 Call Session Service, then implement P0 #2 LiveKit Session Bridge and P0 #3 Event Schema in parallel

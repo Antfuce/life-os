@@ -294,6 +294,9 @@ fastify.get('/', async () => ({
     health: '/health',
     chatTurn: '/v1/chat/turn (POST json)',
     chatStream: '/v1/chat/stream (POST SSE)',
+    createCallSession: '/v1/call/sessions (POST json)',
+    getCallSession: '/v1/call/sessions/:sessionId (GET)',
+    updateCallSession: '/v1/call/sessions/:sessionId/state (POST json)',
   },
 }));
 
@@ -318,6 +321,191 @@ function parseSseBlock(block) {
   const dataRaw = dataLines.join('\n');
   return { event, dataRaw };
 }
+
+
+const CALL_SESSION_STATUS = {
+  CREATED: 'created',
+  ACTIVE: 'active',
+  ENDED: 'ended',
+  FAILED: 'failed',
+};
+
+const CALL_SESSION_TRANSITIONS = {
+  [CALL_SESSION_STATUS.CREATED]: new Set([CALL_SESSION_STATUS.ACTIVE, CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED]),
+  [CALL_SESSION_STATUS.ACTIVE]: new Set([CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED]),
+  [CALL_SESSION_STATUS.ENDED]: new Set(),
+  [CALL_SESSION_STATUS.FAILED]: new Set(),
+};
+
+function parseRequestMetadata(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const entries = Object.entries(raw).filter(([key]) => typeof key === 'string').slice(0, 50);
+  const safe = {};
+  for (const [k, v] of entries) {
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      safe[k] = v;
+    }
+  }
+  return safe;
+}
+
+function currentUserId(req, body) {
+  const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']).trim() : '';
+  const bodyUserId = body?.userId ? String(body.userId).trim() : '';
+  const userId = bodyUserId || headerUserId;
+
+  if (!userId) {
+    return { error: 'userId is required (send x-user-id header or body.userId)' };
+  }
+
+  if (headerUserId && bodyUserId && headerUserId !== bodyUserId) {
+    return { error: 'x-user-id header must match body.userId when both are provided' };
+  }
+
+  return { userId };
+}
+
+function parseStoredMetadata(rawJson) {
+  if (!rawJson || typeof rawJson !== 'string') return {};
+  try {
+    return parseRequestMetadata(JSON.parse(rawJson));
+  } catch {
+    return {};
+  }
+}
+
+function normalizeCallSessionRow(row) {
+  if (!row) return null;
+  const metadata = parseStoredMetadata(row.metadataJson);
+
+  return {
+    sessionId: row.id,
+    userId: row.userId,
+    status: row.status,
+    correlationId: row.correlationId,
+    resumeToken: row.resumeToken,
+    provider: row.provider,
+    providerRoomName: row.providerRoomName,
+    metadata,
+    lastError: row.lastError,
+    createdAtMs: row.createdAtMs,
+    updatedAtMs: row.updatedAtMs,
+    startedAtMs: row.startedAtMs,
+    endedAtMs: row.endedAtMs,
+    failedAtMs: row.failedAtMs,
+  };
+}
+
+fastify.post('/v1/call/sessions', async (req, reply) => {
+  const body = req.body || {};
+  const auth = currentUserId(req, body);
+  if (auth.error) return reply.code(400).send({ ok: false, error: auth.error });
+
+  const createdAtMs = Date.now();
+  const userId = auth.userId;
+  const sessionId = body.sessionId ? String(body.sessionId) : `sess_${stableId(userId, createdAtMs, Math.random()).slice(0, 16)}`;
+  const correlationId = body.correlationId ? String(body.correlationId) : `corr_${stableId(sessionId, createdAtMs).slice(0, 16)}`;
+  const resumeToken = `resume_${stableId(sessionId, userId, createdAtMs).slice(0, 24)}`;
+  const provider = body.provider ? String(body.provider) : 'livekit';
+  const providerRoomName = body.providerRoomName ? String(body.providerRoomName) : null;
+  const metadata = parseRequestMetadata(body.metadata);
+
+  const created = dbCtx.insertCallSession.run(
+    sessionId,
+    userId,
+    CALL_SESSION_STATUS.CREATED,
+    correlationId,
+    resumeToken,
+    provider,
+    providerRoomName,
+    JSON.stringify(metadata),
+    null,
+    createdAtMs,
+    createdAtMs,
+    null,
+    null,
+    null,
+  );
+
+  if (!created?.changes) {
+    return reply.code(409).send({ ok: false, error: 'Session already exists; retry without sessionId override' });
+  }
+
+  const row = dbCtx.getCallSessionById.get(sessionId);
+  if (!row) return reply.code(500).send({ ok: false, error: 'Failed to create call session' });
+
+  return {
+    ok: true,
+    session: normalizeCallSessionRow(row),
+  };
+});
+
+fastify.get('/v1/call/sessions/:sessionId', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return reply.code(400).send({ ok: false, error: 'sessionId is required' });
+
+  const userId = req.headers['x-user-id'] ? String(req.headers['x-user-id']).trim() : '';
+  if (!userId) return reply.code(400).send({ ok: false, error: 'x-user-id header is required' });
+
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+  if (!existing) return reply.code(404).send({ ok: false, error: 'Session not found' });
+  if (existing.userId !== userId) return reply.code(403).send({ ok: false, error: 'Session does not belong to authenticated user' });
+
+  return {
+    ok: true,
+    session: normalizeCallSessionRow(existing),
+  };
+});
+
+fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
+  const body = req.body || {};
+  const auth = currentUserId(req, body);
+  if (auth.error) return reply.code(400).send({ ok: false, error: auth.error });
+
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return reply.code(400).send({ ok: false, error: 'sessionId is required' });
+
+  const nextStatus = String(body.status || '').trim();
+  if (!Object.values(CALL_SESSION_STATUS).includes(nextStatus)) {
+    return reply.code(400).send({ ok: false, error: 'status must be one of created|active|ended|failed' });
+  }
+
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+  if (!existing) return reply.code(404).send({ ok: false, error: 'Session not found' });
+  if (existing.userId !== auth.userId) return reply.code(403).send({ ok: false, error: 'Session does not belong to authenticated user' });
+
+  if (existing.status !== nextStatus && !CALL_SESSION_TRANSITIONS[existing.status]?.has(nextStatus)) {
+    return reply.code(409).send({ ok: false, error: `Invalid transition from ${existing.status} to ${nextStatus}` });
+  }
+
+  const updatedAtMs = Date.now();
+  const startedAtMs = nextStatus === CALL_SESSION_STATUS.ACTIVE ? (existing.startedAtMs || updatedAtMs) : existing.startedAtMs;
+  const endedAtMs = nextStatus === CALL_SESSION_STATUS.ENDED ? updatedAtMs : existing.endedAtMs;
+  const failedAtMs = nextStatus === CALL_SESSION_STATUS.FAILED ? updatedAtMs : existing.failedAtMs;
+  const provider = body.provider ? String(body.provider) : existing.provider;
+  const providerRoomName = body.providerRoomName ? String(body.providerRoomName) : existing.providerRoomName;
+  const mergedMetadata = { ...parseStoredMetadata(existing.metadataJson), ...parseRequestMetadata(body.metadata) };
+  const lastError = nextStatus === CALL_SESSION_STATUS.FAILED ? String(body.error || existing.lastError || 'call session failed') : existing.lastError;
+
+  dbCtx.updateCallSession.run(
+    nextStatus,
+    provider,
+    providerRoomName,
+    JSON.stringify(mergedMetadata),
+    lastError,
+    updatedAtMs,
+    startedAtMs,
+    endedAtMs,
+    failedAtMs,
+    sessionId,
+  );
+
+  const row = dbCtx.getCallSessionById.get(sessionId);
+  return {
+    ok: true,
+    session: normalizeCallSessionRow(row),
+  };
+});
 
 
 fastify.post('/v1/actions/decision', async (req, reply) => {
