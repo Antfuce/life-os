@@ -12,7 +12,11 @@
 #### 1. Call Session Service (Backend)
 - **Status:** In progress
 - **What:** Implement API service that creates, tracks, and terminates call sessions.
+ codex/review-progress-towards-mvp-hd413u
 - **Progress:** Create/get/update/list endpoints are in place with lifecycle transition validation and user ownership checks; remaining work is auth hardening + provider correlation integration.
+=======
+- **Progress:** Create/get/update/list endpoints now enforce authenticated user ownership on every handler, strict lifecycle transitions (`created -> active -> ended|failed`), replay-safe state updates, and normalized backend error responses. Remaining work: wire LiveKit bridge + event schema.
+prod
 - **Scope:**
 - Create session lifecycle (`created`, `active`, `ended`, `failed`)
   - Assign `sessionId` and correlation metadata
@@ -181,7 +185,12 @@
 6. GitHub prod branch updated
 7. Call session API scaffolding added (`/v1/call/sessions*`)
 8. Call session list endpoint added (`GET /v1/call/sessions` with user scoping + limit)
+ codex/review-progress-towards-mvp-hd413u
 9. Call session lifecycle events now persisted and replayable (`GET /v1/call/sessions/:sessionId/events`)
+=======
+9. Call session auth hardening + strict lifecycle transition/idempotency rules added (`/v1/call/sessions*`)
+10. Provider correlation identifiers added (`provider`, `providerRoomId`, `providerParticipantId`, `providerCallId`) with atomic activation updates
+ prod
 
 ---
 
@@ -213,4 +222,4 @@
 
 ## Next Action
 
-**Backend:** Start P0 #1 Call Session Service, then implement P0 #2 LiveKit Session Bridge and P0 #3 Event Schema in parallel
+**Backend:** Finish P0 #1 by wiring LiveKit-issued identifiers/tokens to activation path, then implement P0 #2 LiveKit Session Bridge and P0 #3 Event Schema in parallel
