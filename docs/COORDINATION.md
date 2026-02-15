@@ -64,3 +64,9 @@ If you are Codex reading this:
 - Codex: Added conflict-heavy fallback guidance to `docs/PR_MERGE_PLAYBOOK.md` for cases where every PR shows “cannot merge”.
 - Added integration-branch strategy (single conflict resolution pass), phased ship recommendation (#14/#17/#19 first), and explicit guidance for continuing development on integration baseline while stacked PRs are blocked.
 - Risk: integration branch increases diff size; keep strict phase boundaries and avoid adding unrelated changes.
+
+### 2026-02-15 22:24 UTC
+- Codex: Added outage-mode guidance to `docs/PR_MERGE_PLAYBOOK.md` for cases where new PRs cannot be published/merged.
+- Added fallback release branch flow, patch-bundle handoff (`git format-patch`), and outage guardrails to keep P0/P1 delivery moving.
+- Next: if PR pipeline remains blocked, designate one maintainer as release owner for manual branch/patch integration.
+- Risk: manual release flow increases operational risk; strict commit logging and scope control required.

@@ -171,3 +171,71 @@ Yes — continue building, but do it on top of a temporary **integration baselin
 - Ship an integration PR with **#14 + #17 + #19 only**.
 - Defer #9 to a follow-up PR behind a feature flag.
 - After deploy, monitor contract validation and ingest/replay errors before enabling billing paths.
+
+---
+
+## If NEW PRs cannot be published/merged at all (platform/process outage)
+
+If GitHub is rejecting new PRs or merge actions globally, use this temporary release path to keep shipping.
+
+### Step 1 — verify if this is repo policy vs platform outage
+
+Check quickly in GitHub UI:
+- Are branch protections requiring checks that never run?
+- Is "Allow auto-merge"/merge method disabled?
+- Are required reviewers missing/unavailable?
+- Is there a GitHub status incident?
+
+If this is policy misconfiguration, fix settings first; if incident, use fallback below.
+
+### Step 2 — fallback release branch (single owner)
+
+```bash
+# start from latest prod
+git checkout prod
+git pull
+
+# create a short-lived release branch
+git checkout -b release/manual-<date>
+
+# cherry-pick only approved commits in dependency order
+git cherry-pick <sha-from-14>
+git cherry-pick <sha-from-17>
+git cherry-pick <sha-from-19>
+# optionally defer billing
+# git cherry-pick <sha-from-9>
+
+# run checks
+npm ci
+npm test
+
+# push branch
+git push -u origin release/manual-<date>
+```
+
+Then ask a maintainer to merge this single release branch via the safest allowed path in your org.
+
+### Step 3 — if PR creation itself is blocked, use patch handoff
+
+```bash
+# produce a patch bundle for maintainer handoff
+git format-patch origin/prod --stdout > release-manual.patch
+```
+
+A maintainer can apply and merge internally:
+
+```bash
+git checkout prod
+git pull
+git apply release-manual.patch
+# resolve if needed
+npm ci && npm test
+git commit -am "release: apply manual patch bundle"
+```
+
+### Guardrails during outage mode
+
+- Freeze non-critical feature work.
+- Merge only P0/P1 fixes tied to realtime call path.
+- Log every manually applied commit SHA in `docs/COORDINATION.md`.
+- Exit outage mode and return to normal PR flow as soon as GitHub/path is healthy.
