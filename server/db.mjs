@@ -94,6 +94,13 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     `SELECT * FROM call_session WHERE id = ?`
   );
 
+  const listCallSessionsByUser = db.prepare(
+    `SELECT * FROM call_session
+      WHERE userId = ?
+      ORDER BY createdAtMs DESC
+      LIMIT ?`
+  );
+
   const updateCallSession = db.prepare(
     `UPDATE call_session
        SET status = ?,
@@ -115,6 +122,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     insertActionAudit,
     insertCallSession,
     getCallSessionById,
+    listCallSessionsByUser,
     updateCallSession,
     dbFile,
   };

@@ -12,6 +12,7 @@
 #### 1. Call Session Service (Backend)
 - **Status:** In progress
 - **What:** Implement API service that creates, tracks, and terminates call sessions.
+- **Progress:** Create/get/update/list endpoints are in place with lifecycle transition validation and user ownership checks; remaining work is auth hardening + provider correlation integration.
 - **Scope:**
 - Create session lifecycle (`created`, `active`, `ended`, `failed`)
   - Assign `sessionId` and correlation metadata
@@ -178,6 +179,7 @@
 5. CV components wired to event system (LiveCVPreview, InlineCVPreview)
 6. GitHub prod branch updated
 7. Call session API scaffolding added (`/v1/call/sessions*`)
+8. Call session list endpoint added (`GET /v1/call/sessions` with user scoping + limit)
 
 ---
 
