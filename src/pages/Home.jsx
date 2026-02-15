@@ -3,12 +3,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Brain, Volume2, VolumeX } from "lucide-react";
 
 import { useUIEventReducer, UI_EVENT_TYPES } from "../hooks/useUIEventReducer";
-import { renderModule, renderInlineModule, executeModuleAction } from "../lib/moduleRegistry";
+import { renderModule, renderInlineModule, executeModuleAction, getActionMetadata } from "../lib/moduleRegistry";
 import MessageBubble from "../components/chat/MessageBubble";
 import UnifiedInput from "../components/chat/UnifiedInput";
 import PersonaSelector from "../components/chat/PersonaSelector";
 import WhisperCaption from "../components/chat/WhisperCaption";
-import ContextPanel from "../components/chat/ContextPanel";
 import FloatingHints from "../components/chat/FloatingHints";
 import WhisperResponse from "../components/voice/WhisperResponse";
 import AvatarWithWaves from "../components/voice/AvatarWithWaves";
@@ -44,6 +43,7 @@ export default function Home() {
     status,
     error,
     pendingConfirmation,
+    actionApprovals,
     conversationId,
   } = state;
 
@@ -56,6 +56,29 @@ export default function Home() {
   const [ttsEnabled, setTtsEnabled] = React.useState(false);
   const [showMemory, setShowMemory] = React.useState(false);
   const [selectedPersona, setSelectedPersona] = React.useState("both");
+  const confirmationTimersRef = useRef({});
+
+  const clearConfirmationTimer = useCallback((actionId) => {
+    const timerId = confirmationTimersRef.current[actionId];
+    if (timerId) {
+      clearTimeout(timerId);
+      delete confirmationTimersRef.current[actionId];
+    }
+  }, []);
+
+  const postActionDecision = useCallback(async (payload) => {
+    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
+    try {
+      await fetch(`${API_ORIGIN}/v1/actions/decision`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      console.error('Failed to persist action decision', e);
+    }
+  }, []);
+
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -242,6 +265,79 @@ export default function Home() {
 
   // Handle module action
   const handleModuleAction = (actionName, deliverable) => {
+    const actionMeta = getActionMetadata(actionName);
+    const callTs = Date.now();
+
+    if (actionMeta.requiresConfirmation) {
+      const actionId = `${actionName}-${callTs}`;
+      const timeoutMs = 30_000;
+      const expiresAt = callTs + timeoutMs;
+
+      processEvent({
+        type: UI_EVENT_TYPES.CONFIRM_REQUIRED,
+        payload: {
+          actionId,
+          message: 'Confirm external send. This cannot be undone.',
+          details: {
+            action: actionName,
+            callTimestamp: callTs,
+            deliverableId: deliverable?.id,
+          },
+          riskTier: actionMeta.riskTier,
+          timeout: timeoutMs,
+          expiresAt,
+          onConfirm: 'outreach.send.execute',
+          onCancel: 'outreach.send.cancel',
+        },
+      });
+
+      processEvent({
+        type: UI_EVENT_TYPES.ACTION_AUDIT,
+        payload: {
+          actionId,
+          callTimestamp: callTs,
+          action: actionName,
+          decision: 'pending',
+          result: 'awaiting-user-confirmation',
+          riskTier: actionMeta.riskTier,
+        },
+      });
+
+      clearConfirmationTimer(actionId);
+      confirmationTimersRef.current[actionId] = setTimeout(() => {
+        processEvent({
+          type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
+          payload: {
+            actionId,
+            state: 'failed',
+            decision: 'timed_out',
+            result: 'cancelled-on-timeout',
+            resolvedAt: Date.now(),
+          },
+        });
+        processEvent({
+          type: UI_EVENT_TYPES.ACTION_AUDIT,
+          payload: {
+            actionId,
+            callTimestamp: callTs,
+            action: actionName,
+            decision: 'timed_out',
+            result: 'cancelled-on-timeout',
+            riskTier: actionMeta.riskTier,
+          },
+        });
+        postActionDecision({
+          actionId,
+          action: actionName,
+          callTimestamp: callTs,
+          riskTier: actionMeta.riskTier,
+          decision: 'timed_out',
+          result: 'cancelled-on-timeout',
+        });
+      }, timeoutMs);
+      return;
+    }
+
     executeModuleAction(actionName, deliverable, processEvent);
   };
 
@@ -422,6 +518,19 @@ export default function Home() {
                 </div>
               )}
 
+
+              {/* Approval state summary */}
+              {Object.values(actionApprovals || {}).length > 0 && (
+                <div className="absolute top-20 right-6 bg-white/90 border border-neutral-200 rounded-lg px-3 py-2 text-xs shadow-sm max-w-xs">
+                  <p className="font-medium text-neutral-700 mb-1">Action approvals</p>
+                  <div className="space-y-1">
+                    {Object.values(actionApprovals).slice(-3).map((a) => (
+                      <p key={a.actionId} className="text-neutral-600">{a.actionId}: <span className="font-medium">{a.state}</span></p>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Confirmation dialog */}
               {pendingConfirmation && (
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 z-50">
@@ -429,13 +538,90 @@ export default function Home() {
                   <p className="text-neutral-600 mb-4">{pendingConfirmation.message}</p>
                   <div className="flex gap-3">
                     <button
-                      onClick={() => confirmAction(pendingConfirmation.actionId)}
+                      onClick={async () => {
+                        const actionId = pendingConfirmation.actionId;
+                        const action = pendingConfirmation.details?.action;
+                        clearConfirmationTimer(actionId);
+                        confirmAction(actionId);
+                        processEvent({
+                          type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
+                          payload: {
+                            actionId,
+                            state: 'approved',
+                            decision: 'confirmed',
+                            resolvedAt: Date.now(),
+                          },
+                        });
+                        processEvent({
+                          type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
+                          payload: {
+                            actionId,
+                            state: 'executed',
+                            decision: 'confirmed',
+                            result: 'executed',
+                            resolvedAt: Date.now(),
+                          },
+                        });
+                        processEvent({
+                          type: UI_EVENT_TYPES.ACTION_AUDIT,
+                          payload: {
+                            actionId,
+                            callTimestamp: pendingConfirmation.details?.callTimestamp,
+                            action,
+                            decision: 'confirmed',
+                            result: 'executed',
+                            riskTier: pendingConfirmation.riskTier || 'high-risk-external-send',
+                          },
+                        });
+                        await postActionDecision({
+                          actionId,
+                          action,
+                          callTimestamp: pendingConfirmation.details?.callTimestamp,
+                          decision: 'confirmed',
+                          result: 'executed',
+                          riskTier: pendingConfirmation.riskTier || 'high-risk-external-send',
+                        });
+                      }}
                       className="flex-1 bg-slate-900 text-white py-2 rounded-lg"
                     >
                       Confirm
                     </button>
                     <button
-                      onClick={() => cancelAction(pendingConfirmation.actionId)}
+                      onClick={async () => {
+                        const actionId = pendingConfirmation.actionId;
+                        const action = pendingConfirmation.details?.action;
+                        clearConfirmationTimer(actionId);
+                        cancelAction(actionId);
+                        processEvent({
+                          type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
+                          payload: {
+                            actionId,
+                            state: 'failed',
+                            decision: 'cancelled',
+                            result: 'cancelled-by-user',
+                            resolvedAt: Date.now(),
+                          },
+                        });
+                        processEvent({
+                          type: UI_EVENT_TYPES.ACTION_AUDIT,
+                          payload: {
+                            actionId,
+                            callTimestamp: pendingConfirmation.details?.callTimestamp,
+                            action,
+                            decision: 'cancelled',
+                            result: 'cancelled-by-user',
+                            riskTier: pendingConfirmation.riskTier || 'high-risk-external-send',
+                          },
+                        });
+                        await postActionDecision({
+                          actionId,
+                          action,
+                          callTimestamp: pendingConfirmation.details?.callTimestamp,
+                          decision: 'cancelled',
+                          result: 'cancelled-by-user',
+                          riskTier: pendingConfirmation.riskTier || 'high-risk-external-send',
+                        });
+                      }}
                       className="flex-1 bg-neutral-100 text-neutral-700 py-2 rounded-lg"
                     >
                       Cancel

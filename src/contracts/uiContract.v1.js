@@ -32,6 +32,14 @@ export const UI_EVENT_TYPES = {
   ERROR: 'error',
   STATUS: 'status',
   CONFIRM_REQUIRED: 'confirm.required',
+  ACTION_APPROVAL_STATE: 'action.approval.state',
+  ACTION_AUDIT: 'action.audit',
+};
+
+export const ACTION_RISK_TIERS = {
+  READ_ONLY: 'read-only',
+  LOW_RISK_WRITE: 'low-risk-write',
+  HIGH_RISK_EXTERNAL_SEND: 'high-risk-external-send',
 };
 
 export const UI_SPEAKERS = {
@@ -150,9 +158,28 @@ export const UI_EVENT_SCHEMAS = {
     actionId: 'string',
     message: 'string',
     details: 'object',
+    riskTier: 'string', // ACTION_RISK_TIERS
     onConfirm: 'string', // action name
     onCancel: 'string',
     timeout: 'number?', // ms
+    expiresAt: 'number?',
+  },
+
+  [UI_EVENT_TYPES.ACTION_APPROVAL_STATE]: {
+    actionId: 'string',
+    state: 'string', // pending_approval|approved|executed|failed
+    decision: 'string?', // confirmed|cancelled|timed_out
+    result: 'string?',
+    resolvedAt: 'number?',
+  },
+
+  [UI_EVENT_TYPES.ACTION_AUDIT]: {
+    actionId: 'string',
+    callTimestamp: 'number',
+    action: 'string',
+    riskTier: 'string',
+    decision: 'string',
+    result: 'string',
   },
 };
 

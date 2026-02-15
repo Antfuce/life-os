@@ -4,10 +4,13 @@ This file defines how humans, ChatGPT, Codex, Base44 and OpenClaw collaborate in
 This repo is the shared brain of the project. All agents must read this file before making changes.
 🧭 Project Mission
 MVP Promise:
-Talk once → Generate CV → Prepare Interview → Generate Outreach.
+Live call → Realtime orchestration → Recruitment outcomes (CV, interview prep, outreach).
 Everything in this repo must support this goal.
-Non‑Goals (for now): - Voice calling automation - Autonomous job applying - Concierge / Life‑OS
+Non‑Goals (for now): - Autonomous job applying - Concierge / Life‑OS
 features - Multi‑agent experimentation unrelated to recruitment
+
+⚡ Realtime Product Principle
+All user-facing call interactions must feel live. Target sub-300ms turn-level feedback for visible UI state changes and under 1 second for orchestration updates that users can perceive during an active session. The product must maintain synchronized live state across participants and surfaces (call status, transcript, task progress, and deliverables) so users never lose conversational context.
 🧠 Agent Roles
 ChatGPT (Product / QA / Architect)
 Responsibilities: - UX reviews - Product decisions - Task prioritisation - Writing documentation -
@@ -24,6 +27,7 @@ Base44 must NOT contain business logic.
 OpenClaw (AI Orchestrator)
 Responsibilities: - LLM routing - Tool calling - Structured outputs
 OpenClaw must NOT store product data. OpenClaw must NOT act as the primary backend.
+OpenClaw remains the orchestration layer only: it coordinates model/tool execution and returns structured outputs. The backend owns persistent product data, business logic, and all policy/compliance checks before any action is committed or surfaced to users.
 🏗️ System Architecture Contract
 Frontend → Backend/API → OpenClaw
 Strict rules: - Frontend NEVER calls OpenClaw directly - Frontend NEVER talks to database directly -

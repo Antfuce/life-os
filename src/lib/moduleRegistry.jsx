@@ -5,6 +5,7 @@
  */
 
 import React, { lazy, Suspense } from 'react';
+import { ACTION_RISK_TIERS, getActionRiskTier } from '../contracts/actionRiskTiers';
 
 // Lazy load components for code splitting
 const LiveCVPreview = lazy(() => import('../components/cv/LiveCVPreview'));
@@ -234,10 +235,11 @@ export const MODULE_ACTIONS = {
     // This triggers a CONFIRM_REQUIRED event flow
     dispatch({
       type: 'OUTREACH_SEND_REQUESTED',
-      payload: { 
+      payload: {
         deliverableId: deliverable.id,
         requireConfirmation: true,
         messages: deliverable.data.messages,
+        riskTier: ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND,
       },
     });
   },
@@ -257,6 +259,15 @@ export function executeModuleAction(actionName, deliverable, dispatch) {
   handler(deliverable, dispatch);
 }
 
+
+export function getActionMetadata(actionName) {
+  return {
+    action: actionName,
+    riskTier: getActionRiskTier(actionName),
+    requiresConfirmation: getActionRiskTier(actionName) === ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND,
+  };
+}
+
 /**
  * Get available actions for a module type
  */
@@ -274,5 +285,6 @@ export default {
   renderInlineModule,
   executeModuleAction,
   getModuleActions,
+  getActionMetadata,
   MODULE_ACTIONS,
 };
