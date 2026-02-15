@@ -56,6 +56,7 @@ class ModuleErrorBoundary extends React.Component {
 /**
  * Module Registry Definition
  * Each entry defines how to render a mode
+ * Backend controls lifecycle via mode.activate/mode.deactivate
  */
 export const MODULE_REGISTRY = {
   cv: {
@@ -66,7 +67,10 @@ export const MODULE_REGISTRY = {
     acceptsData: ['cv', 'resume', 'profile'],
     defaultPosition: { x: 100, y: 100 },
     defaultSize: { width: 600, height: 800 },
-    actions: ['edit', 'export.pdf', 'export.markdown', 'copy'],
+    // Actions backend can request - frontend just renders what backend sends
+    actions: ['cv.edit', 'cv.export.pdf', 'cv.export.markdown', 'cv.copy', 'cv.expand'],
+    // Lifecycle controlled by backend via mode.activate/mode.deactivate events
+    lifecycle: 'backend-controlled',
   },
   
   interview: {
@@ -123,6 +127,7 @@ export function getAvailableModules() {
 
 /**
  * Render a module component with error boundary and suspense
+ * Props should include: deliverable, onAction
  */
 export function renderModule(type, props = {}) {
   const config = getModuleConfig(type);
@@ -148,6 +153,7 @@ export function renderModule(type, props = {}) {
 
 /**
  * Render inline preview (for non-floating use)
+ * Props should include: deliverable, onAction
  */
 export function renderInlineModule(type, props = {}) {
   const config = getModuleConfig(type);
