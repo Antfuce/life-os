@@ -50,6 +50,8 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       resumeToken TEXT,
       provider TEXT,
       providerRoomName TEXT,
+      providerParticipantIdentity TEXT,
+      providerParticipantName TEXT,
       metadataJson TEXT,
       lastError TEXT,
       createdAtMs INTEGER NOT NULL,
@@ -59,11 +61,33 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       failedAtMs INTEGER
     );
 
+    CREATE TABLE IF NOT EXISTS call_provider_event (
+      id TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      providerEventId TEXT NOT NULL,
+      canonicalType TEXT NOT NULL,
+      payloadJson TEXT,
+      receivedAtMs INTEGER NOT NULL,
+      FOREIGN KEY (sessionId) REFERENCES call_session(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_status_updated ON call_session(status, updatedAtMs);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_call_provider_event_unique ON call_provider_event(provider, providerEventId);
   `);
+
+  function ensureColumn(tableName, columnName, sqlType) {
+    const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+    if (!columns.some((column) => column.name === columnName)) {
+      db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${sqlType}`);
+    }
+  }
+
+  ensureColumn('call_session', 'providerParticipantIdentity', 'TEXT');
+  ensureColumn('call_session', 'providerParticipantName', 'TEXT');
 
   const upsertConv = db.prepare(
     `INSERT INTO conversation (id, createdAtMs, updatedAtMs, defaultPersona)
@@ -86,8 +110,9 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
   const insertCallSession = db.prepare(
     `INSERT OR IGNORE INTO call_session (
       id, userId, status, correlationId, resumeToken, provider, providerRoomName,
-      metadataJson, lastError, createdAtMs, updatedAtMs, startedAtMs, endedAtMs, failedAtMs
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      providerParticipantIdentity, providerParticipantName, metadataJson,
+      lastError, createdAtMs, updatedAtMs, startedAtMs, endedAtMs, failedAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const getCallSessionById = db.prepare(
@@ -106,6 +131,8 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
        SET status = ?,
            provider = ?,
            providerRoomName = ?,
+           providerParticipantIdentity = ?,
+           providerParticipantName = ?,
            metadataJson = ?,
            lastError = ?,
            updatedAtMs = ?,
@@ -113,6 +140,16 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
            endedAtMs = ?,
            failedAtMs = ?
      WHERE id = ?`
+  );
+
+  const getCallSessionByRoomName = db.prepare(
+    `SELECT * FROM call_session WHERE providerRoomName = ? ORDER BY createdAtMs DESC LIMIT 1`
+  );
+
+  const insertCallProviderEvent = db.prepare(
+    `INSERT OR IGNORE INTO call_provider_event (
+      id, sessionId, provider, providerEventId, canonicalType, payloadJson, receivedAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
 
   return {
@@ -124,6 +161,8 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     getCallSessionById,
     listCallSessionsByUser,
     updateCallSession,
+    getCallSessionByRoomName,
+    insertCallProviderEvent,
     dbFile,
   };
 }

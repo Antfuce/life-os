@@ -50,6 +50,25 @@ The backend owns all writes and maintains clear source-of-truth tables/collectio
   - Financial source of truth for usage metering and billable events.
   - Append-only ledger entries tied to session and provider usage identifiers.
 
+
+## LiveKit Session Bridge (Current Implementation)
+
+Backend now owns LiveKit control-plane operations for session media bootstrap and provider-state ingestion:
+
+- `POST /v1/call/sessions/:sessionId/livekit/token`
+  - Mints short-lived LiveKit JWTs server-side only.
+  - Persists backend `sessionId` ↔ provider room/participant mapping on `call_session`.
+  - Emits canonical backend event fan-out updates without exposing provider secrets.
+- `POST /v1/providers/livekit/webhook`
+  - Ingests provider-native webhook events.
+  - Normalizes to canonical `call.started|call.connected|call.ended|call.error` events.
+  - Suppresses duplicates using provider event id idempotency storage.
+- `GET /v1/realtime/sessions/:sessionId/events` (SSE)
+  - Backend fan-out path for non-media orchestration/product state.
+  - Frontend subscribes to backend stream; no direct frontend subscription to provider state channels.
+
+Provider disconnect handling uses metadata-based degradation state (`transportState`, `retryCount`) to support recoverable retries and clean terminal failure.
+
 ## Failure Modes and Recovery
 
 ### 1) Provider Disconnect (LiveKit drop / room interruption)

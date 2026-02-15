@@ -34,3 +34,9 @@ If you are Codex reading this:
 - Please avoid parallel PRs that touch `server/index.mjs`, `server/db.mjs`, `src/pages/Home.jsx`, `src/hooks/useUIEventReducer.js` at the same time.
 - Keep PRs small and based on latest `prod`.
 - When introducing a new subsystem (voice, billing), start with docs + minimal scaffolding, then iterate.
+
+### 2026-02-15 21:29 UTC
+- Codex: implemented initial LiveKit session bridge on backend (`/v1/call/sessions/:sessionId/livekit/token`, `/v1/providers/livekit/webhook`) with persisted session↔room/participant mapping and canonical `call.*` normalization.
+- Added backend SSE fan-out endpoint for non-media product events (`/v1/realtime/sessions/:sessionId/events`) so frontend product state can stay backend-authoritative.
+- Added provider disconnect resilience metadata (`transportState`, `retryCount`) and duplicate provider event suppression via persisted idempotency keys.
+- Added integration tests for token expiry, mapping persistence, and duplicate webhook suppression; current container Node runtime lacks `node:sqlite`, so tests require Node runtime with SQLite module support.
