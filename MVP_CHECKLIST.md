@@ -7,7 +7,7 @@
 - [x] Streaming endpoint (`POST /v1/chat/stream` SSE)
 - [x] Backend persistence v0 (SQLite)
 - [ ] Durable public API URL (no quick-tunnel churn)
-- [ ] Basic rate limits + spend caps
+- [x] Basic metering guardrails (warning + hard-stop thresholds)
 
 ## Product (Recruitment vertical only)
 - [x] Default persona = `executor`
@@ -28,4 +28,5 @@
 ## Quality
 - [ ] Error UI (API down / tunnel dead)
 - [ ] Observability: request id + logs correlation
+- [x] Billing audit trail for metering-affecting events
 - [ ] BUGS.md kept current
