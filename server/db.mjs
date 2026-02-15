@@ -42,8 +42,27 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       detailsJson TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS call_session (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      status TEXT NOT NULL,
+      correlationId TEXT,
+      resumeToken TEXT,
+      provider TEXT,
+      providerRoomName TEXT,
+      metadataJson TEXT,
+      lastError TEXT,
+      createdAtMs INTEGER NOT NULL,
+      updatedAtMs INTEGER NOT NULL,
+      startedAtMs INTEGER,
+      endedAtMs INTEGER,
+      failedAtMs INTEGER
+    );
+
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
+    CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_call_session_status_updated ON call_session(status, updatedAtMs);
   `);
 
   const upsertConv = db.prepare(
@@ -64,7 +83,41 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
-  return { db, upsertConv, insertMsg, insertActionAudit, dbFile };
+  const insertCallSession = db.prepare(
+    `INSERT OR IGNORE INTO call_session (
+      id, userId, status, correlationId, resumeToken, provider, providerRoomName,
+      metadataJson, lastError, createdAtMs, updatedAtMs, startedAtMs, endedAtMs, failedAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const getCallSessionById = db.prepare(
+    `SELECT * FROM call_session WHERE id = ?`
+  );
+
+  const updateCallSession = db.prepare(
+    `UPDATE call_session
+       SET status = ?,
+           provider = ?,
+           providerRoomName = ?,
+           metadataJson = ?,
+           lastError = ?,
+           updatedAtMs = ?,
+           startedAtMs = ?,
+           endedAtMs = ?,
+           failedAtMs = ?
+     WHERE id = ?`
+  );
+
+  return {
+    db,
+    upsertConv,
+    insertMsg,
+    insertActionAudit,
+    insertCallSession,
+    getCallSessionById,
+    updateCallSession,
+    dbFile,
+  };
 }
 
 export function stableId(...parts) {

@@ -10,7 +10,7 @@
 ### P0 — Critical Path (Do First)
 
 #### 1. Call Session Service (Backend)
-- **Status:** Not started
+- **Status:** In progress
 - **What:** Implement API service that creates, tracks, and terminates call sessions.
 - **Scope:**
 - Create session lifecycle (`created`, `active`, `ended`, `failed`)
@@ -177,6 +177,7 @@
 4. Module registry created (moduleRegistry.js)
 5. CV components wired to event system (LiveCVPreview, InlineCVPreview)
 6. GitHub prod branch updated
+7. Call session API scaffolding added (`/v1/call/sessions*`)
 
 ---
 
