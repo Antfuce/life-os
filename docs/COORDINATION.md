@@ -59,3 +59,8 @@ If you are Codex reading this:
 - Codex: Expanded `docs/PR_MERGE_PLAYBOOK.md` from advisory guidance into an execution runbook with explicit TL;DR, exact git commands, exact GitHub UI merge steps, blocker-specific remediations, and merge go/no-go criteria.
 - Next: owner executes merges in order #14 → #17 → #19 → #9 and ships #14+#17 first if time constrained.
 - Risk: cannot inspect live GitHub checks from this environment; follow-up should confirm branch protection status per PR.
+
+### 2026-02-15 22:21 UTC
+- Codex: Added conflict-heavy fallback guidance to `docs/PR_MERGE_PLAYBOOK.md` for cases where every PR shows “cannot merge”.
+- Added integration-branch strategy (single conflict resolution pass), phased ship recommendation (#14/#17/#19 first), and explicit guidance for continuing development on integration baseline while stacked PRs are blocked.
+- Risk: integration branch increases diff size; keep strict phase boundaries and avoid adding unrelated changes.

@@ -119,3 +119,55 @@ Before pressing merge on each PR:
 
 - **GO**: green checks + no unresolved conflicts + contract compatibility preserved.
 - **NO-GO**: any schema drift, unresolved runtime parity check, or migration ambiguity.
+
+---
+
+## If every PR says “cannot merge” (conflict-heavy fallback)
+
+When all stacked PRs are conflicted, stop trying to merge them one-by-one in the UI first. Create a single **integration branch** and resolve once.
+
+### Integration branch strategy (recommended)
+
+```bash
+# 1) start from latest prod
+git checkout prod
+git pull
+git checkout -b integration/pr-stack-14-17-19-9
+
+# 2) cherry-pick each PR branch in dependency order
+# (replace branch names with real remote branch names)
+git cherry-pick origin/<pr14-branch>
+git cherry-pick origin/<pr17-branch>
+git cherry-pick origin/<pr19-branch>
+
+# 3) optionally include billing last (or skip for phase 1)
+git cherry-pick origin/<pr9-branch>
+
+# 4) resolve conflicts once, then run checks
+npm ci
+npm test
+
+# 5) push and open ONE integration PR
+git push -u origin integration/pr-stack-14-17-19-9
+```
+
+### Why this helps
+
+- You resolve conflicts once instead of four times.
+- Reviewers see a single “source of truth” diff.
+- You can still keep phased rollout by excluding #9 from phase 1.
+
+### Continue building while merges are blocked
+
+Yes — continue building, but do it on top of a temporary **integration baseline**:
+
+1. Build only P0 work that depends on #14/#17.
+2. Create new branches **from integration branch**, not from stale PR branches.
+3. Avoid touching billing until the realtime path is merged and stable.
+4. Keep changes small and isolated (one concern per PR).
+
+### Emergency production path (if you must ship now)
+
+- Ship an integration PR with **#14 + #17 + #19 only**.
+- Defer #9 to a follow-up PR behind a feature flag.
+- After deploy, monitor contract validation and ingest/replay errors before enabling billing paths.
