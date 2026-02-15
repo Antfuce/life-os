@@ -59,10 +59,23 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       failedAtMs INTEGER
     );
 
+    CREATE TABLE IF NOT EXISTS call_session_event (
+      id TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      tsMs INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      payloadJson TEXT NOT NULL,
+      schemaVersion TEXT NOT NULL,
+      FOREIGN KEY (sessionId) REFERENCES call_session(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_status_updated ON call_session(status, updatedAtMs);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_call_session_event_session_seq ON call_session_event(sessionId, sequence);
+    CREATE INDEX IF NOT EXISTS idx_call_session_event_session_ts ON call_session_event(sessionId, tsMs);
   `);
 
   const upsertConv = db.prepare(
@@ -94,6 +107,13 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     `SELECT * FROM call_session WHERE id = ?`
   );
 
+  const listCallSessionsByUser = db.prepare(
+    `SELECT * FROM call_session
+      WHERE userId = ?
+      ORDER BY createdAtMs DESC
+      LIMIT ?`
+  );
+
   const updateCallSession = db.prepare(
     `UPDATE call_session
        SET status = ?,
@@ -108,6 +128,27 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
      WHERE id = ?`
   );
 
+  const getLatestCallSessionSequence = db.prepare(
+    `SELECT COALESCE(MAX(sequence), 0) AS maxSequence
+       FROM call_session_event
+      WHERE sessionId = ?`
+  );
+
+  const insertCallSessionEvent = db.prepare(
+    `INSERT INTO call_session_event (
+      id, sessionId, sequence, tsMs, type, payloadJson, schemaVersion
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const listCallSessionEvents = db.prepare(
+    `SELECT *
+       FROM call_session_event
+      WHERE sessionId = ?
+        AND sequence > ?
+      ORDER BY sequence ASC
+      LIMIT ?`
+  );
+
   return {
     db,
     upsertConv,
@@ -115,7 +156,11 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     insertActionAudit,
     insertCallSession,
     getCallSessionById,
+    listCallSessionsByUser,
     updateCallSession,
+    getLatestCallSessionSequence,
+    insertCallSessionEvent,
+    listCallSessionEvents,
     dbFile,
   };
 }

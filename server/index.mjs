@@ -295,8 +295,10 @@ fastify.get('/', async () => ({
     chatTurn: '/v1/chat/turn (POST json)',
     chatStream: '/v1/chat/stream (POST SSE)',
     createCallSession: '/v1/call/sessions (POST json)',
+    listCallSessions: '/v1/call/sessions (GET with x-user-id header)',
     getCallSession: '/v1/call/sessions/:sessionId (GET)',
     updateCallSession: '/v1/call/sessions/:sessionId/state (POST json)',
+    replayCallEvents: '/v1/call/sessions/:sessionId/events (GET)',
   },
 }));
 
@@ -336,6 +338,76 @@ const CALL_SESSION_TRANSITIONS = {
   [CALL_SESSION_STATUS.ENDED]: new Set(),
   [CALL_SESSION_STATUS.FAILED]: new Set(),
 };
+
+const REALTIME_SCHEMA_VERSION = '1.0';
+
+function toIso(tsMs) {
+  return new Date(tsMs).toISOString();
+}
+
+function sessionEventTypeForStatus(status) {
+  if (status === CALL_SESSION_STATUS.CREATED) return 'call.created';
+  if (status === CALL_SESSION_STATUS.ACTIVE) return 'call.active';
+  if (status === CALL_SESSION_STATUS.ENDED) return 'call.ended';
+  if (status === CALL_SESSION_STATUS.FAILED) return 'call.failed';
+  return 'call.updated';
+}
+
+function makeSessionEvent({ sessionId, sequence, type, tsMs, payload }) {
+  return {
+    eventId: `evt_${stableId(sessionId, sequence, type, tsMs).slice(0, 18)}`,
+    sessionId,
+    sequence,
+    ts: toIso(tsMs),
+    type,
+    payload,
+    schemaVersion: REALTIME_SCHEMA_VERSION,
+  };
+}
+
+function appendCallSessionEvent({ sessionId, type, tsMs, payload }) {
+  const nextSequence = Number(dbCtx.getLatestCallSessionSequence.get(sessionId)?.maxSequence || 0) + 1;
+  const event = makeSessionEvent({
+    sessionId,
+    sequence: nextSequence,
+    type,
+    tsMs,
+    payload,
+  });
+
+  dbCtx.insertCallSessionEvent.run(
+    event.eventId,
+    sessionId,
+    event.sequence,
+    tsMs,
+    event.type,
+    JSON.stringify(event.payload || {}),
+    event.schemaVersion,
+  );
+
+  return event;
+}
+
+function normalizeStoredCallEvent(row) {
+  if (!row) return null;
+
+  let payload = {};
+  try {
+    payload = JSON.parse(row.payloadJson || '{}');
+  } catch {
+    payload = {};
+  }
+
+  return {
+    eventId: row.id,
+    sessionId: row.sessionId,
+    sequence: row.sequence,
+    ts: toIso(row.tsMs),
+    type: row.type,
+    payload,
+    schemaVersion: row.schemaVersion || REALTIME_SCHEMA_VERSION,
+  };
+}
 
 function parseRequestMetadata(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
@@ -434,9 +506,43 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
   const row = dbCtx.getCallSessionById.get(sessionId);
   if (!row) return reply.code(500).send({ ok: false, error: 'Failed to create call session' });
 
+  const createdEvent = appendCallSessionEvent({
+    sessionId,
+    type: sessionEventTypeForStatus(CALL_SESSION_STATUS.CREATED),
+    tsMs: createdAtMs,
+    payload: {
+      status: CALL_SESSION_STATUS.CREATED,
+      correlationId,
+      provider,
+      providerRoomName,
+      metadata,
+      userId,
+    },
+  });
+
   return {
     ok: true,
     session: normalizeCallSessionRow(row),
+    event: createdEvent,
+  };
+});
+
+
+fastify.get('/v1/call/sessions', async (req, reply) => {
+  const userId = req.headers['x-user-id'] ? String(req.headers['x-user-id']).trim() : '';
+  if (!userId) return reply.code(400).send({ ok: false, error: 'x-user-id header is required' });
+
+  const limitRaw = Number(req.query?.limit);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.trunc(limitRaw))) : 20;
+
+  const rows = dbCtx.listCallSessionsByUser.all(userId, limit);
+  return {
+    ok: true,
+    sessions: rows.map(normalizeCallSessionRow),
+    page: {
+      limit,
+      returned: rows.length,
+    },
   };
 });
 
@@ -454,6 +560,40 @@ fastify.get('/v1/call/sessions/:sessionId', async (req, reply) => {
   return {
     ok: true,
     session: normalizeCallSessionRow(existing),
+  };
+});
+
+
+fastify.get('/v1/call/sessions/:sessionId/events', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return reply.code(400).send({ ok: false, error: 'sessionId is required' });
+
+  const userId = req.headers['x-user-id'] ? String(req.headers['x-user-id']).trim() : '';
+  if (!userId) return reply.code(400).send({ ok: false, error: 'x-user-id header is required' });
+
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+  if (!existing) return reply.code(404).send({ ok: false, error: 'Session not found' });
+  if (existing.userId !== userId) return reply.code(403).send({ ok: false, error: 'Session does not belong to authenticated user' });
+
+  const afterSequenceRaw = Number(req.query?.afterSequence);
+  const afterSequence = Number.isFinite(afterSequenceRaw) ? Math.max(0, Math.trunc(afterSequenceRaw)) : 0;
+  const limitRaw = Number(req.query?.limit);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.trunc(limitRaw))) : 50;
+
+  const rows = dbCtx.listCallSessionEvents.all(sessionId, afterSequence, limit);
+  const events = rows.map(normalizeStoredCallEvent);
+
+  return {
+    ok: true,
+    sessionId,
+    schemaVersion: REALTIME_SCHEMA_VERSION,
+    events,
+    page: {
+      afterSequence,
+      returned: events.length,
+      limit,
+      lastSequence: events.length ? events[events.length - 1].sequence : afterSequence,
+    },
   };
 });
 
@@ -501,9 +641,26 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
   );
 
   const row = dbCtx.getCallSessionById.get(sessionId);
+  const transitionEvent = appendCallSessionEvent({
+    sessionId,
+    type: sessionEventTypeForStatus(nextStatus),
+    tsMs: updatedAtMs,
+    payload: {
+      status: nextStatus,
+      previousStatus: existing.status,
+      correlationId: existing.correlationId,
+      provider,
+      providerRoomName,
+      lastError,
+      metadata: mergedMetadata,
+      userId: existing.userId,
+    },
+  });
+
   return {
     ok: true,
     session: normalizeCallSessionRow(row),
+    event: transitionEvent,
   };
 });
 

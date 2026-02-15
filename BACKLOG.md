@@ -12,6 +12,7 @@
 #### 1. Call Session Service (Backend)
 - **Status:** In progress
 - **What:** Implement API service that creates, tracks, and terminates call sessions.
+- **Progress:** Create/get/update/list endpoints are in place with lifecycle transition validation and user ownership checks; remaining work is auth hardening + provider correlation integration.
 - **Scope:**
 - Create session lifecycle (`created`, `active`, `ended`, `failed`)
   - Assign `sessionId` and correlation metadata
@@ -31,10 +32,11 @@
 - **Dependencies:** Depends on **1. Call Session Service**
 
 #### 3. Realtime Event Schema v1
-- **Status:** Not started
+- **Status:** In progress
 - **What:** Define and version canonical event contract for call flow.
+- **Progress:** Canonical envelope fields (`eventId`, `sessionId`, `sequence`, `ts`, `type`, `payload`, `schemaVersion`) are now persisted for call session lifecycle events with replay API scaffolding.
 - **Scope:**
-  - Event envelope (`eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`)
+  - Event envelope (`eventId`, `sessionId`, `sequence`, `ts`, `type`, `payload`, `schemaVersion`)
   - Required event families: `call.*`, `transcript.*`, `orchestration.*`, `safety.*`, `billing.*`
   - Validation and schema docs
 - **Owner:** Backend + OpenClaw
@@ -178,6 +180,8 @@
 5. CV components wired to event system (LiveCVPreview, InlineCVPreview)
 6. GitHub prod branch updated
 7. Call session API scaffolding added (`/v1/call/sessions*`)
+8. Call session list endpoint added (`GET /v1/call/sessions` with user scoping + limit)
+9. Call session lifecycle events now persisted and replayable (`GET /v1/call/sessions/:sessionId/events`)
 
 ---
 

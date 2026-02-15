@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch index.mjs",
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "check": "node --check index.mjs && node --check db.mjs"
   },
   "dependencies": {
     "fastify": "^5.2.1",
