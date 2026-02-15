@@ -341,37 +341,6 @@ export default function Home() {
     executeModuleAction(actionName, deliverable, processEvent);
   };
 
-  const submitConfirmationDecision = async (decision, pending) => {
-    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
-
-    try {
-      await fetch(`${API_ORIGIN}/v1/actions/confirm`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          actionId: pending?.actionId,
-          decision,
-          conversationId,
-          details: pending?.details || {},
-        }),
-      });
-    } catch (e) {
-      processEvent({
-        type: UI_EVENT_TYPES.ERROR,
-        payload: {
-          message: `Failed to submit action decision (${decision}).`,
-          recoverable: true,
-          details: String(e),
-        },
-      });
-    }
-
-    if (decision === "confirm") {
-      confirmAction(pending?.actionId);
-    } else {
-      cancelAction(pending?.actionId);
-    }
-  };
 
   // Reset conversation
   const handleReset = () => {

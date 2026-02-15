@@ -82,7 +82,7 @@ export const MODULE_REGISTRY = {
     acceptsData: ['interview', 'questions', 'prep'],
     defaultPosition: { x: 120, y: 120 },
     defaultSize: { width: 500, height: 600 },
-    actions: ['practice', 'save', 'share'],
+    actions: ['interview.practice', 'interview.save', 'interview.share'],
   },
   
   outreach: {
