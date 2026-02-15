@@ -69,29 +69,22 @@ export function validateRealtimeEventEnvelope(event) {
     return { ok: false, errors: ['event must be an object'] };
   }
 
-  const allowedKeys = ['eventId', 'timestamp', 'sessionId', 'type', 'actor', 'payload', 'version'];
-  const driftKeys = ['ts', 'schemaVersion'];
-
-  for (const k of driftKeys) {
-    if (k in event) errors.push(`unsupported alias key: ${k}`);
-  }
+  const allowedKeys = ['eventId', 'sessionId', 'ts', 'type', 'payload', 'schemaVersion'];
 
   for (const k of allowedKeys) {
     if (!(k in event)) errors.push(`missing required key: ${k}`);
   }
 
-  if (typeof event.eventId !== 'string' || !event.eventId.trim()) errors.push('eventId must be non-empty string');
-  if (!isIsoTs(event.timestamp)) errors.push('timestamp must be ISO-8601 string');
-  if (typeof event.sessionId !== 'string' || !event.sessionId.trim()) errors.push('sessionId must be non-empty string');
-  if (typeof event.type !== 'string' || !event.type.trim()) errors.push('type must be non-empty string');
-  if (!event.actor || typeof event.actor !== 'object' || Array.isArray(event.actor)) {
-    errors.push('actor must be object');
-  } else {
-    if (!inEnum(event.actor.role, ['user', 'agent', 'system', 'provider'])) errors.push('actor.role invalid');
-    if (typeof event.actor.id !== 'string' || !event.actor.id.trim()) errors.push('actor.id required');
+  for (const k of Object.keys(event)) {
+    if (!allowedKeys.includes(k)) errors.push(`unsupported envelope key: ${k}`);
   }
+
+  if (typeof event.eventId !== 'string' || !event.eventId.trim()) errors.push('eventId must be non-empty string');
+  if (typeof event.sessionId !== 'string' || !event.sessionId.trim()) errors.push('sessionId must be non-empty string');
+  if (!isIsoTs(event.ts)) errors.push('ts must be ISO-8601 string');
+  if (typeof event.type !== 'string' || !event.type.trim()) errors.push('type must be non-empty string');
   if (!event.payload || typeof event.payload !== 'object' || Array.isArray(event.payload)) errors.push('payload must be object');
-  if (event.version !== EVENT_VERSION) errors.push(`version must be ${EVENT_VERSION}`);
+  if (event.schemaVersion !== EVENT_VERSION) errors.push(`schemaVersion must be ${EVENT_VERSION}`);
 
   if (typeof event.type === 'string') {
     const matchesFamily = EVENT_FAMILIES.some((prefix) => event.type.startsWith(prefix));
@@ -123,8 +116,8 @@ export function mergeTranscriptEvents(events) {
     }
   }
   return [...byUtterance.values()].sort((a, b) => {
-    if (a.timestamp === b.timestamp) return a.eventId.localeCompare(b.eventId);
-    return a.timestamp.localeCompare(b.timestamp);
+    if (a.ts === b.ts) return a.eventId.localeCompare(b.eventId);
+    return a.ts.localeCompare(b.ts);
   });
 }
 

@@ -9,33 +9,26 @@ All events MUST use exactly these keys:
 ```json
 {
   "eventId": "evt_01JABCDEF1234567890",
-  "timestamp": "2026-02-16T10:00:00.000Z",
   "sessionId": "sess_123",
+  "ts": "2026-02-16T10:00:00.000Z",
   "type": "call.started",
-  "actor": {
-    "role": "system",
-    "id": "backend"
-  },
   "payload": {},
-  "version": "1.0"
+  "schemaVersion": "1.0"
 }
 ```
 
 ### Field rules
 
 - `eventId` (string, required): globally unique per event. Used as dedupe key.
-- `timestamp` (string, required): ISO-8601 UTC emit timestamp.
 - `sessionId` (string, required): session stream partition key.
+- `ts` (string, required): ISO-8601 UTC emit timestamp.
 - `type` (string, required): event discriminator.
-- `actor` (object, required):
-  - `role`: `user | agent | system | provider`
-  - `id`: non-empty string source identifier.
 - `payload` (object, required): type-specific schema.
-- `version` (string, required): currently `1.0`.
+- `schemaVersion` (string, required): currently `1.0`.
 
 ### Drift policy
 
-The aliases `ts` and `schemaVersion` are **not supported** in canonical v1.0 emission. Events containing them must fail validation at publish boundary.
+Canonical emission only supports these six keys. Ingestion boundaries MAY normalize legacy keys (`timestamp` -> `ts`, `version` -> `schemaVersion`) before validation. Unknown extra keys must fail validation.
 
 ## Required event families and payload schemas
 
@@ -150,16 +143,16 @@ Backend publisher validates every event envelope + payload before persistence/fa
 
 - Event store is append-only and session-scoped.
 - Dedupe key is `eventId` (idempotent insert).
-- Consumers store watermark tuple `(timestamp, eventId)` per `sessionId`.
+- Consumers store watermark tuple `(ts, eventId)` per `sessionId`.
 - Replay query returns only events strictly newer than watermark:
-  - `(event.timestamp > watermark.timestamp)` OR
-  - `(event.timestamp == watermark.timestamp AND event.eventId > watermark.eventId)`
-- Sorting is deterministic: `timestamp ASC`, then `eventId ASC`.
+  - `(event.ts > watermark.ts)` OR
+  - `(event.ts == watermark.ts AND event.eventId > watermark.eventId)`
+- Sorting is deterministic: `ts ASC`, then `eventId ASC`.
 - Transcript state materialization prefers `transcript.final` over partials for same `utteranceId`.
 
 ## Versioning + compatibility (v1.x)
 
-- `version` is semantic contract version for envelope + payload rules.
+- `schemaVersion` is semantic contract version for envelope + payload rules.
 - v1.x guarantees:
   - existing required envelope keys remain stable,
   - existing event types remain backward compatible,

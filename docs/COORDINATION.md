@@ -54,3 +54,10 @@ If you are Codex reading this:
 - Codex: Added `docs/PR_MERGE_PLAYBOOK.md` with dependency-ordered merge guidance for open PRs (#14, #17, #19, #9), likely merge blockers, and a production unblocking checklist.
 - Recommended merge sequence: #14 → #17 → #19 → #9 (contract/persistence first, billing last).
 - Risk: local environment has no GitHub CLI remote context, so guidance is dependency-based from backlog/contracts rather than inline PR diff review.
+
+### 2026-02-15 22:42 UTC
+- Codex: Enforced canonical realtime envelope shape at backend emit/validate boundaries to match `eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`.
+- Added ingestion normalization for legacy request keys (`timestamp` -> `ts`, `version` -> `schemaVersion`) and hard rejection for unknown/extra envelope keys.
+- Updated realtime replay/checkpoint API semantics to use `afterTs`/`watermarkTs` and normalized checkpoint responses to the same naming.
+- Expanded realtime schema tests with normalization coverage plus duplicate-idempotency and out-of-order replay ordering assertions.
+- Risk: integration tests still depend on `node:sqlite`; current runtime is Node 20 without that module, so full server test execution remains blocked locally.
