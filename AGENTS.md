@@ -83,7 +83,16 @@ Write clear commit messages
 Avoid large refactors unless requested
 Keep prompts and routing modular
 📢 Communication Rules
-Agents communicate via: - Documentation - Pull Requests - GitHub Issues
+Agents communicate via:
+- Documentation
+- Pull Requests
+- GitHub Issues
+
+**Coordination Hub:** `docs/COORDINATION.md`
+- Treat this as the shared async “group chat” between Codex ↔ OpenClaw ↔ humans.
+- Read it at the start of each run.
+- Append a short timestamped note at the end of each run (what you changed, what’s next, any risks).
+
 Never rely on chat messages as source of truth.
 🧱 Long‑Term Vision
 This repository is designed to be operated by multiple AI agents. Documentation quality is critical.
