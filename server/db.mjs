@@ -66,6 +66,17 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       failedAtMs INTEGER
     );
 
+codex/review-progress-towards-mvp-hd413u
+    CREATE TABLE IF NOT EXISTS call_session_event (
+      id TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      tsMs INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      payloadJson TEXT NOT NULL,
+      schemaVersion TEXT NOT NULL,
+      FOREIGN KEY (sessionId) REFERENCES call_session(id)
+=======
     CREATE TABLE IF NOT EXISTS realtime_event (
       eventId TEXT PRIMARY KEY,
       sessionId TEXT NOT NULL,
@@ -85,14 +96,20 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       watermarkEventId TEXT NOT NULL,
       updatedAtMs INTEGER NOT NULL,
       PRIMARY KEY (sessionId, consumerId)
+prod
     );
 
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_status_updated ON call_session(status, updatedAtMs);
+codex/review-progress-towards-mvp-hd413u
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_call_session_event_session_seq ON call_session_event(sessionId, sequence);
+    CREATE INDEX IF NOT EXISTS idx_call_session_event_session_ts ON call_session_event(sessionId, tsMs);
+=======
     CREATE INDEX IF NOT EXISTS idx_realtime_event_session_ts_id ON realtime_event(sessionId, timestamp, eventId);
     CREATE INDEX IF NOT EXISTS idx_realtime_event_session_sequence ON realtime_event(sessionId, sequence);
+ prod
   `);
 
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
@@ -161,6 +178,23 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
      WHERE id = ?`
   );
 
+codex/review-progress-towards-mvp-hd413u
+  const getLatestCallSessionSequence = db.prepare(
+    `SELECT COALESCE(MAX(sequence), 0) AS maxSequence
+       FROM call_session_event
+      WHERE sessionId = ?`
+  );
+
+  const insertCallSessionEvent = db.prepare(
+    `INSERT INTO call_session_event (
+      id, sessionId, sequence, tsMs, type, payloadJson, schemaVersion
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const listCallSessionEvents = db.prepare(
+    `SELECT *
+       FROM call_session_event
+=======
   const updateCallSessionAck = db.prepare(
     `UPDATE call_session
        SET lastAckSequence = ?,
@@ -184,12 +218,15 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
 
   const listRealtimeEventsAfterSequence = db.prepare(
     `SELECT * FROM realtime_event
+ prod
       WHERE sessionId = ?
         AND sequence > ?
       ORDER BY sequence ASC
       LIMIT ?`
   );
 
+ codex/review-progress-towards-mvp-hd413u
+=======
   const listRealtimeEventsAfterWatermark = db.prepare(
     `SELECT * FROM realtime_event
       WHERE sessionId = ?
@@ -213,6 +250,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     `SELECT * FROM realtime_checkpoint WHERE sessionId = ? AND consumerId = ?`
   );
 
+ prod
   return {
     db,
     upsertConv,
@@ -222,6 +260,11 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     getCallSessionById,
     listCallSessionsByUser,
     updateCallSession,
+codex/review-progress-towards-mvp-hd413u
+    getLatestCallSessionSequence,
+    insertCallSessionEvent,
+    listCallSessionEvents,
+=======
     updateCallSessionAck,
     insertRealtimeEvent,
     getRealtimeSessionMaxSequence,
@@ -229,6 +272,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     listRealtimeEventsAfterWatermark,
     upsertRealtimeCheckpoint,
     getRealtimeCheckpoint,
+prod
     dbFile,
   };
 }
