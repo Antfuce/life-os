@@ -13,7 +13,7 @@ Life-OS is designed as a strict, layered recruitment workflow system:
    - Orchestrates realtime event flow between client, call provider, and OpenClaw.
    - Persists product data to the database and billing ledger.
 3. **Call Provider (LiveKit)**
-   - Handles telephony/media connection state and provider-native room and participant events.
+   - Handles low-latency realtime media (WebRTC) plus room/participant events.
    - Streams call events/media metadata to the backend gateway.
 4. **OpenClaw (AI Orchestrator)**
    - Performs LLM routing, tool orchestration, and structured AI outputs.
@@ -52,7 +52,7 @@ The backend owns all writes and maintains clear source-of-truth tables/collectio
 
 ## Failure Modes and Recovery
 
-### 1) Provider Disconnect (LiveKit disconnect / call interruption)
+### 1) Provider Disconnect (LiveKit drop / room interruption)
 
 **Failure mode:** LiveKit connection is lost mid-session.
 
