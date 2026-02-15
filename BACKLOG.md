@@ -191,6 +191,7 @@
 |---------|--------|------------|
 | Tunnel URL keeps changing | Can't test on Base44 | Set up named tunnel or use quick tunnel + update env |
 | GPT-5.2 Codex costs | Token burn | Use Moonshot/OpenCode Kimi (free) |
+| Node runtime mismatch (`node:sqlite` missing on Node 20) | Backend integration tests cannot run in this container/CI runtime | Pin Node runtime to version with built-in `node:sqlite` and align CI/local |
 
 ---
 
@@ -213,4 +214,4 @@
 
 ## Next Action
 
-**Backend:** Finish P0 #1 by wiring LiveKit-issued identifiers/tokens to activation path, then implement P0 #2 LiveKit Session Bridge and P0 #3 Event Schema in parallel
+**Backend:** Unblock runtime parity first (pin Node version with `node:sqlite`), then continue P0 #2 LiveKit Session Bridge and P0 #3 Event Schema in parallel.

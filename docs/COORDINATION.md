@@ -41,3 +41,10 @@ If you are Codex reading this:
 - Added backend integration tests for ownership scoping, invalid transition blocking, and duplicate activate/end replay safety (requires Node runtime with `node:sqlite`).
 - Next: wire LiveKit token/room issuance path to these activation/correlation semantics and connect event schema v1 fanout.
 - Risk: local environment Node 20 lacks `node:sqlite`, so tests cannot execute here.
+
+### 2026-02-15 21:37 UTC
+- Codex: Added `docs/MVP_EXECUTION_PLAN.md` with deploy-sliced execution plan for P0 tracks #1-#3.
+- Decision: do **not** ship #1/#2/#3 as a single bundle; sequence into Slice A/B/C/D to reduce rollback/debug risk.
+- Updated `BACKLOG.md` blockers + next action to explicitly prioritize Node runtime parity (`node:sqlite`) before continuing LiveKit bridge/event schema implementation.
+- Next: land runtime pin/CI alignment PR so server integration tests run reliably, then resume P0 #2 + #3 implementation.
+- Risk: if runtime pin is delayed, "green" status remains environment-dependent and slows confidence for deploys.
