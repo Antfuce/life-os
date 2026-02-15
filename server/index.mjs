@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { readFile } from 'node:fs/promises';
+import crypto from 'node:crypto';
 
 import { initDb, stableId, toTsMs } from './db.mjs';
 import { EVENT_VERSION, validateRealtimeEventEnvelope, mergeTranscriptEvents } from './realtime-events.mjs';
@@ -281,10 +282,15 @@ function generateOutreachActions(outreachData) {
   return actions;
 }
 
-const fastify = Fastify({ logger: true });
-await fastify.register(cors, { origin: true });
 
-const dbCtx = await initDb(process.env.LIFE_OS_DB);
+
+export async function buildServer({ dbFile = process.env.LIFE_OS_DB } = {}) {
+  const fastify = Fastify({ logger: true });
+  await fastify.register(cors, { origin: true });
+  const dbCtx = await initDb(dbFile);
+  fastify.sessionEventSubscribers = new Map();
+
+  fastify.decorate('emitBackendSessionEvent', (sessionId, type, payload = {}) => emitBackendSessionEvent(fastify, sessionId, type, payload));
 
 const DEFAULT_RECONNECT_WINDOW_MS = 2 * 60 * 1000;
 
@@ -351,6 +357,67 @@ const CALL_SESSION_TRANSITIONS = {
   [CALL_SESSION_STATUS.FAILED]: new Set(),
 };
 
+ codex/add-backend-support-for-livekit-tokens-and-events
+
+const CANONICAL_CALL_EVENTS = {
+  STARTED: 'call.started',
+  CONNECTED: 'call.connected',
+  ENDED: 'call.ended',
+  ERROR: 'call.error',
+};
+
+function base64url(input) {
+  return Buffer.from(input).toString('base64url');
+}
+
+function signJwt(payload, secret, options = {}) {
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const headerPart = base64url(JSON.stringify(header));
+  const payloadPart = base64url(JSON.stringify(payload));
+  const data = `${headerPart}.${payloadPart}`;
+  const sig = crypto.createHmac('sha256', secret).update(data).digest('base64url');
+  if (options.includeParts) return { token: `${data}.${sig}`, headerPart, payloadPart };
+  return `${data}.${sig}`;
+}
+
+function parseTokenTtlSeconds(raw) {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return 300;
+  return Math.max(30, Math.min(3600, Math.trunc(parsed)));
+}
+
+function emitBackendSessionEvent(fastify, sessionId, type, payload = {}) {
+  const subscribers = fastify.sessionEventSubscribers.get(sessionId);
+  if (!subscribers || subscribers.size === 0) return;
+
+  const envelope = {
+    eventId: `evt_${stableId(sessionId, type, Date.now(), Math.random()).slice(0, 16)}`,
+    sessionId,
+    ts: Date.now(),
+    type,
+    schemaVersion: '1.0',
+    payload,
+  };
+
+  for (const res of subscribers) {
+    sseWrite(res, 'event', envelope);
+  }
+}
+
+function deriveLivekitMapping(session) {
+  const roomName = session.providerRoomName || `room_${session.sessionId}`;
+  const participantIdentity = session.providerParticipantIdentity || `user_${session.userId}_${session.sessionId.slice(-6)}`;
+  const participantName = session.providerParticipantName || `user-${session.userId}`;
+  return { roomName, participantIdentity, participantName };
+}
+
+function canonicalCallEventFromProvider(providerEventType) {
+  const t = String(providerEventType || '').toLowerCase();
+  if (t.includes('started') || t.includes('created')) return CANONICAL_CALL_EVENTS.STARTED;
+  if (t.includes('joined') || t.includes('connected') || t.includes('active')) return CANONICAL_CALL_EVENTS.CONNECTED;
+  if (t.includes('ended') || t.includes('finished') || t.includes('closed')) return CANONICAL_CALL_EVENTS.ENDED;
+  return CANONICAL_CALL_EVENTS.ERROR;
+=======
 function sendError(req, reply, statusCode, code, message, retryable = false) {
   return reply.code(statusCode).send({
     ok: false,
@@ -371,6 +438,7 @@ function getAuthenticatedUserId(req, body = {}) {
   }
 
   return { userId: headerUserId };
+ prod
 }
 
 function parseRequestMetadata(raw) {
@@ -556,9 +624,15 @@ function normalizeCallSessionRow(row) {
     lastAckTimestamp: row.lastAckTimestamp,
     lastAckEventId: row.lastAckEventId,
     provider: row.provider,
+codex/add-backend-support-for-livekit-tokens-and-events
+    providerRoomName: row.providerRoomName,
+    providerParticipantIdentity: row.providerParticipantIdentity || null,
+    providerParticipantName: row.providerParticipantName || null,
+=======
     providerRoomId: row.providerRoomId,
     providerParticipantId: row.providerParticipantId,
     providerCallId: row.providerCallId,
+prod
     metadata,
     lastError: row.lastError,
     createdAtMs: row.createdAtMs,
@@ -607,9 +681,15 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
     null,
     null,
     provider,
+codex/add-backend-support-for-livekit-tokens-and-events
+    providerRoomName,
+    null,
+    null,
+=======
     providerRoomId,
     providerParticipantId,
     providerCallId,
+ prod
     JSON.stringify(metadata),
     null,
     createdAtMs,
@@ -792,6 +872,12 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
 
   dbCtx.updateCallSession.run(
     nextStatus,
+codex/add-backend-support-for-livekit-tokens-and-events
+    provider,
+    providerRoomName,
+    existing.providerParticipantIdentity || null,
+    existing.providerParticipantName || null,
+=======
     resumeValidUntilMs,
     existing.lastAckSequence || null,
     existing.lastAckTimestamp || null,
@@ -800,6 +886,7 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
     updateProviderRoomId,
     updateProviderParticipantId,
     updateProviderCallId,
+prod
     JSON.stringify(mergedMetadata),
     lastError,
     updatedAtMs,
@@ -870,6 +957,198 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
 });
 
 
+ codex/add-backend-support-for-livekit-tokens-and-events
+fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return reply.code(400).send({ ok: false, error: 'sessionId is required' });
+
+  reply.hijack();
+  reply.raw.statusCode = 200;
+  reply.raw.setHeader('content-type', 'text/event-stream; charset=utf-8');
+  reply.raw.setHeader('cache-control', 'no-cache, no-transform');
+  reply.raw.setHeader('connection', 'keep-alive');
+  reply.raw.flushHeaders?.();
+
+  if (!fastify.sessionEventSubscribers.has(sessionId)) {
+    fastify.sessionEventSubscribers.set(sessionId, new Set());
+  }
+  const subs = fastify.sessionEventSubscribers.get(sessionId);
+  subs.add(reply.raw);
+
+  sseWrite(reply.raw, 'ready', { ok: true, sessionId, source: 'backend-fanout' });
+
+  reply.raw.on('close', () => {
+    subs.delete(reply.raw);
+    if (subs.size === 0) fastify.sessionEventSubscribers.delete(sessionId);
+  });
+});
+
+fastify.post('/v1/call/sessions/:sessionId/livekit/token', async (req, reply) => {
+  const body = req.body || {};
+  const auth = currentUserId(req, body);
+  if (auth.error) return reply.code(400).send({ ok: false, error: auth.error });
+
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return reply.code(400).send({ ok: false, error: 'sessionId is required' });
+
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+  if (!existing) return reply.code(404).send({ ok: false, error: 'Session not found' });
+  if (existing.userId !== auth.userId) return reply.code(403).send({ ok: false, error: 'Session does not belong to authenticated user' });
+
+  const apiKey = process.env.LIVEKIT_API_KEY;
+  const apiSecret = process.env.LIVEKIT_API_SECRET;
+  if (!apiKey || !apiSecret) {
+    return reply.code(500).send({ ok: false, error: 'LiveKit provider credentials are not configured on backend' });
+  }
+
+  const session = normalizeCallSessionRow(existing);
+  const mapping = deriveLivekitMapping(session);
+  const ttlSeconds = parseTokenTtlSeconds(body.ttlSeconds || process.env.LIVEKIT_TOKEN_TTL_SECONDS);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const expSec = nowSec + ttlSeconds;
+
+  const payload = {
+    iss: apiKey,
+    sub: mapping.participantIdentity,
+    nbf: nowSec,
+    iat: nowSec,
+    exp: expSec,
+    metadata: JSON.stringify({
+      sessionId,
+      correlationId: session.correlationId,
+      userId: session.userId,
+    }),
+    video: {
+      roomJoin: true,
+      room: mapping.roomName,
+      canPublish: true,
+      canSubscribe: true,
+    },
+    name: mapping.participantName,
+  };
+
+  const token = signJwt(payload, apiSecret);
+  const updatedMetadata = {
+    ...session.metadata,
+    providerMappingUpdatedAtMs: Date.now(),
+  };
+
+  dbCtx.updateCallSession.run(
+    session.status,
+    'livekit',
+    mapping.roomName,
+    mapping.participantIdentity,
+    mapping.participantName,
+    JSON.stringify(updatedMetadata),
+    session.lastError,
+    Date.now(),
+    session.startedAtMs,
+    session.endedAtMs,
+    session.failedAtMs,
+    sessionId,
+  );
+
+  const row = dbCtx.getCallSessionById.get(sessionId);
+  const normalized = normalizeCallSessionRow(row);
+  fastify.emitBackendSessionEvent(sessionId, CANONICAL_CALL_EVENTS.STARTED, {
+    source: 'backend.livekit.token',
+    roomName: mapping.roomName,
+    participantIdentity: mapping.participantIdentity,
+    expiresAtSec: expSec,
+  });
+
+  return {
+    ok: true,
+    provider: 'livekit',
+    token,
+    expiresAtSec: expSec,
+    roomName: mapping.roomName,
+    participantIdentity: mapping.participantIdentity,
+    participantName: mapping.participantName,
+    session: normalized,
+  };
+});
+
+fastify.post('/v1/providers/livekit/webhook', async (req, reply) => {
+  const body = req.body || {};
+  const providerEventId = String(body.eventId || body.id || stableId(JSON.stringify(body))).trim();
+  const roomName = String(body.roomName || body.room || '').trim();
+  if (!providerEventId) return reply.code(400).send({ ok: false, error: 'provider event id is required' });
+  if (!roomName) return reply.code(400).send({ ok: false, error: 'roomName is required' });
+
+  const existingSession = dbCtx.getCallSessionByRoomName.get(roomName);
+  if (!existingSession) return reply.code(404).send({ ok: false, error: 'No session mapped to roomName' });
+
+  const session = normalizeCallSessionRow(existingSession);
+  const canonicalType = canonicalCallEventFromProvider(body.type || body.event || '');
+  const nowMs = Date.now();
+
+  const inserted = dbCtx.insertCallProviderEvent.run(
+    `prov_${stableId('livekit', providerEventId).slice(0, 20)}`,
+    session.sessionId,
+    'livekit',
+    providerEventId,
+    canonicalType,
+    JSON.stringify(body),
+    nowMs,
+  );
+
+  if (!inserted?.changes) {
+    return { ok: true, duplicate: true, suppressed: true, sessionId: session.sessionId };
+  }
+
+  let nextStatus = session.status;
+  let errorMessage = session.lastError;
+  const metadataPatch = { ...session.metadata };
+
+  if (canonicalType === CANONICAL_CALL_EVENTS.CONNECTED) {
+    nextStatus = CALL_SESSION_STATUS.ACTIVE;
+    metadataPatch.transportState = 'healthy';
+    metadataPatch.retryCount = 0;
+  } else if (canonicalType === CANONICAL_CALL_EVENTS.ENDED) {
+    nextStatus = CALL_SESSION_STATUS.ENDED;
+    metadataPatch.transportState = 'terminated';
+  } else if (canonicalType === CANONICAL_CALL_EVENTS.ERROR) {
+    const retryCount = Number(metadataPatch.retryCount || 0) + 1;
+    metadataPatch.retryCount = retryCount;
+    metadataPatch.transportState = retryCount >= 3 ? 'terminated' : 'degraded';
+    metadataPatch.lastProviderDisconnectAtMs = nowMs;
+    errorMessage = String(body.error || body.reason || 'provider disconnect');
+    if (retryCount >= 3) {
+      nextStatus = CALL_SESSION_STATUS.FAILED;
+    }
+  }
+
+  dbCtx.updateCallSession.run(
+    nextStatus,
+    'livekit',
+    session.providerRoomName,
+    session.providerParticipantIdentity,
+    session.providerParticipantName,
+    JSON.stringify(metadataPatch),
+    errorMessage,
+    nowMs,
+    nextStatus === CALL_SESSION_STATUS.ACTIVE ? (session.startedAtMs || nowMs) : session.startedAtMs,
+    nextStatus === CALL_SESSION_STATUS.ENDED ? nowMs : session.endedAtMs,
+    nextStatus === CALL_SESSION_STATUS.FAILED ? nowMs : session.failedAtMs,
+    session.sessionId,
+  );
+
+  fastify.emitBackendSessionEvent(session.sessionId, canonicalType, {
+    source: 'provider.livekit',
+    providerEventId,
+    providerType: String(body.type || body.event || 'unknown'),
+    transportState: metadataPatch.transportState,
+    retryCount: metadataPatch.retryCount || 0,
+    error: errorMessage || null,
+  });
+
+  return { ok: true, sessionId: session.sessionId, canonicalType, status: nextStatus };
+});
+
+
+
+=======
 fastify.post('/v1/realtime/events', async (req, reply) => {
   const body = normalizeIncomingRealtimeEvent(req.body || {});
   const event = createRealtimeEvent({
@@ -1044,6 +1323,7 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
 prod
 });
 
+prod
 fastify.post('/v1/actions/decision', async (req, reply) => {
   const body = req.body || {};
   const actionId = String(body.actionId || '');
@@ -1532,5 +1812,11 @@ fastify.post('/v1/chat/turn', async (req, reply) => {
   return response;
 });
 
-fastify.listen({ port: PORT, host: HOST });
-console.log(`Life OS API v2.0 (UI Contract v1.0) running on http://${HOST}:${PORT}`);
+  return fastify;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const fastify = await buildServer();
+  await fastify.listen({ port: PORT, host: HOST });
+  console.log(`Life OS API v2.0 (UI Contract v1.0) running on http://${HOST}:${PORT}`);
+}

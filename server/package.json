@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch index.mjs",
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "test": "node --test test.livekit-bridge.test.mjs"
   },
   "dependencies": {
     "fastify": "^5.2.1",
