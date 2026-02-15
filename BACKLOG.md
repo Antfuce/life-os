@@ -8,7 +8,10 @@
 - **Status:** Not started
 - **What:** Implement API service that creates, tracks, and terminates call sessions.
 - **Scope:**
-  - Create session lifecycle (`created`, `active`, `ended`, `failed`)
+  > Canonical backlog: this file is the active source of truth for execution priority.
+
+> If `backlog.md` differs, follow `BACKLOG.md`.
+- Create session lifecycle (`created`, `active`, `ended`, `failed`)
   - Assign `sessionId` and correlation metadata
   - Enforce auth/user mapping for each call session
 - **Owner:** Backend
