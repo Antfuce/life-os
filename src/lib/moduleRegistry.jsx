@@ -11,6 +11,7 @@ import { ACTION_RISK_TIERS, getActionRiskTier } from '../contracts/actionRiskTie
 const LiveCVPreview = lazy(() => import('../components/cv/LiveCVPreview'));
 const InlineCVPreview = lazy(() => import('../components/cv/InlineCVPreview'));
 const LiveInterviewPrep = lazy(() => import('../components/interview/LiveInterviewPrep'));
+const OutreachModule = lazy(() => import('../components/social/OutreachModule'));
 
 // Fallback loading component
 const ModuleLoader = () => (
@@ -87,11 +88,11 @@ export const MODULE_REGISTRY = {
   outreach: {
     name: 'Outreach',
     icon: 'Send',
-    component: null, // TODO: Create OutreachModule
+    component: OutreachModule,
     acceptsData: ['outreach', 'message', 'email'],
     defaultPosition: { x: 140, y: 140 },
     defaultSize: { width: 500, height: 500 },
-    actions: ['edit', 'copy', 'requestSend'],
+    actions: ['outreach.edit', 'outreach.copy', 'outreach.requestSend'],
     requireConfirmation: true,
   },
   

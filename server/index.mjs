@@ -289,6 +289,7 @@ fastify.get('/', async () => ({
   },
 }));
 
+
 function sseWrite(res, event, data) {
   try {
     res.write(`event: ${event}\n`);
