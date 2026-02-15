@@ -213,6 +213,25 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     `SELECT * FROM realtime_checkpoint WHERE sessionId = ? AND consumerId = ?`
   );
 
+  const getCallSessionByProviderCallId = db.prepare(
+    `SELECT * FROM call_session WHERE providerCallId = ? ORDER BY updatedAtMs DESC LIMIT 1`
+  );
+
+  const getCallSessionByProviderRoomAndParticipant = db.prepare(
+    `SELECT * FROM call_session
+      WHERE providerRoomId = ?
+        AND providerParticipantId = ?
+      ORDER BY updatedAtMs DESC
+      LIMIT 1`
+  );
+
+  const getCallSessionByProviderRoomId = db.prepare(
+    `SELECT * FROM call_session
+      WHERE providerRoomId = ?
+      ORDER BY updatedAtMs DESC
+      LIMIT 1`
+  );
+
   return {
     db,
     upsertConv,
@@ -222,7 +241,13 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     getCallSessionById,
     listCallSessionsByUser,
     updateCallSession,
+codex/add-livekit-integration-endpoints
+    getCallSessionByProviderCallId,
+    getCallSessionByProviderRoomAndParticipant,
+    getCallSessionByProviderRoomId,
+=======
     updateCallSessionAck,
+prod
     insertRealtimeEvent,
     getRealtimeSessionMaxSequence,
     listRealtimeEventsAfterSequence,

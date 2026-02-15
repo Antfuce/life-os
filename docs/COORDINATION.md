@@ -55,6 +55,18 @@ If you are Codex reading this:
 - Recommended merge sequence: #14 → #17 → #19 → #9 (contract/persistence first, billing last).
 - Risk: local environment has no GitHub CLI remote context, so guidance is dependency-based from backlog/contracts rather than inline PR diff review.
 
+codex/map-out-next-5-tasks
+=======
+codex/add-livekit-integration-endpoints
+### 2026-02-15 22:38 UTC
+- Codex: Implemented LiveKit session bridge scaffolding in backend with backend-only token issuance endpoint (`POST /v1/call/sessions/:sessionId/livekit/token`) that mints short-lived provider tokens and persists session↔room/participant mapping in call session metadata/correlation fields.
+- Added LiveKit event ingestion endpoint (`POST /v1/call/livekit/events`) that translates provider transport signals into canonical backend event families (`call.*`, `transcript.*`, `orchestration.*`) before publishing via existing realtime fanout/event store.
+- Added provider-correlation DB lookup statements and backend tests covering token issuance metadata mapping + canonical translation ingestion path.
+- Risk: local runtime is Node v20 without `node:sqlite`, so integration tests cannot boot the server in this environment.
+- Next: wire webhook authenticity verification for LiveKit events (signature/timestamp checks) and add provider lifecycle mappings for richer call end reasons.
+=======
+codex/enforce-event-envelope-in-backend
+prod
 ### 2026-02-15 22:42 UTC
 - Codex: Enforced canonical realtime envelope shape at backend emit/validate boundaries to match `eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`.
 - Added ingestion normalization for legacy request keys (`timestamp` -> `ts`, `version` -> `schemaVersion`) and hard rejection for unknown/extra envelope keys.
@@ -73,6 +85,7 @@ If you are Codex reading this:
 - Added explicit irrecoverable terminal event emission (`call.terminal_failure`) when session transitions to `failed`, in addition to `call.error`, to keep UI terminal state deterministic.
 - Added integration tests for reconnect token validation/replay and terminal failure event emission.
 - Risk: runtime/tests remain blocked in this environment because Node 20 lacks `node:sqlite`; requires newer Node runtime to execute backend tests.
+codex/map-out-next-5-tasks
 
 ### 2026-02-15 23:10 UTC
 - Codex: Mapped the next 5 execution tasks directly from `BACKLOG.md` and published an explicit ordered list to keep merge planning clean.
@@ -85,3 +98,8 @@ If you are Codex reading this:
 - Codex: Removed remaining merge-marker artifacts from `server/index.mjs` and `docs/REALTIME_EVENT_CONTRACT.md` to unblock merges.
 - Codex: Expanded call-session tests to validate activation returns provider auth and to enforce immutable provider correlation mismatch behavior.
 - Risk: local environment runs Node 20 without `node:sqlite`, so server runtime and integration tests cannot execute until Node >=22.
+=======
+ prod
+prod
+ prod
+prod
