@@ -1,5 +1,8 @@
 # BACKLOG.md — Life OS Priority Queue
 
+> Canonical backlog: this file is the active source of truth for execution priority.
+> If `backlog.md` differs, follow `BACKLOG.md`.
+
 ## Current Sprint: UI Contract v1.0 Implementation
 
 ### P0 — Critical Path (Do First)
