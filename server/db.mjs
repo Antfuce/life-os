@@ -87,12 +87,30 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       PRIMARY KEY (sessionId, consumerId)
     );
 
+    CREATE TABLE IF NOT EXISTS transcript_snapshot (
+      snapshotId TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL,
+      utteranceId TEXT NOT NULL,
+      eventId TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      timestamp TEXT NOT NULL,
+      type TEXT NOT NULL,
+      speaker TEXT,
+      text TEXT,
+      startMs INTEGER,
+      endMs INTEGER,
+      payloadJson TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_status_updated ON call_session(status, updatedAtMs);
     CREATE INDEX IF NOT EXISTS idx_realtime_event_session_ts_id ON realtime_event(sessionId, timestamp, eventId);
     CREATE INDEX IF NOT EXISTS idx_realtime_event_session_sequence ON realtime_event(sessionId, sequence);
+    CREATE INDEX IF NOT EXISTS idx_transcript_snapshot_session_sequence ON transcript_snapshot(sessionId, sequence);
+    CREATE INDEX IF NOT EXISTS idx_transcript_snapshot_session_utterance_sequence ON transcript_snapshot(sessionId, utteranceId, sequence);
   `);
 
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
@@ -182,6 +200,28 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       WHERE sessionId = ?`
   );
 
+  const insertTranscriptSnapshot = db.prepare(
+    `INSERT OR IGNORE INTO transcript_snapshot (
+      snapshotId, sessionId, utteranceId, eventId, sequence, timestamp, type,
+      speaker, text, startMs, endMs, payloadJson, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const listTranscriptSnapshotsBySession = db.prepare(
+    `SELECT * FROM transcript_snapshot
+      WHERE sessionId = ?
+      ORDER BY sequence ASC
+      LIMIT ?`
+  );
+
+  const listTranscriptSnapshotsBySessionAfterSequence = db.prepare(
+    `SELECT * FROM transcript_snapshot
+      WHERE sessionId = ?
+        AND sequence > ?
+      ORDER BY sequence ASC
+      LIMIT ?`
+  );
+
   const listRealtimeEventsAfterSequence = db.prepare(
     `SELECT * FROM realtime_event
       WHERE sessionId = ?
@@ -246,6 +286,9 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
 
     insertRealtimeEvent,
     getRealtimeSessionMaxSequence,
+    insertTranscriptSnapshot,
+    listTranscriptSnapshotsBySession,
+    listTranscriptSnapshotsBySessionAfterSequence,
     listRealtimeEventsAfterSequence,
     listRealtimeEventsAfterWatermark,
     upsertRealtimeCheckpoint,

@@ -176,7 +176,7 @@ test('replay is idempotent for duplicates and deterministic for out-of-order arr
   }
 });
 
-test('transcript.final deterministically supersedes transcript.partial', async () => {
+test('transcript.final deterministically supersedes transcript.partial and persists snapshots append-only', async () => {
   const srv = await startServer();
   try {
     const sessionId = 'sess_transcript_1';
@@ -208,6 +208,17 @@ test('transcript.final deterministically supersedes transcript.partial', async (
       schemaVersion: '1.0',
     });
 
+    const duplicateFinal = await emit(srv.baseUrl, {
+      eventId: 'evt-t3',
+      ts: '2026-02-16T00:01:02.000Z',
+      sessionId,
+      type: 'transcript.final',
+      payload: { utteranceId: 'utt-1', speaker: 'user', text: 'hello world', startMs: 0, endMs: 300 },
+      schemaVersion: '1.0',
+    });
+    assert.equal(duplicateFinal.status, 200);
+    assert.equal(duplicateFinal.json.deduped, true);
+
     const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
     const replayJson = await replay.json();
     assert.equal(replay.status, 200);
@@ -215,6 +226,16 @@ test('transcript.final deterministically supersedes transcript.partial', async (
     assert.equal(replayJson.transcriptState.length, 1);
     assert.equal(replayJson.transcriptState[0].type, 'transcript.final');
     assert.equal(replayJson.transcriptState[0].payload.text, 'hello world');
+    assert.equal(replayJson.transcriptSnapshotsCount, 3);
+
+    const snapshotsResp = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/transcript-snapshots`);
+    const snapshotsJson = await snapshotsResp.json();
+    assert.equal(snapshotsResp.status, 200);
+    assert.equal(snapshotsJson.count, 3);
+    assert.equal(snapshotsJson.snapshots.length, 3);
+    assert.deepEqual(snapshotsJson.snapshots.map((s) => s.type), ['transcript.partial', 'transcript.partial', 'transcript.final']);
+    assert.deepEqual(snapshotsJson.snapshots.map((s) => s.sequence), [1, 2, 3]);
+    assert.equal(snapshotsJson.snapshots[2].payload.text, 'hello world');
   } finally {
     await srv.stop();
   }

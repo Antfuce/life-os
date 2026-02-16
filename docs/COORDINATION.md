@@ -28,3 +28,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Formally set P0 gate to GO in backlog docs and started P1 by hardening orchestration lifecycle with deterministic executed/failed acknowledgements plus explicit unsupported-action failure path (`action.failed`).
 - Next: Continue P1 #5/#6 by adding durable action-id idempotency for repeat submits and migrate confirmation from boolean to explicit tokenized approval flow; then start P1 #7 transcript/event persistence hardening.
 - Risks: Direct-to-prod cadence can outpace reviewer evidence unless each increment includes synchronized backlog + coordination updates and command-output proof.
+
+## 2026-02-16T13:09:00Z — OpenClaw run note (P1 #7 start)
+- Changed: Started P1 #7 by adding append-only transcript snapshot persistence (`transcript_snapshot` table + indexes), persisted-write path on transcript event ingest, and transcript snapshot query API for replay/debug (`/v1/realtime/sessions/:sessionId/transcript-snapshots`).
+- Next: Add retention/compaction and replay-latency observability for snapshot growth, then move into P1 #8 metering records + idempotent billing event scaffolding.
+- Risks: Snapshot growth can increase replay latency/cost without retention controls; direct-to-prod requires strict evidence updates each increment to avoid doc drift.

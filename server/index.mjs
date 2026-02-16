@@ -316,6 +316,7 @@ fastify.get('/', async () => ({
     issueLiveKitToken: '/v1/call/sessions/:sessionId/livekit/token (POST json)',
     ingestLiveKitEvent: '/v1/call/livekit/events (POST json)',
     reconnectCallSession: '/v1/call/sessions/:sessionId/reconnect (POST json)',
+    listTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots (GET)',
     executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
     actionDecision: '/v1/actions/decision (POST json)',
   },
@@ -567,8 +568,38 @@ function publishRealtimeEvent(event) {
     return { ok: true, deduped: true, event };
   }
 
+  const persistedEvent = { ...event, sequence: nextSequence };
+  if (persistedEvent.type.startsWith('transcript.')) {
+    const payload = persistedEvent.payload && typeof persistedEvent.payload === 'object' ? persistedEvent.payload : {};
+    const utteranceId = payload.utteranceId ? String(payload.utteranceId).trim() : '';
+
+    if (utteranceId) {
+      const snapshotId = `snap_${stableId(persistedEvent.sessionId, persistedEvent.eventId, nextSequence).slice(0, 24)}`;
+      const speaker = payload.speaker ? String(payload.speaker) : null;
+      const text = payload.text ? String(payload.text) : null;
+      const startMs = Number.isFinite(Number(payload.startMs)) ? Math.max(0, Math.trunc(Number(payload.startMs))) : null;
+      const endMs = Number.isFinite(Number(payload.endMs)) ? Math.max(0, Math.trunc(Number(payload.endMs))) : null;
+
+      dbCtx.insertTranscriptSnapshot.run(
+        snapshotId,
+        persistedEvent.sessionId,
+        utteranceId,
+        persistedEvent.eventId,
+        nextSequence,
+        persistedEvent.ts,
+        persistedEvent.type,
+        speaker,
+        text,
+        startMs,
+        endMs,
+        JSON.stringify(payload),
+        Date.now(),
+      );
+    }
+  }
+
   realtimeMetrics.emitted += 1;
-  return { ok: true, deduped: false, event: { ...event, sequence: nextSequence } };
+  return { ok: true, deduped: false, event: persistedEvent };
 }
 
 function normalizeRealtimeEventRow(row) {
@@ -581,6 +612,26 @@ function normalizeRealtimeEventRow(row) {
     type: row.type,
     payload: JSON.parse(row.payloadJson),
     schemaVersion: row.version,
+  };
+}
+
+function normalizeTranscriptSnapshotRow(row) {
+  const payload = JSON.parse(row.payloadJson);
+  return {
+    snapshotId: row.snapshotId,
+    sessionId: row.sessionId,
+    utteranceId: row.utteranceId,
+    eventId: row.eventId,
+    sequence: row.sequence,
+    timestamp: row.timestamp,
+    ts: row.timestamp,
+    type: row.type,
+    speaker: row.speaker,
+    text: row.text,
+    startMs: row.startMs,
+    endMs: row.endMs,
+    payload,
+    createdAtMs: row.createdAtMs,
   };
 }
 
@@ -1212,13 +1263,14 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
   }
 
   const events = rows.map(normalizeRealtimeEventRow);
-  const transcriptState = mergeTranscriptEvents(events);
+  const transcriptSnapshotRows = dbCtx.listTranscriptSnapshotsBySession.all(sessionId, 5000);
+  const transcriptSnapshots = transcriptSnapshotRows.map(normalizeTranscriptSnapshotRow);
+  const transcriptState = mergeTranscriptEvents(transcriptSnapshots);
   const latestSequence = Number(dbCtx.getRealtimeSessionMaxSequence.get(sessionId)?.maxSequence || 0);
 
   return {
     ok: true,
     sessionId,
-    watermark: { ts: watermarkTs || null, eventId: watermarkEventId || null },
     resume: {
       reconnectWindowMs: existing?.reconnectWindowMs || null,
       resumeValidUntilMs: existing?.resumeValidUntilMs || null,
@@ -1228,6 +1280,33 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
     watermark: { timestamp: watermarkTimestamp || null, eventId: watermarkEventId || null, sequence: afterSequence },
     events,
     transcriptState,
+    transcriptSnapshotsCount: transcriptSnapshots.length,
+  };
+});
+
+fastify.get('/v1/realtime/sessions/:sessionId/transcript-snapshots', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 200;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.trunc(limitRaw))) : 200;
+  const afterSequenceRaw = req.query?.afterSequence !== undefined ? Number(req.query.afterSequence) : null;
+  const afterSequence = Number.isFinite(afterSequenceRaw) ? Math.max(0, Math.trunc(afterSequenceRaw)) : null;
+  const utteranceIdFilter = req.query?.utteranceId ? String(req.query.utteranceId).trim() : null;
+
+  const rows = afterSequence !== null
+    ? dbCtx.listTranscriptSnapshotsBySessionAfterSequence.all(sessionId, afterSequence, limit)
+    : dbCtx.listTranscriptSnapshotsBySession.all(sessionId, limit);
+
+  const snapshots = rows
+    .map(normalizeTranscriptSnapshotRow)
+    .filter((row) => !utteranceIdFilter || row.utteranceId === utteranceIdFilter);
+
+  return {
+    ok: true,
+    sessionId,
+    count: snapshots.length,
+    snapshots,
   };
 });
 

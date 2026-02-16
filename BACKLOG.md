@@ -87,12 +87,14 @@
 - **Dependencies:** Depends on **5** and **3**
 
 #### 7. Transcript + Event Persistence
-- **Status:** Not started
+- **Status:** **In progress**
 - **What:** Persist transcripts and event stream as source of truth.
-- **Scope:**
-  - Append-only event store for all realtime events
-  - Transcript snapshots + utterance indexing
-  - Query APIs for session replay and debugging
+- **Progress:** Added append-only transcript snapshot persistence derived from canonical realtime ingest, plus transcript snapshot query API for replay/debug.
+- **Implementation:** `server/db.mjs` (`transcript_snapshot` table + indexes + query statements), `server/index.mjs` (snapshot write-on-ingest, `/v1/realtime/sessions/:sessionId/transcript-snapshots`, transcript state derived from persisted snapshots), `server/test/realtime-events.test.mjs`
+- **Verification:**
+  - `node --test server/test/realtime-events.test.mjs` → transcript supersession + append-only snapshot persistence checks pass.
+  - `node --test server/test/*.test.mjs` → green backend baseline.
+- **Remaining scope:** add retention/compaction policy + operational observability around snapshot growth and replay latency.
 - **Owner:** Backend
 - **Dependencies:** Depends on **3**; unlocks **4**, **9**, and **10**
 
@@ -239,4 +241,4 @@
 
 ## Next Action
 
-**Backend:** Start P1 #5 (In-Call Orchestration Actions), with P1 #6 safety gate hooks scaffolded in parallel and validated against the now-green backend baseline.
+**Backend:** Continue P1 #7 persistence hardening (retention/observability), then begin P1 #8 usage metering records + idempotent billing event emission scaffolding.
