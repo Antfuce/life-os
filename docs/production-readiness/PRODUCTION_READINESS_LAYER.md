@@ -22,7 +22,8 @@ It intentionally avoids heavyweight enterprise platform complexity.
 6. [Onboarding, operator controls, commercial/support readiness](./ONBOARDING_COMMERCIAL_SUPPORT.md)
 7. [Reconciliation operations policy (scheduler + retry)](./RECONCILIATION_OPERATIONS_POLICY.md)
 8. [Live-call incident runbook](../runbooks/LIVE_CALL_INCIDENT_RESPONSE.md)
-9. [Latest release evidence bundle](../releases/LATEST_EVIDENCE_BUNDLE.md)
+9. [LiveKit E2E evidence capture runbook](../runbooks/LIVEKIT_E2E_EVIDENCE_CAPTURE.md)
+10. [Latest release evidence bundle](../releases/LATEST_EVIDENCE_BUNDLE.md)
 
 ## Production controls shipped in code
 

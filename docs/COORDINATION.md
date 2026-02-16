@@ -98,3 +98,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Implemented LiveKit webhook authenticity + replay protection in backend ingest path (`x-livekit-signature` HMAC verification, timestamp skew guard, replay dedupe receipts) and added call-session tests for missing/invalid signature, stale timestamps, and replay suppression before canonical event fanout.
 - Next: Capture repeatable real LiveKit integration evidence (room join/publish/subscribe + signed webhook flow) to close final P0 #2 criterion, then continue P0 #3 schema hardening.
 - Risks: Signature verification currently depends on consistent provider/header canonicalization assumptions; real-provider smoke evidence is required before declaring full closure.
+
+## 2026-02-16T17:04:00Z — OpenClaw run note (P0 #2 evidence harness)
+- Changed: Added repeatable LiveKit E2E evidence harness and runbook (`scripts/livekit-e2e-evidence.mjs`, `docs/runbooks/LIVEKIT_E2E_EVIDENCE_CAPTURE.md`), wired readiness verifier to require the new runbook, and aligned backlog/docs to reflect that P0 #2 now only lacks real provider evidence capture.
+- Next: Run the evidence harness against real LiveKit credentials/environment and commit resulting report into `docs/releases/` to close P0 #2.
+- Risks: Without real-provider execution artifacts, P0 #2 remains technically hardened but not fully evidenced for phase-gate closure.

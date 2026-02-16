@@ -29,6 +29,9 @@
   - `GET /v1/billing/reconciliation/scheduler/status` (internal token) → automation config surfaced
   - `POST /v1/billing/reconciliation/hourly-trigger` (internal token) → `ok:true`
   - `POST /v1/billing/reconciliation/alerts/deliver` dry-run (internal token) → `ok:true`
+- LiveKit bridge hardening checks:
+  - `node --test server/test/call-sessions.test.mjs` (signature validation + replay dedupe coverage)
+  - `node scripts/livekit-e2e-evidence.mjs --mode=prepare` / `--mode=collect` (real-provider evidence harness)
 
 ## Rollback Plan
 
