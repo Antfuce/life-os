@@ -20,8 +20,9 @@ It intentionally avoids heavyweight enterprise platform complexity.
 4. [Security + data governance baseline](./SECURITY_DATA_GOVERNANCE.md)
 5. [Billing readiness + traceability](./BILLING_TRACEABILITY.md)
 6. [Onboarding, operator controls, commercial/support readiness](./ONBOARDING_COMMERCIAL_SUPPORT.md)
-7. [Live-call incident runbook](../runbooks/LIVE_CALL_INCIDENT_RESPONSE.md)
-8. [Latest release evidence bundle](../releases/LATEST_EVIDENCE_BUNDLE.md)
+7. [Reconciliation operations policy (scheduler + retry)](./RECONCILIATION_OPERATIONS_POLICY.md)
+8. [Live-call incident runbook](../runbooks/LIVE_CALL_INCIDENT_RESPONSE.md)
+9. [Latest release evidence bundle](../releases/LATEST_EVIDENCE_BUNDLE.md)
 
 ## Production controls shipped in code
 

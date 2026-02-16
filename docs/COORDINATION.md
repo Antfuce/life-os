@@ -83,3 +83,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Completed milestone validation sweep (`lint`, full backend tests, release acceptance tests, production readiness tests, docs/evidence verifier), updated review checklist with mandatory Gate 6 sellability release criteria, and added evidence/runbook docs under `docs/production-readiness`, `docs/runbooks`, `docs/releases`.
 - Next: Schedule internal cron policy for hourly reconciliation trigger + alert worker and define retry/backoff defaults before pilot onboarding.
 - Risks: Without cron automation and explicit retry policy, reconciliation operations remain partially manual despite functional worker/trigger endpoints.
+
+## 2026-02-16T16:17:00Z — OpenClaw run note (immediate ops hardening pass)
+- Changed: Implemented immediate P2 #10 operational hardening: retry/backoff fields and policy for reconciliation alerts, worker retry scheduling + terminal dead-letter behavior, internal scheduler automation feature flags/intervals, scheduler status endpoint, env policy surface, and reconciliation operations policy docs.
+- Next: Execute production enablement rollout (set automation/webhook env, monitor scheduler status/metrics, verify dead-letter and retry telemetry in live pilot conditions).
+- Risks: Automation is now available but disabled by default; incorrect production flag/webhook configuration can leave alerts in stub/dead-letter mode if rollout checklist is skipped.

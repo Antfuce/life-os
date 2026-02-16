@@ -7,6 +7,7 @@
 - Added security baseline controls (rate limiting, internal auth guards, security headers).
 - Added data governance controls (data map, deletion endpoint, governance audit log).
 - Added billing traceability endpoint and reconciliation scheduler/worker wiring.
+- Added reconciliation operations policy with automation controls + retry/backoff defaults.
 - Added tenant onboarding/operator config endpoints.
 - Added release acceptance + production readiness tests and CI release-gate checks.
 
@@ -14,7 +15,7 @@
 
 - Metrics are in-process memory (single-node MVP limitation).
 - Reconciliation alert delivery defaults to stub delivery if webhook not configured.
-- Automatic cron scheduling policy still needs explicit production rollout decision.
+- Automation is feature-flagged and requires explicit production enablement + monitoring policy tuning.
 
 ## Verification Evidence
 

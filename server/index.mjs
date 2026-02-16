@@ -308,6 +308,33 @@ const SLO_BASELINE = {
   errorRateTarget: 0.01,
 };
 
+const ALERT_DELIVERY_MAX_ATTEMPTS = process.env.ALERT_DELIVERY_MAX_ATTEMPTS ? Number(process.env.ALERT_DELIVERY_MAX_ATTEMPTS) : 5;
+const ALERT_DELIVERY_BASE_BACKOFF_MS = process.env.ALERT_DELIVERY_BASE_BACKOFF_MS ? Number(process.env.ALERT_DELIVERY_BASE_BACKOFF_MS) : 30_000;
+const ALERT_DELIVERY_MAX_BACKOFF_MS = process.env.ALERT_DELIVERY_MAX_BACKOFF_MS ? Number(process.env.ALERT_DELIVERY_MAX_BACKOFF_MS) : 30 * 60 * 1000;
+
+const RECONCILIATION_AUTOMATION_ENABLED = String(process.env.RECONCILIATION_AUTOMATION_ENABLED || '').toLowerCase() === 'true';
+const RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS = process.env.RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS
+  ? Number(process.env.RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS)
+  : 60 * 60 * 1000;
+const RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS = process.env.RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS
+  ? Number(process.env.RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS)
+  : 2 * 60 * 1000;
+const RECONCILIATION_AUTOMATION_WORKER_BATCH = process.env.RECONCILIATION_AUTOMATION_WORKER_BATCH
+  ? Number(process.env.RECONCILIATION_AUTOMATION_WORKER_BATCH)
+  : 100;
+
+const schedulerState = {
+  automationEnabled: RECONCILIATION_AUTOMATION_ENABLED,
+  hourlyRuns: 0,
+  workerRuns: 0,
+  hourlyFailures: 0,
+  workerFailures: 0,
+  lastHourlyRunAtMs: null,
+  lastWorkerRunAtMs: null,
+  lastHourlyError: null,
+  lastWorkerError: null,
+};
+
 const runtimeObservability = {
   startedAtMs: Date.now(),
   requestsTotal: 0,
@@ -425,6 +452,12 @@ function formatPrometheusMetrics(metrics) {
   return `${lines.join('\n')}\n`;
 }
 
+function computeAlertBackoffMs(attempts) {
+  const normalizedAttempts = Math.max(1, Math.trunc(Number(attempts) || 1));
+  const backoff = ALERT_DELIVERY_BASE_BACKOFF_MS * (2 ** Math.max(0, normalizedAttempts - 1));
+  return Math.min(ALERT_DELIVERY_MAX_BACKOFF_MS, Math.max(ALERT_DELIVERY_BASE_BACKOFF_MS, backoff));
+}
+
 fastify.addHook('onRequest', async (req, reply) => {
   const now = Date.now();
   const traceIdHeader = req.headers['x-trace-id'] ? String(req.headers['x-trace-id']).trim() : '';
@@ -488,7 +521,7 @@ fastify.get('/health', async () => ({
   contract: 'v1.0',
   uptimeMs: Date.now() - runtimeObservability.startedAtMs,
   slo: currentSloSnapshot(),
-  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark', 'usage-metering', 'billing-events', 'dead-letter-routing', 'billing-reconciliation-scaffold', 'observability-baseline', 'rate-limit-baseline', 'data-governance-controls', 'tenant-operator-controls']
+  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark', 'usage-metering', 'billing-events', 'dead-letter-routing', 'billing-reconciliation-scaffold', 'billing-reconciliation-automation', 'observability-baseline', 'rate-limit-baseline', 'data-governance-controls', 'tenant-operator-controls']
 }));
 
 fastify.get('/health/ready', async (req, reply) => {
@@ -562,6 +595,7 @@ fastify.get('/', async () => ({
     runBillingReconciliation: '/v1/billing/reconciliation/run (POST json)',
     triggerHourlyReconciliation: '/v1/billing/reconciliation/hourly-trigger (POST internal)',
     deliverReconciliationAlerts: '/v1/billing/reconciliation/alerts/deliver (POST internal)',
+    reconciliationSchedulerStatus: '/v1/billing/reconciliation/scheduler/status (GET internal)',
     getBillingReconciliationRun: '/v1/billing/reconciliation/runs/:runId (GET)',
     createBillingAdjustment: '/v1/billing/adjustments (POST json)',
     executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
@@ -991,6 +1025,15 @@ function normalizeBillingReconciliationAlertRow(row) {
     status: row.status,
     channel: row.channel,
     payload: parseStoredMetadata(row.payloadJson),
+    attempts: Number(row.attempts || 0),
+    maxAttempts: Number(row.maxAttempts || ALERT_DELIVERY_MAX_ATTEMPTS),
+    nextAttemptAtMs: row.nextAttemptAtMs !== null && row.nextAttemptAtMs !== undefined
+      ? Number(row.nextAttemptAtMs)
+      : null,
+    deliveredAtMs: row.deliveredAtMs !== null && row.deliveredAtMs !== undefined
+      ? Number(row.deliveredAtMs)
+      : null,
+    lastError: row.lastError || null,
     createdAtMs: Number(row.createdAtMs || 0),
   };
 }
@@ -1321,6 +1364,11 @@ function runBillingReconciliationScaffold({ accountId, windowStartMs, windowEndM
       'pending',
       'hook.billing.reconciliation.v1',
       JSON.stringify(payload),
+      0,
+      Math.max(1, Math.trunc(ALERT_DELIVERY_MAX_ATTEMPTS || 5)),
+      null,
+      null,
+      null,
       createdAtMs,
     );
 
@@ -1331,6 +1379,11 @@ function runBillingReconciliationScaffold({ accountId, windowStartMs, windowEndM
       status: 'pending',
       channel: 'hook.billing.reconciliation.v1',
       payload,
+      attempts: 0,
+      maxAttempts: Math.max(1, Math.trunc(ALERT_DELIVERY_MAX_ATTEMPTS || 5)),
+      nextAttemptAtMs: null,
+      deliveredAtMs: null,
+      lastError: null,
       createdAtMs,
     };
   }
@@ -1401,12 +1454,13 @@ async function deliverReconciliationAlertRow(alertRow, { dryRun = false, forceFa
     accountId: alert.accountId,
     channel: alert.channel,
     status: alert.status,
+    attempts: alert.attempts,
+    maxAttempts: alert.maxAttempts,
     createdAtMs: alert.createdAtMs,
     body: alert.payload,
   };
 
   if (dryRun) {
-    dbCtx.updateBillingReconciliationAlertStatus.run('dry_run', alert.alertId);
     return {
       alertId: alert.alertId,
       status: 'dry_run',
@@ -1417,11 +1471,13 @@ async function deliverReconciliationAlertRow(alertRow, { dryRun = false, forceFa
   }
 
   if (forceFailure) {
-    throw new Error('forced_reconciliation_alert_delivery_failure');
+    const err = new Error('forced_reconciliation_alert_delivery_failure');
+    err.code = 'FORCED_ALERT_DELIVERY_FAILURE';
+    throw err;
   }
 
   if (!BILLING_RECONCILIATION_ALERT_WEBHOOK_URL) {
-    dbCtx.updateBillingReconciliationAlertStatus.run('delivered_stub', alert.alertId);
+    dbCtx.updateBillingReconciliationAlertDelivery.run('delivered_stub', Date.now(), alert.alertId);
     return {
       alertId: alert.alertId,
       status: 'delivered_stub',
@@ -1444,7 +1500,7 @@ async function deliverReconciliationAlertRow(alertRow, { dryRun = false, forceFa
     throw err;
   }
 
-  dbCtx.updateBillingReconciliationAlertStatus.run('delivered', alert.alertId);
+  dbCtx.updateBillingReconciliationAlertDelivery.run('delivered', Date.now(), alert.alertId);
   return {
     alertId: alert.alertId,
     status: 'delivered',
@@ -2594,11 +2650,7 @@ fastify.post('/v1/billing/reconciliation/run', async (req, reply) => {
   };
 });
 
-fastify.post('/v1/billing/reconciliation/hourly-trigger', async (req, reply) => {
-  const internal = getInternalGatewayAuth(req);
-  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
-
-  const body = req.body || {};
+function executeHourlyReconciliationTrigger(body = {}) {
   const limitAccountsRaw = Number(body.limitAccounts);
   const limitAccounts = Number.isFinite(limitAccountsRaw)
     ? Math.max(1, Math.min(5000, Math.trunc(limitAccountsRaw)))
@@ -2609,7 +2661,11 @@ fastify.post('/v1/billing/reconciliation/hourly-trigger', async (req, reply) => 
     lookbackHours: body.lookbackHours !== undefined ? body.lookbackHours : 1,
   });
   if (!window.ok) {
-    return sendError(req, reply, 400, window.code || 'INVALID_REQUEST', window.message || 'invalid reconciliation window', false);
+    return {
+      ok: false,
+      code: window.code || 'INVALID_REQUEST',
+      message: window.message || 'invalid reconciliation window',
+    };
   }
 
   const accountRows = dbCtx.listBillingReconciliationAccountsByWindow.all(
@@ -2675,57 +2731,93 @@ fastify.post('/v1/billing/reconciliation/hourly-trigger', async (req, reply) => 
     skippedExistingRuns,
     processed,
   };
-});
+}
 
-fastify.post('/v1/billing/reconciliation/alerts/deliver', async (req, reply) => {
-  const internal = getInternalGatewayAuth(req);
-  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
-
-  const body = req.body || {};
+async function executeAlertDeliveryWorker(body = {}) {
   const limitRaw = Number(body.limit);
   const limit = Number.isFinite(limitRaw)
     ? Math.max(1, Math.min(5000, Math.trunc(limitRaw)))
-    : 100;
+    : Math.max(1, Math.min(5000, Math.trunc(RECONCILIATION_AUTOMATION_WORKER_BATCH || 100)));
 
   const dryRun = body.dryRun === true;
   const forceFailureIds = Array.isArray(body.forceFailureAlertIds)
     ? new Set(body.forceFailureAlertIds.map((id) => String(id)))
     : new Set();
 
-  const pendingRows = dbCtx.listBillingReconciliationPendingAlerts.all(limit);
+  const nowMs = Date.now();
+  const pendingRows = dbCtx.listBillingReconciliationPendingAlerts.all(nowMs, limit);
   const delivered = [];
   const failed = [];
+  const retriesScheduled = [];
 
   for (const row of pendingRows) {
-    const alertId = String(row.alertId || '').trim();
+    const alert = normalizeBillingReconciliationAlertRow(row);
+    const alertId = String(alert.alertId || '').trim();
+    const isForcedFailure = forceFailureIds.has(alertId);
+
     try {
       const result = await deliverReconciliationAlertRow(row, {
         dryRun,
-        forceFailure: forceFailureIds.has(alertId),
+        forceFailure: isForcedFailure,
       });
       delivered.push(result);
     } catch (err) {
-      dbCtx.updateBillingReconciliationAlertStatus.run('failed', alertId);
-      const deadLetterId = `dlq_${stableId('reconciliation.alert.delivery', alertId, Date.now()).slice(0, 24)}`;
-      const payload = normalizeBillingReconciliationAlertRow(row);
-      dbCtx.insertBillingDeadLetter.run(
-        deadLetterId,
-        payload.accountId || null,
-        null,
-        'billing.reconciliation.alert.delivery_failed',
-        alertId || null,
-        String(err?.code || 'ALERT_DELIVERY_FAILED'),
-        String(err?.message || 'reconciliation alert delivery failed'),
-        JSON.stringify(payload),
-        Date.now(),
-      );
+      const attempts = Number(alert.attempts || 0) + 1;
+      const maxAttempts = Math.max(1, Number(alert.maxAttempts || ALERT_DELIVERY_MAX_ATTEMPTS || 5));
+      const terminalFailure = isForcedFailure || attempts >= maxAttempts;
 
-      failed.push({
-        alertId,
-        code: String(err?.code || 'ALERT_DELIVERY_FAILED'),
-        message: String(err?.message || 'reconciliation alert delivery failed'),
-        deadLetterId,
-      });
+      if (terminalFailure) {
+        dbCtx.updateBillingReconciliationAlertRetry.run(
+          'dead_lettered',
+          attempts,
+          null,
+          String(err?.message || 'reconciliation alert delivery failed'),
+          alertId,
+        );
+
+        const deadLetterId = `dlq_${stableId('reconciliation.alert.delivery', alertId, Date.now()).slice(0, 24)}`;
+        dbCtx.insertBillingDeadLetter.run(
+          deadLetterId,
+          alert.accountId || null,
+          null,
+          'billing.reconciliation.alert.delivery_failed',
+          alertId || null,
+          String(err?.code || 'ALERT_DELIVERY_FAILED'),
+          String(err?.message || 'reconciliation alert delivery failed'),
+          JSON.stringify(alert),
+          Date.now(),
+        );
+
+        failed.push({
+          alertId,
+          code: String(err?.code || 'ALERT_DELIVERY_FAILED'),
+          message: String(err?.message || 'reconciliation alert delivery failed'),
+          deadLetterId,
+          attempts,
+          maxAttempts,
+          terminal: true,
+        });
+      } else {
+        const retryInMs = computeAlertBackoffMs(attempts);
+        const nextAttemptAtMs = Date.now() + retryInMs;
+        dbCtx.updateBillingReconciliationAlertRetry.run(
+          'pending',
+          attempts,
+          nextAttemptAtMs,
+          String(err?.message || 'reconciliation alert delivery failed'),
+          alertId,
+        );
+
+        retriesScheduled.push({
+          alertId,
+          attempts,
+          maxAttempts,
+          retryInMs,
+          nextAttemptAtMs,
+          code: String(err?.code || 'ALERT_DELIVERY_FAILED'),
+          message: String(err?.message || 'reconciliation alert delivery failed'),
+        });
+      }
     }
   }
 
@@ -2734,9 +2826,58 @@ fastify.post('/v1/billing/reconciliation/alerts/deliver', async (req, reply) => 
     pendingCount: pendingRows.length,
     deliveredCount: delivered.length,
     failedCount: failed.length,
+    retriesScheduledCount: retriesScheduled.length,
     dryRun,
     delivered,
     failed,
+    retriesScheduled,
+  };
+}
+
+fastify.post('/v1/billing/reconciliation/hourly-trigger', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const result = executeHourlyReconciliationTrigger(req.body || {});
+  if (!result.ok) {
+    return sendError(req, reply, 400, result.code || 'INVALID_REQUEST', result.message || 'invalid reconciliation window', false);
+  }
+
+  schedulerState.hourlyRuns += 1;
+  schedulerState.lastHourlyRunAtMs = Date.now();
+  schedulerState.lastHourlyError = null;
+  return result;
+});
+
+fastify.post('/v1/billing/reconciliation/alerts/deliver', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const result = await executeAlertDeliveryWorker(req.body || {});
+  schedulerState.workerRuns += 1;
+  schedulerState.lastWorkerRunAtMs = Date.now();
+  schedulerState.lastWorkerError = null;
+  return result;
+});
+
+fastify.get('/v1/billing/reconciliation/scheduler/status', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  return {
+    ok: true,
+    scheduler: {
+      ...schedulerState,
+      config: {
+        automationEnabled: RECONCILIATION_AUTOMATION_ENABLED,
+        hourlyIntervalMs: RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS,
+        workerIntervalMs: RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS,
+        workerBatch: RECONCILIATION_AUTOMATION_WORKER_BATCH,
+        alertDeliveryMaxAttempts: ALERT_DELIVERY_MAX_ATTEMPTS,
+        alertDeliveryBaseBackoffMs: ALERT_DELIVERY_BASE_BACKOFF_MS,
+        alertDeliveryMaxBackoffMs: ALERT_DELIVERY_MAX_BACKOFF_MS,
+      },
+    },
   };
 });
 
@@ -3617,6 +3758,49 @@ fastify.post('/v1/chat/turn', async (req, reply) => {
 
   return response;
 });
+
+if (RECONCILIATION_AUTOMATION_ENABLED) {
+  const safeHourlyIntervalMs = Number.isFinite(RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS)
+    ? Math.max(5 * 60 * 1000, Math.trunc(RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS))
+    : 60 * 60 * 1000;
+  const safeWorkerIntervalMs = Number.isFinite(RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS)
+    ? Math.max(30 * 1000, Math.trunc(RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS))
+    : 2 * 60 * 1000;
+
+  setInterval(() => {
+    try {
+      const result = executeHourlyReconciliationTrigger({
+        lookbackHours: 1,
+        latenessMs: DEFAULT_RECONCILIATION_LATENESS_MS,
+        reason: 'automation.hourly.interval',
+      });
+
+      if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+      schedulerState.hourlyRuns += 1;
+      schedulerState.lastHourlyRunAtMs = Date.now();
+      schedulerState.lastHourlyError = null;
+    } catch (err) {
+      schedulerState.hourlyFailures += 1;
+      schedulerState.lastHourlyError = String(err?.message || err);
+      fastify.log.error({ err }, 'reconciliation_automation_hourly_failed');
+    }
+  }, safeHourlyIntervalMs);
+
+  setInterval(async () => {
+    try {
+      await executeAlertDeliveryWorker({
+        limit: RECONCILIATION_AUTOMATION_WORKER_BATCH,
+      });
+      schedulerState.workerRuns += 1;
+      schedulerState.lastWorkerRunAtMs = Date.now();
+      schedulerState.lastWorkerError = null;
+    } catch (err) {
+      schedulerState.workerFailures += 1;
+      schedulerState.lastWorkerError = String(err?.message || err);
+      fastify.log.error({ err }, 'reconciliation_automation_worker_failed');
+    }
+  }, safeWorkerIntervalMs);
+}
 
 fastify.listen({ port: PORT, host: HOST });
 console.log(`Life OS API v2.0 (UI Contract v1.0) running on http://${HOST}:${PORT}`);

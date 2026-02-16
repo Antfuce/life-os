@@ -148,12 +148,12 @@
 #### 10. Hourly Charging Reconciliation Job (P2)
 - **Status:** **In progress**
 - **What:** Reconcile metered usage vs charged amounts every hour.
-- **Progress:** Added reconciliation scaffolding with windowing + lateness controls, persisted run/mismatch/alert artifacts, scheduler trigger endpoint (`/v1/billing/reconciliation/hourly-trigger`), and alert-delivery worker endpoint (`/v1/billing/reconciliation/alerts/deliver`) with dead-letter fallback for delivery failures.
-- **Implementation:** `server/db.mjs` (`billing_reconciliation_run`, `billing_reconciliation_mismatch`, `billing_reconciliation_alert`, scheduler/account discovery + pending alert queries), `server/index.mjs` (reconciliation execution + hourly trigger + alert delivery wiring), `server/test/reconciliation.test.mjs`
+- **Progress:** Added reconciliation scaffolding with windowing + lateness controls, persisted run/mismatch/alert artifacts, scheduler trigger endpoint (`/v1/billing/reconciliation/hourly-trigger`), alert-delivery worker endpoint (`/v1/billing/reconciliation/alerts/deliver`), retry/backoff scheduling, dead-letter terminal handling, and internal scheduler automation status controls.
+- **Implementation:** `server/db.mjs` (`billing_reconciliation_run`, `billing_reconciliation_mismatch`, `billing_reconciliation_alert`, pending-alert retry fields/queries, scheduler/account discovery), `server/index.mjs` (reconciliation execution + hourly trigger + alert delivery + automation policy wiring), `server/test/reconciliation.test.mjs`, `docs/production-readiness/RECONCILIATION_OPERATIONS_POLICY.md`
 - **Verification:**
-  - `node --test server/test/reconciliation.test.mjs` → ok-path, mismatch-path, account scoping, scheduler trigger idempotency-by-window, and alert worker delivery/dead-letter checks pass.
+  - `node --test server/test/reconciliation.test.mjs` → ok-path, mismatch-path, account scoping, scheduler trigger idempotency-by-window, retry/backoff behavior, and alert worker delivery/dead-letter checks pass.
   - `node --test server/test/*.test.mjs` → green backend baseline.
-- **Remaining scope:** wire automatic cron job creation/update policy and finalize late-arrival backfill/retry policy for production operations.
+- **Remaining scope:** perform explicit production enablement decision for automation flags and finalize late-arrival backfill SLO policy with operator sign-off.
 - **Owner:** Backend
 - **Dependencies:** Depends on **9**
 
@@ -171,7 +171,7 @@
   - Buyer-visible acceptance scenarios + production readiness tests + CI release-gate checks.
   - Mandatory evidence bundle verification (`scripts/verify-production-readiness.mjs`).
 - **Implementation:** `server/index.mjs`, `server/db.mjs`, `server/test/release-acceptance.test.mjs`, `server/test/production-readiness.test.mjs`, `.github/workflows/ci.yml`, `docs/production-readiness/*`, `docs/runbooks/*`, `docs/releases/LATEST_EVIDENCE_BUNDLE.md`
-- **Follow-up ops hardening:** automate cron policy for hourly trigger + worker retries/backoff and finalize production late-arrival reconciliation policy.
+- **Follow-up ops hardening:** enable scheduler automation in production with explicit runbook sign-off and finalize late-arrival reconciliation SLO policy.
 
 ---
 
@@ -267,8 +267,8 @@
 
 ## Next 5 Tasks (Execution Order)
 
-1. **P2 #10 operationalization**
-   - Add automatic cron policy for hourly trigger + worker loop and define retry/backfill controls.
+1. **P2 #10 production enablement**
+   - Roll out scheduler automation flags + webhook delivery contract in production and confirm retry/backoff telemetry.
 2. **Close P0 #2 remaining acceptance criteria (LiveKit bridge hardening)**
    - Add provider event authenticity/replay protection and capture repeatable live-integration evidence.
 3. **Close P0 #3 remaining acceptance criteria (schema contract hardening)**
@@ -282,4 +282,4 @@
 
 ## Next Action
 
-**Backend:** operationalize P2 #10 with concrete cron schedule + worker retry policy and production alert delivery contract.
+**Backend:** execute production enablement checklist for scheduler automation + alert webhook delivery and capture rollout evidence.

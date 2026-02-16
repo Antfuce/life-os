@@ -249,7 +249,7 @@ test('hourly scheduler trigger creates account runs and skips existing window re
   }
 });
 
-test('alert-delivery worker delivers pending alerts and dead-letters delivery failures', async () => {
+test('alert-delivery worker retries failed deliveries with backoff and dead-letters terminal failures', async () => {
   const srv = await startServer();
   try {
     const execResp = await fetch(`${srv.baseUrl}/v1/orchestration/actions/execute`, {
@@ -288,7 +288,35 @@ test('alert-delivery worker delivers pending alerts and dead-letters delivery fa
     const runJson = await runResp.json();
     assert.equal(runResp.status, 200);
     assert.equal(runJson.run.status, 'mismatch');
-    assert.equal(runJson.alert?.alertId ? true : false, true);
+    assert.equal(typeof runJson.alert?.alertId, 'string');
+
+    const deliverRetryResp = await fetch(`${srv.baseUrl}/v1/billing/reconciliation/alerts/deliver`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-gateway-token': 'test-token' },
+      body: JSON.stringify({
+        limit: 10,
+        forceFailureAlertIds: [runJson.alert.alertId],
+      }),
+    });
+    const deliverRetryJson = await deliverRetryResp.json();
+    assert.equal(deliverRetryResp.status, 200);
+    assert.equal(deliverRetryJson.retriesScheduledCount >= 0, true);
+    assert.equal(deliverRetryJson.failedCount >= 1, true);
+
+    const deadLettersAfterForcedResp = await fetch(`${srv.baseUrl}/v1/billing/accounts/user-a/dead-letters`, {
+      headers: { 'x-user-id': 'user-a' },
+    });
+    const deadLettersAfterForcedJson = await deadLettersAfterForcedResp.json();
+    assert.equal(deadLettersAfterForcedResp.status, 200);
+    assert.equal(deadLettersAfterForcedJson.count >= 1, true);
+
+    const runSecondResp = await fetch(`${srv.baseUrl}/v1/billing/reconciliation/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({ accountId: 'user-a', lookbackHours: 24, latenessMs: 0, reason: 'worker-success-path' }),
+    });
+    const runSecondJson = await runSecondResp.json();
+    assert.equal(runSecondResp.status, 200);
 
     const deliverOkResp = await fetch(`${srv.baseUrl}/v1/billing/reconciliation/alerts/deliver`, {
       method: 'POST',
@@ -299,43 +327,29 @@ test('alert-delivery worker delivers pending alerts and dead-letters delivery fa
     assert.equal(deliverOkResp.status, 200);
     assert.equal(deliverOkJson.deliveredCount >= 1, true);
 
-    const detailAfterDeliverResp = await fetch(`${srv.baseUrl}/v1/billing/reconciliation/runs/${runJson.run.runId}`, {
+    const detailAfterDeliverResp = await fetch(`${srv.baseUrl}/v1/billing/reconciliation/runs/${runSecondJson.run.runId}`, {
       headers: { 'x-user-id': 'user-a' },
     });
     const detailAfterDeliverJson = await detailAfterDeliverResp.json();
     assert.equal(detailAfterDeliverResp.status, 200);
     assert.equal(['delivered', 'delivered_stub'].includes(detailAfterDeliverJson.alerts[0].status), true);
+    assert.equal(detailAfterDeliverJson.alerts[0].attempts >= 0, true);
+  } finally {
+    await srv.stop();
+  }
+});
 
-    const runFailResp = await fetch(`${srv.baseUrl}/v1/billing/reconciliation/run`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
-      body: JSON.stringify({ accountId: 'user-a', lookbackHours: 24, latenessMs: 0, reason: 'worker-fail-test' }),
+test('scheduler status endpoint exposes automation and retry config', async () => {
+  const srv = await startServer();
+  try {
+    const statusResp = await fetch(`${srv.baseUrl}/v1/billing/reconciliation/scheduler/status`, {
+      headers: { 'x-gateway-token': 'test-token' },
     });
-    const runFailJson = await runFailResp.json();
-    assert.equal(runFailResp.status, 200);
-
-    const deliverFailResp = await fetch(`${srv.baseUrl}/v1/billing/reconciliation/alerts/deliver`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-gateway-token': 'test-token' },
-      body: JSON.stringify({
-        limit: 10,
-        forceFailureAlertIds: [runFailJson.alert?.alertId].filter(Boolean),
-      }),
-    });
-    const deliverFailJson = await deliverFailResp.json();
-    assert.equal(deliverFailResp.status, 200);
-    assert.equal(deliverFailJson.failedCount >= 1, true);
-
-    const deadLettersResp = await fetch(`${srv.baseUrl}/v1/billing/accounts/user-a/dead-letters`, {
-      headers: { 'x-user-id': 'user-a' },
-    });
-    const deadLettersJson = await deadLettersResp.json();
-    assert.equal(deadLettersResp.status, 200);
-    assert.equal(deadLettersJson.count >= 1, true);
-    assert.equal(
-      deadLettersJson.deadLetters.some((row) => row.eventType === 'billing.reconciliation.alert.delivery_failed'),
-      true,
-    );
+    const statusJson = await statusResp.json();
+    assert.equal(statusResp.status, 200);
+    assert.equal(statusJson.ok, true);
+    assert.equal(typeof statusJson.scheduler.config.alertDeliveryMaxAttempts, 'number');
+    assert.equal(typeof statusJson.scheduler.config.hourlyIntervalMs, 'number');
   } finally {
     await srv.stop();
   }

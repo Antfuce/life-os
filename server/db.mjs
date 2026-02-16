@@ -179,6 +179,11 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       status TEXT NOT NULL,
       channel TEXT NOT NULL,
       payloadJson TEXT NOT NULL,
+      attempts INTEGER NOT NULL,
+      maxAttempts INTEGER NOT NULL,
+      nextAttemptAtMs INTEGER,
+      deliveredAtMs INTEGER,
+      lastError TEXT,
       createdAtMs INTEGER NOT NULL
     );
 
@@ -222,6 +227,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_run ON billing_reconciliation_alert(runId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_account ON billing_reconciliation_alert(accountId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_status_created ON billing_reconciliation_alert(status, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_status_next_attempt ON billing_reconciliation_alert(status, nextAttemptAtMs, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_tenant_config_status_updated ON tenant_config(status, updatedAtMs);
     CREATE INDEX IF NOT EXISTS idx_governance_audit_account_created ON governance_audit_log(accountId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_governance_audit_event_created ON governance_audit_log(eventType, createdAtMs);
@@ -241,6 +247,11 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
   try { db.exec('ALTER TABLE usage_meter_record ADD COLUMN signatureVersion TEXT;'); } catch {}
   try { db.exec(`ALTER TABLE billing_usage_event ADD COLUMN accountId TEXT NOT NULL DEFAULT 'unknown';`); } catch {}
   try { db.exec(`ALTER TABLE billing_usage_event ADD COLUMN eventType TEXT NOT NULL DEFAULT 'billing.usage.recorded';`); } catch {}
+  try { db.exec(`ALTER TABLE billing_reconciliation_alert ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;`); } catch {}
+  try { db.exec(`ALTER TABLE billing_reconciliation_alert ADD COLUMN maxAttempts INTEGER NOT NULL DEFAULT 5;`); } catch {}
+  try { db.exec(`ALTER TABLE billing_reconciliation_alert ADD COLUMN nextAttemptAtMs INTEGER;`); } catch {}
+  try { db.exec(`ALTER TABLE billing_reconciliation_alert ADD COLUMN deliveredAtMs INTEGER;`); } catch {}
+  try { db.exec(`ALTER TABLE billing_reconciliation_alert ADD COLUMN lastError TEXT;`); } catch {}
 
   const upsertConv = db.prepare(
     `INSERT INTO conversation (id, createdAtMs, updatedAtMs, defaultPersona)
@@ -472,8 +483,9 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
 
   const insertBillingReconciliationAlert = db.prepare(
     `INSERT OR IGNORE INTO billing_reconciliation_alert (
-      alertId, runId, accountId, status, channel, payloadJson, createdAtMs
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      alertId, runId, accountId, status, channel, payloadJson,
+      attempts, maxAttempts, nextAttemptAtMs, deliveredAtMs, lastError, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const listBillingReconciliationAlertsByRun = db.prepare(
@@ -493,6 +505,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
   const listBillingReconciliationPendingAlerts = db.prepare(
     `SELECT * FROM billing_reconciliation_alert
       WHERE status = 'pending'
+        AND (nextAttemptAtMs IS NULL OR nextAttemptAtMs <= ?)
       ORDER BY createdAtMs ASC
       LIMIT ?`
   );
@@ -500,6 +513,23 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
   const updateBillingReconciliationAlertStatus = db.prepare(
     `UPDATE billing_reconciliation_alert
        SET status = ?
+     WHERE alertId = ?`
+  );
+
+  const updateBillingReconciliationAlertDelivery = db.prepare(
+    `UPDATE billing_reconciliation_alert
+       SET status = ?,
+           deliveredAtMs = ?,
+           lastError = NULL
+     WHERE alertId = ?`
+  );
+
+  const updateBillingReconciliationAlertRetry = db.prepare(
+    `UPDATE billing_reconciliation_alert
+       SET status = ?,
+           attempts = ?,
+           nextAttemptAtMs = ?,
+           lastError = ?
      WHERE alertId = ?`
   );
 
@@ -776,6 +806,8 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     listBillingReconciliationAlertsByAccount,
     listBillingReconciliationPendingAlerts,
     updateBillingReconciliationAlertStatus,
+    updateBillingReconciliationAlertDelivery,
+    updateBillingReconciliationAlertRetry,
     listBillingReconciliationAccountsByWindow,
     findBillingReconciliationRunByAccountWindow,
     upsertTenantConfig,
