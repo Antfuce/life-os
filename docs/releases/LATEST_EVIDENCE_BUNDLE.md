@@ -24,6 +24,11 @@
 - `node --test server/test/release-acceptance.test.mjs`
 - `node --test server/test/production-readiness.test.mjs`
 - `node scripts/verify-production-readiness.mjs`
+- rollout smoke (automation enabled):
+  - `GET /health/ready` → `{ ok:true, ready:true }`
+  - `GET /v1/billing/reconciliation/scheduler/status` (internal token) → automation config surfaced
+  - `POST /v1/billing/reconciliation/hourly-trigger` (internal token) → `ok:true`
+  - `POST /v1/billing/reconciliation/alerts/deliver` dry-run (internal token) → `ok:true`
 
 ## Rollback Plan
 

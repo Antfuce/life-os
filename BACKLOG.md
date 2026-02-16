@@ -146,14 +146,15 @@
 - **Dependencies:** Depends on **8** and **7**
 
 #### 10. Hourly Charging Reconciliation Job (P2)
-- **Status:** **In progress**
+- **Status:** **Done (MVP baseline)**
 - **What:** Reconcile metered usage vs charged amounts every hour.
 - **Progress:** Added reconciliation scaffolding with windowing + lateness controls, persisted run/mismatch/alert artifacts, scheduler trigger endpoint (`/v1/billing/reconciliation/hourly-trigger`), alert-delivery worker endpoint (`/v1/billing/reconciliation/alerts/deliver`), retry/backoff scheduling, dead-letter terminal handling, and internal scheduler automation status controls.
 - **Implementation:** `server/db.mjs` (`billing_reconciliation_run`, `billing_reconciliation_mismatch`, `billing_reconciliation_alert`, pending-alert retry fields/queries, scheduler/account discovery), `server/index.mjs` (reconciliation execution + hourly trigger + alert delivery + automation policy wiring), `server/test/reconciliation.test.mjs`, `docs/production-readiness/RECONCILIATION_OPERATIONS_POLICY.md`
 - **Verification:**
   - `node --test server/test/reconciliation.test.mjs` → ok-path, mismatch-path, account scoping, scheduler trigger idempotency-by-window, retry/backoff behavior, and alert worker delivery/dead-letter checks pass.
   - `node --test server/test/*.test.mjs` → green backend baseline.
-- **Remaining scope:** perform explicit production enablement decision for automation flags and finalize late-arrival backfill SLO policy with operator sign-off.
+  - rollout smoke (automation enabled) verifies `/health/ready`, scheduler status, hourly trigger, and dry-run worker responses are healthy.
+- **Follow-up ops hardening:** finalize late-arrival backfill SLO policy and monitor retry/dead-letter trend during pilot onboarding.
 - **Owner:** Backend
 - **Dependencies:** Depends on **9**
 
@@ -267,19 +268,19 @@
 
 ## Next 5 Tasks (Execution Order)
 
-1. **P2 #10 production enablement**
-   - Roll out scheduler automation flags + webhook delivery contract in production and confirm retry/backoff telemetry.
-2. **Close P0 #2 remaining acceptance criteria (LiveKit bridge hardening)**
+1. **Close P0 #2 remaining acceptance criteria (LiveKit bridge hardening)**
    - Add provider event authenticity/replay protection and capture repeatable live-integration evidence.
-3. **Close P0 #3 remaining acceptance criteria (schema contract hardening)**
+2. **Close P0 #3 remaining acceptance criteria (schema contract hardening)**
    - Add full event-family payload contract fixtures/regression guards for new billing/dead-letter event paths.
-4. **Close P0 #4 remaining acceptance criteria (recovery hardening)**
+3. **Close P0 #4 remaining acceptance criteria (recovery hardening)**
    - Add reconnect race/chaos tests + operational runbook/alerts for reconnect failure modes.
-5. **Re-run P0 phase gate and flip HOLD→GO (for further P1 expansion)**
+4. **Re-run P0 phase gate and flip HOLD→GO (for further P1 expansion)**
    - Require hygiene, docs, and evidence checklist to stay green before reopening net-new P1 scope.
+5. **Pilot launch prep packet finalization**
+   - Freeze MVP sellability docs/evidence bundle and operator onboarding checklist for first paid pilot.
 
 ---
 
 ## Next Action
 
-**Backend:** execute production enablement checklist for scheduler automation + alert webhook delivery and capture rollout evidence.
+**Backend:** start P0 #2 remaining hardening (provider event authenticity + replay protection) with tests and evidence updates.

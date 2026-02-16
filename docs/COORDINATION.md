@@ -88,3 +88,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Implemented immediate P2 #10 operational hardening: retry/backoff fields and policy for reconciliation alerts, worker retry scheduling + terminal dead-letter behavior, internal scheduler automation feature flags/intervals, scheduler status endpoint, env policy surface, and reconciliation operations policy docs.
 - Next: Execute production enablement rollout (set automation/webhook env, monitor scheduler status/metrics, verify dead-letter and retry telemetry in live pilot conditions).
 - Risks: Automation is now available but disabled by default; incorrect production flag/webhook configuration can leave alerts in stub/dead-letter mode if rollout checklist is skipped.
+
+## 2026-02-16T16:53:00Z — OpenClaw run note (P2 #10 production enablement rollout evidence)
+- Changed: Executed rollout smoke with automation enabled and internal token auth; verified healthy readiness, scheduler status config exposure, hourly trigger execution, and worker dry-run delivery path. Updated backlog state for #10 to Done (MVP baseline) and shifted next action to remaining P0 closure track.
+- Next: Implement P0 #2 remaining hardening (provider event authenticity/replay protection) and keep release evidence synchronized per increment.
+- Risks: Live webhook delivery reliability still depends on real endpoint behavior and runtime monitoring during pilot traffic; late-arrival backfill SLO policy remains an operations decision.
