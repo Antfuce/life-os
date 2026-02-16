@@ -138,3 +138,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Verified local↔remote git sync parity (`prod` HEAD equals `origin/prod`) and applied frontend env fallback hardening so API calls resolve via `VITE_API_ORIGIN` or `VITE_BASE44_APP_BASE_URL`, matching Base44 local setup docs and reducing environment misconfig drift.
 - Next: Ask operator to publish latest Base44 Builder revision and hard-refresh/Incognito validate that QA is running against latest commit.
 - Risks: Base44 visibility remains publish-gated; even with git sync parity, users can observe stale UI until Builder publish/cache refresh completes.
+
+## 2026-02-16T21:24:00Z — OpenClaw run note (voice loop hardening for hands-free mode)
+- Changed: Hardened mic UX loop for QA-reported "animation stops and nothing happens" issue by adding robust speech-recognition auto-restart retries, explicit voice-session state persistence across transient `onend` gaps, buffered final-transcript auto-send with silence debounce (so mic can continuously listen while still triggering actions), reconnect caption state, and fallback flush on unexpected recognition drops.
+- Next: Validate with live QA on target device/browser and tune utterance debounce threshold if needed for natural pacing.
+- Risks: Browser-native Web Speech behavior still varies by platform; absolute deterministic continuous capture may require a backend/media-stream STT path in later hardening.

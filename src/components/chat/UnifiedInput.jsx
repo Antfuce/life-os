@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Mic, Square, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { motion, AnimatePresence } from "framer-motion";
@@ -20,10 +20,13 @@ export default function UnifiedInput({
 }) {
   const [text, setText] = useState("");
   const [showTranscript, setShowTranscript] = useState(false);
+  const [voiceSessionActive, setVoiceSessionActive] = useState(false);
   const inputRef = useRef(null);
   const previousListeningRef = useRef(false);
   const autoSendVoiceRef = useRef(false);
   const latestVoiceDraftRef = useRef("");
+  const voiceFinalBufferRef = useRef("");
+  const voiceAutoSendTimerRef = useRef(null);
 
   const {
     supported,
@@ -40,66 +43,121 @@ export default function UnifiedInput({
     interimResults: true,
   });
 
+  const clearVoiceAutoSendTimer = useCallback(() => {
+    if (voiceAutoSendTimerRef.current) {
+      clearTimeout(voiceAutoSendTimerRef.current);
+      voiceAutoSendTimerRef.current = null;
+    }
+  }, []);
+
+  const flushVoiceBuffer = useCallback(() => {
+    const buffered = String(voiceFinalBufferRef.current || "").trim();
+    if (!buffered || disabled) return;
+    onSend?.(buffered);
+    voiceFinalBufferRef.current = "";
+    latestVoiceDraftRef.current = "";
+    setText("");
+  }, [disabled, onSend]);
+
   // Handle final transcript
   useEffect(() => {
-    if (finalTranscript) {
-      setText((prev) => {
-        const combined = prev ? `${prev} ${finalTranscript}` : finalTranscript;
-        const normalized = combined.trim();
-        latestVoiceDraftRef.current = normalized;
-        return normalized;
-      });
-    }
-  }, [finalTranscript]);
+    if (!finalTranscript) return;
 
-  // Auto-send voice-only turns when recording ends
+    if (autoSendVoiceRef.current) {
+      const merged = `${voiceFinalBufferRef.current ? `${voiceFinalBufferRef.current} ` : ""}${finalTranscript}`.trim();
+      voiceFinalBufferRef.current = merged;
+      latestVoiceDraftRef.current = merged;
+      onInterim?.(merged);
+
+      clearVoiceAutoSendTimer();
+      voiceAutoSendTimerRef.current = setTimeout(() => {
+        flushVoiceBuffer();
+      }, 900);
+      return;
+    }
+
+    setText((prev) => {
+      const combined = prev ? `${prev} ${finalTranscript}` : finalTranscript;
+      const normalized = combined.trim();
+      latestVoiceDraftRef.current = normalized;
+      return normalized;
+    });
+  }, [finalTranscript, disabled, onInterim, clearVoiceAutoSendTimer, flushVoiceBuffer]);
+
+  // Flush pending voice chunk if recognition drops while in auto-send mode
   useEffect(() => {
     const wasListening = previousListeningRef.current;
-    if (wasListening && !listening) {
-      const candidate = String(latestVoiceDraftRef.current || "").trim();
-      if (autoSendVoiceRef.current && candidate && !disabled) {
-        onSend?.(candidate);
-        setText("");
-      }
-      autoSendVoiceRef.current = false;
-      latestVoiceDraftRef.current = "";
-      setShowTranscript(false);
+    if (wasListening && !listening && autoSendVoiceRef.current) {
+      clearVoiceAutoSendTimer();
+      flushVoiceBuffer();
     }
     previousListeningRef.current = listening;
-  }, [listening, disabled, onSend]);
+  }, [listening, clearVoiceAutoSendTimer, flushVoiceBuffer]);
 
   // Emit interim for parent captions
   useEffect(() => {
-    onInterim?.(interimTranscript);
-    setShowTranscript(!!interimTranscript && listening);
-  }, [interimTranscript, listening, onInterim]);
+    if (interimTranscript) {
+      onInterim?.(interimTranscript);
+    }
+    setShowTranscript(voiceSessionActive && (listening || !!interimTranscript));
+  }, [interimTranscript, listening, voiceSessionActive, onInterim]);
 
-  // Report listening state to parent
+  // Report effective voice-active state to parent
   useEffect(() => {
-    onListeningChange?.(listening);
-  }, [listening, onListeningChange]);
+    onListeningChange?.(voiceSessionActive || listening);
+  }, [listening, voiceSessionActive, onListeningChange]);
+
+  useEffect(() => {
+    const code = String(error?.error || "");
+    if (!code) return;
+    if (code === "not-allowed" || code === "service-not-allowed" || code === "audio-capture") {
+      setVoiceSessionActive(false);
+      autoSendVoiceRef.current = false;
+      clearVoiceAutoSendTimer();
+      voiceFinalBufferRef.current = "";
+    }
+  }, [error, clearVoiceAutoSendTimer]);
+
+  useEffect(() => {
+    return () => {
+      clearVoiceAutoSendTimer();
+    };
+  }, [clearVoiceAutoSendTimer]);
 
   const handleSubmit = (e) => {
     e?.preventDefault();
     if (!text.trim() || disabled) return;
     autoSendVoiceRef.current = false;
     latestVoiceDraftRef.current = "";
+    voiceFinalBufferRef.current = "";
+    clearVoiceAutoSendTimer();
     onSend?.(text.trim());
     setText("");
+    setVoiceSessionActive(false);
     stop();
   };
 
   const toggleMic = () => {
     if (!supported) return;
-    if (listening) {
-      stop();
-    } else {
-      window.speechSynthesis?.cancel?.();
-      autoSendVoiceRef.current = !text.trim();
+
+    if (voiceSessionActive || listening) {
+      clearVoiceAutoSendTimer();
+      flushVoiceBuffer();
+      autoSendVoiceRef.current = false;
       latestVoiceDraftRef.current = "";
-      setShowTranscript(true);
-      start();
+      setVoiceSessionActive(false);
+      setShowTranscript(false);
+      stop();
+      return;
     }
+
+    window.speechSynthesis?.cancel?.();
+    autoSendVoiceRef.current = !text.trim();
+    latestVoiceDraftRef.current = "";
+    voiceFinalBufferRef.current = "";
+    setVoiceSessionActive(true);
+    setShowTranscript(true);
+    start();
   };
 
   const handleKeyDown = (e) => {
@@ -112,6 +170,7 @@ export default function UnifiedInput({
   // Permission denied or not supported UI
   const micErrorCode = String(error?.error || "");
   const showMicError = !supported || Boolean(micErrorCode);
+  const isVoiceActive = voiceSessionActive || listening;
 
   return (
     <div className="w-full max-w-2xl mx-auto">
@@ -124,7 +183,7 @@ export default function UnifiedInput({
             exit={{ opacity: 0, y: -10 }}
             className="mb-3 px-4 py-2 bg-neutral-100 rounded-lg text-sm text-neutral-600 text-center"
           >
-            {interimTranscript || "Listening..."}
+            {interimTranscript || (listening ? "Listening..." : "Reconnecting mic…")}
           </motion.div>
         )}
       </AnimatePresence>
@@ -152,14 +211,14 @@ export default function UnifiedInput({
               type="button"
               onClick={toggleMic}
               disabled={disabled}
-              variant={listening ? "destructive" : "ghost"}
+              variant={isVoiceActive ? "destructive" : "ghost"}
               size="icon"
               className={`h-9 w-9 rounded-full transition-all ${
-                listening ? "bg-red-500 hover:bg-red-600 animate-pulse" : "hover:bg-neutral-100"
+                isVoiceActive ? "bg-red-500 hover:bg-red-600 animate-pulse" : "hover:bg-neutral-100"
               }`}
-              title={listening ? "Stop listening" : "Start voice input"}
+              title={isVoiceActive ? "Stop listening" : "Start voice input"}
             >
-              {listening ? (
+              {isVoiceActive ? (
                 <Square className="w-4 h-4" />
               ) : (
                 <Mic className="w-4 h-4 text-neutral-500" />
