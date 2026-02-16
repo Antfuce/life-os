@@ -237,23 +237,24 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     upsertConv,
     insertMsg,
     insertActionAudit,
+
     insertCallSession,
     getCallSessionById,
     listCallSessionsByUser,
     updateCallSession,
-codex/add-livekit-integration-endpoints
-    getCallSessionByProviderCallId,
-    getCallSessionByProviderRoomAndParticipant,
-    getCallSessionByProviderRoomId,
-=======
     updateCallSessionAck,
-prod
+
     insertRealtimeEvent,
     getRealtimeSessionMaxSequence,
     listRealtimeEventsAfterSequence,
     listRealtimeEventsAfterWatermark,
     upsertRealtimeCheckpoint,
     getRealtimeCheckpoint,
+
+    getCallSessionByProviderCallId,
+    getCallSessionByProviderRoomAndParticipant,
+    getCallSessionByProviderRoomId,
+
     dbFile,
   };
 }

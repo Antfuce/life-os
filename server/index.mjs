@@ -316,21 +316,11 @@ fastify.get('/', async () => ({
     listCallSessions: '/v1/call/sessions (GET with x-user-id header)',
     getCallSession: '/v1/call/sessions/:sessionId (GET)',
     updateCallSession: '/v1/call/sessions/:sessionId/state (POST json)',
-codex/map-out-next-5-tasks
-=======
- codex/add-livekit-integration-endpoints
     issueLiveKitToken: '/v1/call/sessions/:sessionId/livekit/token (POST json)',
     ingestLiveKitEvent: '/v1/call/livekit/events (POST json)',
-=======
-codex/add-policy-checks-for-sensitive-actions
-prod
-    executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
     reconnectCallSession: '/v1/call/sessions/:sessionId/reconnect (POST json)',
- codex/map-out-next-5-tasks
-=======
-prod
-prod
- prod
+    executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
+    actionDecision: '/v1/actions/decision (POST json)',
   },
 }));
 
