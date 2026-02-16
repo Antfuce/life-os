@@ -18,3 +18,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Updated coordination guidance to support the new operating mode where OpenClaw executes Phase 0 coding and Codex performs architecture/quality review before production pushes.
 - Next: OpenClaw should submit Phase 0 increments in strict dependency order (P0 #1 → #2 → #3 → #4), with per-PR evidence for schema validation, reconnect semantics, and replay idempotency.
 - Risks: If review gates are skipped, unresolved merge artifacts and regression risk can propagate directly to production.
+
+## 2026-02-16T11:55:00Z — OpenClaw run note (phase-a hardening)
+- Changed: Completed backend/test merge-artifact cleanup, hardened realtime endpoint envelope validation, and added CI guards for conflict markers + backend syntax regressions.
+- Next: Close out P0 explicitly with evidence-linked documentation, then kick off P1 scope (in-call orchestration + safety gates) against a green lint/test baseline.
+- Risks: Direct-to-prod delivery without review artifacts can cause evidence drift between shipped code and documented acceptance proof.

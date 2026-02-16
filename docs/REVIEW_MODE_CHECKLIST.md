@@ -23,7 +23,11 @@ Purpose: when OpenClaw is implementing code and pushing to prod, Codex reviews e
 - Reconnect path requires resume token and supports replay from last acknowledged sequence.
 - Duplicate provider/webhook updates are idempotent.
 
-## Gate 5 — Production-readiness evidence in PR
-- Clear change summary and risk notes.
-- Command outputs included for lint/tests.
-- Any deferred work explicitly tracked in `BACKLOG.md` and/or `docs/COORDINATION.md`.
+## Gate 5 — Production-readiness evidence (PR or direct-to-prod)
+Evidence requirements apply to every increment regardless of delivery path (pull request merge or direct push to `prod`).
+
+Required artifacts:
+1. Clear change summary + risk notes.
+2. Command outputs for lint/tests/syntax checks.
+3. Links or explicit references to updated `BACKLOG.md` and `docs/COORDINATION.md` entries.
+4. Explicit reviewer go/no-go decision before any Phase transition.
