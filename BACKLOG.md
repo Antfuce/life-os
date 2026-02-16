@@ -24,15 +24,15 @@
 #### 2. LiveKit Session Bridge (Realtime Transport)
 - **Status:** **Partially implemented**
 - **What:** Wire LiveKit transport through backend token issuance + provider event ingestion/translation.
-- **Current status:** Token issuance, session↔room mapping persistence, and canonical event translation are in place.
+- **Current status:** Token issuance, session↔room mapping persistence, canonical event translation, and webhook authenticity/replay protection are in place.
 - **Acceptance criteria:**
   - [x] Backend issues short-lived LiveKit access token tied to session/user mapping.
   - [x] Inbound provider events translate into canonical `call.*` / `transcript.*` / `orchestration.*` families.
+  - [x] Inbound provider event authenticity/replay protection is enforced and tested (signature verification + replay guard).
   - [ ] End-to-end provider integration check against live LiveKit environment (room join/publish/subscribe roundtrip) is captured as repeatable evidence.
-  - [ ] Inbound provider event authenticity/replay protection is enforced and tested (signature verification + replay guard).
-- **Implementation:** `server/index.mjs`, `server/livekit-bridge.mjs`, `server/test/call-sessions.test.mjs`
+- **Implementation:** `server/index.mjs`, `server/livekit-bridge.mjs`, `server/db.mjs` (`livekit_webhook_receipt`), `server/test/call-sessions.test.mjs`
 - **Verification (current):**
-  - `node --test server/test/call-sessions.test.mjs` (token + translation coverage)
+  - `node --test server/test/call-sessions.test.mjs` (token + translation + webhook signature/replay coverage)
 - **Owner:** Backend
 - **Dependencies:** Depends on **1. Call Session Service**
 
@@ -268,8 +268,8 @@
 
 ## Next 5 Tasks (Execution Order)
 
-1. **Close P0 #2 remaining acceptance criteria (LiveKit bridge hardening)**
-   - Add provider event authenticity/replay protection and capture repeatable live-integration evidence.
+1. **Close P0 #2 remaining acceptance criteria (LiveKit bridge evidence)**
+   - Capture repeatable live-integration evidence against real LiveKit room join/publish/subscribe flow.
 2. **Close P0 #3 remaining acceptance criteria (schema contract hardening)**
    - Add full event-family payload contract fixtures/regression guards for new billing/dead-letter event paths.
 3. **Close P0 #4 remaining acceptance criteria (recovery hardening)**
@@ -283,4 +283,4 @@
 
 ## Next Action
 
-**Backend:** start P0 #2 remaining hardening (provider event authenticity + replay protection) with tests and evidence updates.
+**Backend:** execute and document repeatable live LiveKit integration evidence (room join/publish/subscribe + webhook signature path) to close final P0 #2 acceptance criterion.

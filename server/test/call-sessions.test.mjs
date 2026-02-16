@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 
 async function waitForHealth(baseUrl) {
   const max = Date.now() + 8000;
@@ -63,6 +64,19 @@ async function createSession(baseUrl, userId, body = {}) {
     body: JSON.stringify(body),
   });
   return { status: r.status, json: await r.json() };
+}
+
+function signLiveKitWebhook(payload, timestampMs = Date.now(), secret = 'lk_test_secret') {
+  const timestamp = String(Math.trunc(timestampMs));
+  const body = JSON.stringify(payload || {});
+  const signature = createHmac('sha256', secret)
+    .update(`${timestamp}.${body}`)
+    .digest('hex');
+
+  return {
+    timestamp,
+    signature,
+  };
 }
 
 test('authorized user can only access own sessions', async () => {
@@ -354,15 +368,21 @@ test('livekit media events are translated into canonical event families before f
     ];
 
     for (const item of events) {
+      const signed = signLiveKitWebhook(item);
       const ingest = await fetch(`${srv.baseUrl}/v1/call/livekit/events`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          'x-livekit-signature': signed.signature,
+          'x-livekit-timestamp': signed.timestamp,
+        },
         body: JSON.stringify(item),
       });
       const ingestJson = await ingest.json();
       assert.equal(ingest.status, 200);
       assert.equal(ingestJson.ok, true);
       assert.equal(ingestJson.ignored, false);
+      assert.equal(ingestJson.webhookAuth.verified, true);
     }
 
     const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
@@ -374,6 +394,114 @@ test('livekit media events are translated into canonical event families before f
     assert.ok(types.includes('call.connected'));
     assert.ok(types.includes('transcript.partial'));
     assert.ok(types.includes('orchestration.action.requested'));
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('livekit webhook requires valid signature and rejects stale timestamps', async () => {
+  const srv = await startServer();
+
+  try {
+    const created = await createSession(srv.baseUrl, 'user-a', {
+      providerRoomId: 'room-auth-1',
+      providerParticipantId: 'participant-auth-1',
+      providerCallId: 'call-auth-1',
+    });
+    assert.equal(created.status, 200);
+
+    const payload = {
+      event: 'participant_connected',
+      roomName: 'room-auth-1',
+      participantIdentity: 'participant-auth-1',
+    };
+
+    const missingSig = await fetch(`${srv.baseUrl}/v1/call/livekit/events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const missingSigJson = await missingSig.json();
+    assert.equal(missingSig.status, 401);
+    assert.equal(missingSigJson.code, 'INVALID_LIVEKIT_SIGNATURE');
+
+    const staleSigned = signLiveKitWebhook(payload, Date.now() - (15 * 60 * 1000));
+    const staleResp = await fetch(`${srv.baseUrl}/v1/call/livekit/events`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-livekit-signature': staleSigned.signature,
+        'x-livekit-timestamp': staleSigned.timestamp,
+      },
+      body: JSON.stringify(payload),
+    });
+    const staleJson = await staleResp.json();
+    assert.equal(staleResp.status, 401);
+    assert.equal(staleJson.code, 'LIVEKIT_SIGNATURE_TIMESTAMP_OUT_OF_RANGE');
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('livekit webhook replay is deduped before canonical fanout', async () => {
+  const srv = await startServer();
+
+  try {
+    const created = await createSession(srv.baseUrl, 'user-a', {
+      providerRoomId: 'room-replay-1',
+      providerParticipantId: 'participant-replay-1',
+      providerCallId: 'call-replay-1',
+    });
+    assert.equal(created.status, 200);
+    const sessionId = created.json.session.sessionId;
+
+    const payload = {
+      event: 'transcription_received',
+      roomName: 'room-replay-1',
+      participantIdentity: 'participant-replay-1',
+      utteranceId: 'utt-replay-1',
+      role: 'participant',
+      text: 'hello replay',
+      startMs: 0,
+      endMs: 100,
+      final: false,
+    };
+
+    const signed = signLiveKitWebhook(payload);
+
+    const first = await fetch(`${srv.baseUrl}/v1/call/livekit/events`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-livekit-signature': signed.signature,
+        'x-livekit-timestamp': signed.timestamp,
+      },
+      body: JSON.stringify(payload),
+    });
+    const firstJson = await first.json();
+    assert.equal(first.status, 200);
+    assert.equal(firstJson.ok, true);
+    assert.equal(firstJson.replayed, undefined);
+
+    const second = await fetch(`${srv.baseUrl}/v1/call/livekit/events`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-livekit-signature': signed.signature,
+        'x-livekit-timestamp': signed.timestamp,
+      },
+      body: JSON.stringify(payload),
+    });
+    const secondJson = await second.json();
+    assert.equal(second.status, 200);
+    assert.equal(secondJson.replayed, true);
+    assert.equal(secondJson.ignored, true);
+
+    const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
+    const replayJson = await replay.json();
+    assert.equal(replay.status, 200);
+    const transcriptPartials = replayJson.events.filter((evt) => evt.type === 'transcript.partial');
+    assert.equal(transcriptPartials.length, 1);
   } finally {
     await srv.stop();
   }

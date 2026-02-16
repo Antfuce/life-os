@@ -93,3 +93,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Executed rollout smoke with automation enabled and internal token auth; verified healthy readiness, scheduler status config exposure, hourly trigger execution, and worker dry-run delivery path. Updated backlog state for #10 to Done (MVP baseline) and shifted next action to remaining P0 closure track.
 - Next: Implement P0 #2 remaining hardening (provider event authenticity/replay protection) and keep release evidence synchronized per increment.
 - Risks: Live webhook delivery reliability still depends on real endpoint behavior and runtime monitoring during pilot traffic; late-arrival backfill SLO policy remains an operations decision.
+
+## 2026-02-16T16:57:00Z — OpenClaw run note (P0 #2 hardening in progress)
+- Changed: Implemented LiveKit webhook authenticity + replay protection in backend ingest path (`x-livekit-signature` HMAC verification, timestamp skew guard, replay dedupe receipts) and added call-session tests for missing/invalid signature, stale timestamps, and replay suppression before canonical event fanout.
+- Next: Capture repeatable real LiveKit integration evidence (room join/publish/subscribe + signed webhook flow) to close final P0 #2 criterion, then continue P0 #3 schema hardening.
+- Risks: Signature verification currently depends on consistent provider/header canonicalization assumptions; real-provider smoke evidence is required before declaring full closure.

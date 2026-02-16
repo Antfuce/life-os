@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { readFile } from 'node:fs/promises';
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { initDb, stableId, toTsMs } from './db.mjs';
 import { EVENT_VERSION, validateRealtimeEventEnvelope, mergeTranscriptEvents } from './realtime-events.mjs';
@@ -322,6 +322,11 @@ const RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS = process.env.RECONCILIATION_
 const RECONCILIATION_AUTOMATION_WORKER_BATCH = process.env.RECONCILIATION_AUTOMATION_WORKER_BATCH
   ? Number(process.env.RECONCILIATION_AUTOMATION_WORKER_BATCH)
   : 100;
+
+const LIVEKIT_WEBHOOK_SIGNATURE_REQUIRED = String(process.env.LIVEKIT_WEBHOOK_SIGNATURE_REQUIRED || 'true').toLowerCase() !== 'false';
+const LIVEKIT_WEBHOOK_MAX_SKEW_MS = process.env.LIVEKIT_WEBHOOK_MAX_SKEW_MS
+  ? Number(process.env.LIVEKIT_WEBHOOK_MAX_SKEW_MS)
+  : 5 * 60 * 1000;
 
 const schedulerState = {
   automationEnabled: RECONCILIATION_AUTOMATION_ENABLED,
@@ -672,6 +677,116 @@ function getInternalGatewayAuth(req) {
     return { code: 'AUTH_REQUIRED', message: 'valid x-gateway-token header is required' };
   }
   return { ok: true };
+}
+
+function normalizeHexSignature(input) {
+  const raw = String(input || '').trim().toLowerCase();
+  const normalized = raw.startsWith('sha256=') ? raw.slice('sha256='.length) : raw;
+  return /^[0-9a-f]{64}$/.test(normalized) ? normalized : '';
+}
+
+function timingSafeEqualsHex(leftHex, rightHex) {
+  if (!leftHex || !rightHex) return false;
+  if (leftHex.length !== rightHex.length) return false;
+
+  try {
+    const left = Buffer.from(leftHex, 'hex');
+    const right = Buffer.from(rightHex, 'hex');
+    if (left.length !== right.length) return false;
+    return timingSafeEqual(left, right);
+  } catch {
+    return false;
+  }
+}
+
+function verifyAndRecordLiveKitWebhook(req) {
+  if (!LIVEKIT_WEBHOOK_SIGNATURE_REQUIRED) {
+    return { ok: true, replayed: false, verified: false };
+  }
+
+  if (!LIVEKIT_API_SECRET) {
+    return {
+      ok: false,
+      statusCode: 503,
+      code: 'LIVEKIT_SIGNATURE_UNAVAILABLE',
+      message: 'LiveKit signature verification is enabled but LIVEKIT_API_SECRET is not configured',
+    };
+  }
+
+  const signatureHeader = req.headers['x-livekit-signature'] || req.headers['x-signature'];
+  const signature = normalizeHexSignature(signatureHeader);
+  if (!signature) {
+    return {
+      ok: false,
+      statusCode: 401,
+      code: 'INVALID_LIVEKIT_SIGNATURE',
+      message: 'Missing or invalid x-livekit-signature header',
+    };
+  }
+
+  const timestampHeader = req.headers['x-livekit-timestamp'] || req.headers['x-signature-timestamp'];
+  const timestampRaw = String(timestampHeader || '').trim();
+  const timestampNumeric = Number(timestampRaw);
+  if (!timestampRaw || !Number.isFinite(timestampNumeric)) {
+    return {
+      ok: false,
+      statusCode: 401,
+      code: 'INVALID_LIVEKIT_SIGNATURE_TIMESTAMP',
+      message: 'Missing or invalid x-livekit-timestamp header',
+    };
+  }
+
+  const timestampMs = timestampNumeric > 1_000_000_000_000
+    ? Math.trunc(timestampNumeric)
+    : Math.trunc(timestampNumeric * 1000);
+  const nowMs = Date.now();
+  const maxSkewMs = Number.isFinite(LIVEKIT_WEBHOOK_MAX_SKEW_MS)
+    ? Math.max(30_000, Math.trunc(LIVEKIT_WEBHOOK_MAX_SKEW_MS))
+    : 5 * 60 * 1000;
+
+  if (Math.abs(nowMs - timestampMs) > maxSkewMs) {
+    return {
+      ok: false,
+      statusCode: 401,
+      code: 'LIVEKIT_SIGNATURE_TIMESTAMP_OUT_OF_RANGE',
+      message: 'LiveKit webhook timestamp is outside allowed verification window',
+    };
+  }
+
+  const bodyCanonical = JSON.stringify(req.body || {});
+  const signedPayload = `${timestampRaw}.${bodyCanonical}`;
+  const expectedSignature = createHmac('sha256', LIVEKIT_API_SECRET).update(signedPayload).digest('hex');
+
+  if (!timingSafeEqualsHex(signature, expectedSignature)) {
+    return {
+      ok: false,
+      statusCode: 401,
+      code: 'INVALID_LIVEKIT_SIGNATURE',
+      message: 'LiveKit webhook signature validation failed',
+    };
+  }
+
+  const bodyHash = stableId(bodyCanonical);
+  const dedupeKey = stableId('livekit-webhook', timestampRaw, signature, bodyHash);
+  const receiptId = `lkwr_${stableId(dedupeKey).slice(0, 20)}`;
+  const providerEventId = req.body?.eventId ? String(req.body.eventId) : (req.body?.id ? String(req.body.id) : null);
+
+  const inserted = dbCtx.insertLiveKitWebhookReceipt.run(
+    receiptId,
+    dedupeKey,
+    providerEventId,
+    signature,
+    timestampMs,
+    bodyHash,
+    nowMs,
+  );
+
+  return {
+    ok: true,
+    replayed: !inserted?.changes,
+    verified: true,
+    receiptId,
+  };
 }
 
 function parseRequestMetadata(raw) {
@@ -1830,6 +1945,20 @@ fastify.post('/v1/call/sessions/:sessionId/livekit/token', async (req, reply) =>
 
 fastify.post('/v1/call/livekit/events', async (req, reply) => {
   const body = req.body || {};
+
+  const verification = verifyAndRecordLiveKitWebhook(req);
+  if (!verification.ok) {
+    return sendError(req, reply, verification.statusCode || 401, verification.code || 'INVALID_LIVEKIT_SIGNATURE', verification.message || 'invalid livekit webhook signature', false);
+  }
+  if (verification.replayed) {
+    return {
+      ok: true,
+      replayed: true,
+      ignored: true,
+      reason: 'livekit_webhook_replay_detected',
+    };
+  }
+
   const correlation = extractLiveKitCorrelation(body);
   const requestedSessionId = body.sessionId ? String(body.sessionId) : correlation.sessionIdFromMetadata;
 
@@ -1876,6 +2005,10 @@ fastify.post('/v1/call/livekit/events', async (req, reply) => {
     translatedCount: translatedEvents.length,
     published,
     ignored: translatedEvents.length === 0,
+    webhookAuth: {
+      verified: verification.verified === true,
+      receiptId: verification.receiptId || null,
+    },
   };
 });
 

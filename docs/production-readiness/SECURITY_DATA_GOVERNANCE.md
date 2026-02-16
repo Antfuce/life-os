@@ -7,6 +7,8 @@
 - Unsupported envelope key rejection.
 - Session ownership checks on user-scoped resources.
 - Internal endpoints protected by `x-gateway-token`.
+- LiveKit webhook signature verification + timestamp skew window enforcement.
+- LiveKit webhook replay dedupe (`livekit_webhook_receipt`) before canonical fanout.
 - Baseline route-level rate limiting.
 - Security response headers (`nosniff`, frame deny, referrer policy).
 

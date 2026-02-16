@@ -103,6 +103,16 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       createdAtMs INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS livekit_webhook_receipt (
+      receiptId TEXT PRIMARY KEY,
+      dedupeKey TEXT NOT NULL UNIQUE,
+      providerEventId TEXT,
+      signature TEXT NOT NULL,
+      timestampMs INTEGER NOT NULL,
+      bodyHash TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS usage_meter_record (
       recordId TEXT PRIMARY KEY,
       accountId TEXT NOT NULL,
@@ -215,6 +225,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     CREATE INDEX IF NOT EXISTS idx_realtime_event_session_sequence ON realtime_event(sessionId, sequence);
     CREATE INDEX IF NOT EXISTS idx_transcript_snapshot_session_sequence ON transcript_snapshot(sessionId, sequence);
     CREATE INDEX IF NOT EXISTS idx_transcript_snapshot_session_utterance_sequence ON transcript_snapshot(sessionId, utteranceId, sequence);
+    CREATE INDEX IF NOT EXISTS idx_livekit_webhook_receipt_timestamp ON livekit_webhook_receipt(timestampMs, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_usage_meter_record_session_created ON usage_meter_record(sessionId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_usage_meter_record_account_created ON usage_meter_record(accountId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_usage_meter_record_session_meter_created ON usage_meter_record(sessionId, meterId, createdAtMs);
@@ -350,6 +361,12 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
         AND sequence > ?
       ORDER BY sequence ASC
       LIMIT ?`
+  );
+
+  const insertLiveKitWebhookReceipt = db.prepare(
+    `INSERT OR IGNORE INTO livekit_webhook_receipt (
+      receiptId, dedupeKey, providerEventId, signature, timestampMs, bodyHash, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
 
   const insertUsageMeterRecord = db.prepare(
@@ -783,6 +800,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     insertTranscriptSnapshot,
     listTranscriptSnapshotsBySession,
     listTranscriptSnapshotsBySessionAfterSequence,
+    insertLiveKitWebhookReceipt,
     insertUsageMeterRecord,
     listUsageMeterRecordsBySession,
     listUsageMeterRecordsBySessionAndMeter,
