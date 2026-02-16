@@ -54,28 +54,28 @@
 - **Dependencies:** Parallel with **1**, required by **2** and all downstream realtime work
 
 #### 4. Failure Recovery + Reconnect Semantics
-- **Status:** **Partially implemented**
+- **Status:** **Done**
 - **What:** Provide resilient resume/reconnect behavior with replay/checkpoint semantics and terminal-failure signaling.
-- **Current status:** Resume token checks, replay-from-ack, and checkpoint persistence are implemented; resilience hardening is not fully closed.
+- **Current status:** Resume token checks, deterministic replay, stale-checkpoint protection, and reconnect failure operations runbook are in place.
 - **Acceptance criteria:**
   - [x] Reconnect requires valid `resumeToken` and enforces reconnect window expiry.
   - [x] Replay starts from acknowledged sequence/checkpoint and is deterministic.
   - [x] Terminal session failure emits canonical failure event path.
-  - [ ] Concurrency/chaos reconnect tests cover duplicate reconnect attempts, ack races, and late checkpoints.
-  - [ ] Operational runbook + alerting expectations for reconnect failure modes are documented.
-- **Implementation:** `server/index.mjs` (`/v1/call/sessions/:sessionId/reconnect`, realtime replay/checkpoint endpoints), `server/db.mjs` (resume/ack columns), `server/test/call-sessions.test.mjs`
-- **Verification (current):**
+  - [x] Concurrency/chaos reconnect tests cover duplicate reconnect attempts, ack races, and late checkpoints.
+  - [x] Operational runbook + alerting expectations for reconnect failure modes are documented.
+- **Implementation:** `server/index.mjs` (`/v1/call/sessions/:sessionId/reconnect`, checkpoint stale-sequence guard), `server/db.mjs` (resume/ack columns), `server/test/call-sessions.test.mjs`, `docs/runbooks/RECONNECT_FAILURE_OPERATIONS.md`
+- **Verification:**
   - `node --test server/test/call-sessions.test.mjs`
 - **Owner:** Backend
 - **Dependencies:** Depends on **1**, **2**, and **3**
 
 #### P0 Phase-Gate Checklist (Mandatory before P1 continuation)
 - **Checklist status:** ✅ Completed (governance pass executed)
-- **Gate decision:** 🚧 **HOLD** until remaining P0 acceptance criteria in #2/#3/#4 are closed.
+- **Gate decision:** 🚧 **HOLD** until remaining P0 acceptance criteria in #2 are closed.
 
 - [x] Repo hygiene sweep completed on backend code/tests (`server/**/*.mjs`, `server/test/**/*.mjs`) for merge markers and branch-label debris.
 - [x] Hygiene verification commands executed (`grep` scans for `<<<<<<<`, `=======`, `>>>>>>>`, and stray branch-label lines) with no findings in backend sources/tests.
-- [x] Docs alignment completed: P0 #2/#3/#4 statuses reconciled to partially implemented with explicit acceptance criteria and current-state notes.
+- [x] Docs alignment maintained: P0 #2 tracked as partial; P0 #3 and #4 closure reflected with explicit acceptance criteria and evidence links.
 - [x] Cross-agent audit log restored: latest production pushes and this stabilization pass documented in `docs/COORDINATION.md` using changed / next / risks format.
 - [x] Stabilization sign-off recorded by execution owner (OpenClaw run note + baseline checks).
 
@@ -85,7 +85,7 @@
 
 ### P1 — Orchestration, Safety, and Persistence
 
-- **Gate:** 🚧 **HOLD** (2026-02-16 stabilization pass) — P0 #2/#3/#4 are now explicitly tracked as partial; no additional P1 feature expansion until the formal P0 phase-gate checklist above stays green and unresolved acceptance criteria are closed.
+- **Gate:** 🚧 **HOLD** (2026-02-16 stabilization pass) — P0 #2 remains open for final real-provider evidence closure; no additional P1 feature expansion until the formal P0 phase-gate checklist above stays green and unresolved acceptance criteria are closed.
 
 #### 5. In-Call Orchestration Actions
 - **Status:** **In progress**
@@ -271,14 +271,14 @@
 
 1. **Close P0 #2 remaining acceptance criteria (LiveKit bridge evidence)**
    - Capture repeatable live-integration evidence against real LiveKit room join/publish/subscribe flow.
-2. **Close P0 #4 remaining acceptance criteria (recovery hardening)**
-   - Add reconnect race/chaos tests + operational runbook/alerts for reconnect failure modes.
-3. **Re-run P0 phase gate and flip HOLD→GO (for further P1 expansion)**
+2. **Re-run P0 phase gate and flip HOLD→GO (for further P1 expansion)**
    - Require hygiene, docs, and evidence checklist to stay green before reopening net-new P1 scope.
-4. **Pilot launch prep packet finalization**
+3. **Pilot launch prep packet finalization**
    - Freeze MVP sellability docs/evidence bundle and operator onboarding checklist for first paid pilot.
-5. **Targeted UI stabilization sprint (bug triage + fixes)**
+4. **Targeted UI stabilization sprint (bug triage + fixes)**
    - Resolve top buyer-visible UI defects once P0 gate re-opens.
+5. **P1 remainder re-entry planning**
+   - Resume #5/#6 tokenized safety + richer executor semantics once gate is GO.
 
 ---
 

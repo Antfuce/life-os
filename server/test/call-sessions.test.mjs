@@ -349,6 +349,112 @@ test('reconnect requires valid resume token and replays from acknowledged sequen
   }
 });
 
+test('duplicate reconnect submissions are deterministic and replay-safe', async () => {
+  const srv = await startServer();
+
+  try {
+    const created = await createSession(srv.baseUrl, 'user-a', { reconnectWindowMs: 120000 });
+    assert.equal(created.status, 200);
+    const sessionId = created.json.session.sessionId;
+    const resumeToken = created.json.session.resumeToken;
+
+    for (let i = 0; i < 3; i += 1) {
+      await fetch(`${srv.baseUrl}/v1/realtime/events`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          type: 'usage.tick',
+          payload: { meterId: 'm1', billableSeconds: i + 1 },
+        }),
+      });
+    }
+
+    const [r1, r2] = await Promise.all([
+      fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/reconnect`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+        body: JSON.stringify({ resumeToken, lastAckSequence: 1 }),
+      }),
+      fetch(`${srv.baseUrl}/v1/call/sessions/${sessionId}/reconnect`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+        body: JSON.stringify({ resumeToken, lastAckSequence: 1 }),
+      }),
+    ]);
+
+    const j1 = await r1.json();
+    const j2 = await r2.json();
+    assert.equal(r1.status, 200);
+    assert.equal(r2.status, 200);
+    assert.deepEqual(j1.replay.events.map((e) => e.sequence), j2.replay.events.map((e) => e.sequence));
+    assert.equal(j1.replay.events.length, j2.replay.events.length);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('late checkpoint cannot regress acknowledged sequence', async () => {
+  const srv = await startServer();
+
+  try {
+    const created = await createSession(srv.baseUrl, 'user-a', { reconnectWindowMs: 120000 });
+    assert.equal(created.status, 200);
+    const sessionId = created.json.session.sessionId;
+
+    for (let i = 0; i < 3; i += 1) {
+      await fetch(`${srv.baseUrl}/v1/realtime/events`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          type: 'usage.tick',
+          payload: { meterId: 'm1', billableSeconds: i + 1 },
+        }),
+      });
+    }
+
+    const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
+    const replayJson = await replay.json();
+    assert.equal(replay.status, 200);
+    const e3 = replayJson.events[2];
+    const e2 = replayJson.events[1];
+
+    const cpNew = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/checkpoint`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        consumerId: 'web-client',
+        watermarkTimestamp: e3.timestamp,
+        watermarkEventId: e3.eventId,
+        watermarkSequence: e3.sequence,
+      }),
+    });
+    const cpNewJson = await cpNew.json();
+    assert.equal(cpNew.status, 200);
+    assert.equal(cpNewJson.ackUpdate.applied, true);
+    assert.equal(cpNewJson.sessionAck.sequence, e3.sequence);
+
+    const cpLate = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/checkpoint`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        consumerId: 'web-client',
+        watermarkTimestamp: e2.timestamp,
+        watermarkEventId: e2.eventId,
+        watermarkSequence: e2.sequence,
+      }),
+    });
+    const cpLateJson = await cpLate.json();
+    assert.equal(cpLate.status, 200);
+    assert.equal(cpLateJson.ackUpdate.ignored, true);
+    assert.equal(cpLateJson.ackUpdate.reason, 'stale_sequence_ignored');
+    assert.equal(cpLateJson.sessionAck.sequence, e3.sequence);
+  } finally {
+    await srv.stop();
+  }
+});
+
 test('livekit media events are translated into canonical event families before fanout', async () => {
   const srv = await startServer();
 

@@ -13,6 +13,7 @@ const requiredFiles = [
   'docs/production-readiness/ONBOARDING_COMMERCIAL_SUPPORT.md',
   'docs/production-readiness/RECONCILIATION_OPERATIONS_POLICY.md',
   'docs/runbooks/LIVE_CALL_INCIDENT_RESPONSE.md',
+  'docs/runbooks/RECONNECT_FAILURE_OPERATIONS.md',
   'docs/runbooks/LIVEKIT_E2E_EVIDENCE_CAPTURE.md',
   'docs/releases/LATEST_EVIDENCE_BUNDLE.md',
   'docs/REVIEW_MODE_CHECKLIST.md',

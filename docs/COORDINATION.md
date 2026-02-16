@@ -109,6 +109,11 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Next: Capture real LiveKit provider evidence to close final P0 #2 criterion, then finish P0 #4 reconnect chaos/runbook hardening.
 - Risks: Event contract drift is now strongly guarded in CI/tests, but real-provider transport evidence remains outstanding for phase-gate GO.
 
+## 2026-02-16T17:36:00Z — OpenClaw run note (P0 #4 reconnect hardening closure)
+- Changed: Closed P0 #4 by adding reconnect chaos/race safeguards and tests (duplicate reconnect determinism, stale checkpoint no-regression semantics with `ackUpdate`) and publishing reconnect-specific operations runbook (`docs/runbooks/RECONNECT_FAILURE_OPERATIONS.md`) with alert expectations.
+- Next: Capture and commit real LiveKit E2E evidence to close final P0 #2 criterion, then rerun phase gate HOLD→GO.
+- Risks: Without real-provider LiveKit evidence artifact, P0 gate cannot flip despite local/CI coverage being green.
+
 ## 2026-02-16T17:26:00Z — OpenClaw run note (P0 #3 closed)
 - Changed: Closed P0 #3 by adding explicit schema fixture matrix (`server/test/fixtures/realtime-event-contract.v1.json`), full contract regression test (`server/test/realtime-schema-contract.test.mjs`), and exported supported event-type set to enforce fixture coverage parity.
 - Next: Finish final P0 #2 real-provider evidence capture, then execute P0 #4 recovery hardening and rerun phase gate.

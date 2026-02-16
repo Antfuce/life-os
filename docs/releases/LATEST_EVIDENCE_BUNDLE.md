@@ -36,6 +36,9 @@
 - Realtime schema guard checks:
   - `node --test server/test/realtime-schema-contract.test.mjs`
   - fixture source: `server/test/fixtures/realtime-event-contract.v1.json`
+- Reconnect resilience checks:
+  - `node --test server/test/call-sessions.test.mjs` (duplicate reconnect determinism + stale checkpoint no-regression)
+  - runbook: `docs/runbooks/RECONNECT_FAILURE_OPERATIONS.md`
 
 ## Rollback Plan
 

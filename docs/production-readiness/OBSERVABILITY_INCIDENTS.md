@@ -28,8 +28,9 @@
 
 ## Live-call incident optimization
 
-Use runbook:
+Use runbooks:
 - [LIVE_CALL_INCIDENT_RESPONSE.md](../runbooks/LIVE_CALL_INCIDENT_RESPONSE.md)
+- [RECONNECT_FAILURE_OPERATIONS.md](../runbooks/RECONNECT_FAILURE_OPERATIONS.md)
 
 Priority order during incident:
 1. Protect active calls/reconnect path.

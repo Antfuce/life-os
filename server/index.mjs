@@ -3304,9 +3304,38 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
 
   const updatedAtMs = Date.now();
   dbCtx.upsertRealtimeCheckpoint.run(sessionId, consumerId, watermarkTs, watermarkEventId, updatedAtMs);
-  if (watermarkSequence !== null && dbCtx.getCallSessionById.get(sessionId)) {
-    dbCtx.updateCallSessionAck.run(watermarkSequence, watermarkTs, watermarkEventId, updatedAtMs, sessionId);
+
+  const sessionBeforeAck = dbCtx.getCallSessionById.get(sessionId);
+  let ackUpdate = {
+    attempted: watermarkSequence !== null,
+    applied: false,
+    ignored: false,
+    reason: null,
+  };
+
+  if (watermarkSequence !== null && sessionBeforeAck) {
+    const currentAckSequence = Number.isFinite(Number(sessionBeforeAck.lastAckSequence))
+      ? Math.max(0, Math.trunc(Number(sessionBeforeAck.lastAckSequence)))
+      : 0;
+
+    if (watermarkSequence >= currentAckSequence) {
+      dbCtx.updateCallSessionAck.run(watermarkSequence, watermarkTs, watermarkEventId, updatedAtMs, sessionId);
+      ackUpdate = {
+        attempted: true,
+        applied: true,
+        ignored: false,
+        reason: watermarkSequence === currentAckSequence ? 'equal_sequence_idempotent' : 'advanced_sequence',
+      };
+    } else {
+      ackUpdate = {
+        attempted: true,
+        applied: false,
+        ignored: true,
+        reason: 'stale_sequence_ignored',
+      };
+    }
   }
+
   const checkpoint = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
   const session = normalizeCallSessionRow(dbCtx.getCallSessionById.get(sessionId));
   return {
@@ -3321,6 +3350,7 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
           updatedAtMs: checkpoint.updatedAtMs,
         }
       : null,
+    ackUpdate,
     sessionAck: { sequence: session?.lastAckSequence || null, timestamp: session?.lastAckTimestamp || null, eventId: session?.lastAckEventId || null },
   };
 });
