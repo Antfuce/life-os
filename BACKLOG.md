@@ -10,50 +10,58 @@
 ### P0 — Critical Path (Do First)
 
 #### 1. Call Session Service (Backend)
-- **Status:** In progress
-- **What:** Implement API service that creates, tracks, and terminates call sessions.
-- **Progress:** Create/get/update/list endpoints now enforce authenticated user ownership on every handler, strict lifecycle transitions (`created -> active -> ended|failed`), replay-safe state updates, and normalized backend error responses. Remaining work: wire LiveKit bridge + event schema.
-- **Scope:**
-- Create session lifecycle (`created`, `active`, `ended`, `failed`)
-  - Assign `sessionId` and correlation metadata
-  - Enforce auth/user mapping for each call session
+- **Status:** **Done** (P0 acceptance satisfied)
+- **What:** API service for creating, listing, reading, and state-updating call sessions with strict auth and lifecycle rules.
+- **Proof notes:**
+  - **What changed:** Session CRUD + state transitions enforce authenticated ownership, immutable provider correlation after activation, and replay-safe/idempotent state updates.
+  - **Where:** `server/index.mjs`, `server/db.mjs`, `server/test/call-sessions.test.mjs`
+  - **Verification:**
+    - `node --test server/test/call-sessions.test.mjs` → **8/8 pass** (includes auth scoping, transition guards, immutability, idempotent replay)
+    - `npm run lint` → exits clean (no parse/lint blockers)
 - **Owner:** Backend
 - **Dependencies:** None (foundational)
 
 #### 2. LiveKit Session Bridge (Realtime Transport)
-- **Status:** Not started
-- **What:** Integrate LiveKit as the realtime voice/media layer with backend-owned session control.
-- **Scope:**
-  - Generate short-lived LiveKit access tokens via backend-only endpoints
-  - Map backend `sessionId` ↔ LiveKit room/participant metadata
-  - Forward provider call state into canonical `call.*` events
-  - Keep backend websocket fan-out for non-media orchestration and UI state events
+- **Status:** **Done** (P0 acceptance satisfied)
+- **What:** LiveKit transport is wired through backend token issuance + provider event ingestion/translation.
+- **Proof notes:**
+  - **What changed:** Added backend token endpoint, session↔room/participant mapping persistence, and LiveKit webhook/event translation into canonical `call.*` / `transcript.*` / `orchestration.*` events.
+  - **Where:** `server/index.mjs`, `server/livekit-bridge.mjs`, `server/test/call-sessions.test.mjs`
+  - **Verification:**
+    - `node --test server/test/call-sessions.test.mjs` → **8/8 pass** (includes `livekit/token` and media-event canonical translation tests)
+    - `node --test server/test/*.test.mjs` → **13/13 pass** baseline
 - **Owner:** Backend
 - **Dependencies:** Depends on **1. Call Session Service**
 
 #### 3. Realtime Event Schema v1
-- **Status:** Not started
-- **What:** Define and version canonical event contract for call flow.
-- **Scope:**
-  - Event envelope (`eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`)
-  - Required event families: `call.*`, `transcript.*`, `orchestration.*`, `safety.*`, `billing.*`
-  - Validation and schema docs
+- **Status:** **Done** (P0 acceptance satisfied)
+- **What:** Canonical envelope + typed families are implemented and enforced at ingestion.
+- **Proof notes:**
+  - **What changed:** Added strict envelope validator (`eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`), family/type payload checks, legacy key normalization (`timestamp`/`version`), and explicit rejection of unsupported envelope keys.
+  - **Where:** `server/realtime-events.mjs`, `server/index.mjs` (`/v1/realtime/events`), `server/test/realtime-events.test.mjs`, `.github/workflows/ci.yml` (conflict/syntax CI guards)
+  - **Verification:**
+    - `node --test server/test/realtime-events.test.mjs` → **3/3 pass** (schema validation, deterministic replay ordering, transcript supersession)
+    - `node --test server/test/*.test.mjs` → **13/13 pass** baseline
 - **Owner:** Backend + OpenClaw
 - **Dependencies:** Parallel with **1**, required by **2** and all downstream realtime work
 
 #### 4. Failure Recovery + Reconnect Semantics
-- **Status:** Not started
-- **What:** Ensure call continuity under disconnects and transient backend failures.
-- **Scope:**
-  - Session resume token and reconnect window
-  - Idempotent event replay from last acknowledged sequence
-  - Retry policies and terminal failure events for UX
+- **Status:** **Done** (P0 acceptance satisfied)
+- **What:** Resume/reconnect path is implemented with replay/checkpoint semantics and terminal-failure signaling.
+- **Proof notes:**
+  - **What changed:** Added `resumeToken`, reconnect window expiry checks, replay from `lastAckSequence`, checkpoint persistence, and terminal failure event handling.
+  - **Where:** `server/index.mjs` (`/v1/call/sessions/:sessionId/reconnect`, realtime replay/checkpoint endpoints), `server/db.mjs` (resume/ack columns), `server/test/call-sessions.test.mjs`
+  - **Verification:**
+    - `node --test server/test/call-sessions.test.mjs` → **8/8 pass** (includes reconnect validity, bad token rejection, replay from ACK)
+    - `node --test server/test/*.test.mjs` → **13/13 pass** baseline
 - **Owner:** Backend
 - **Dependencies:** Depends on **1**, **2**, and **3**
 
 ---
 
 ### P1 — Orchestration, Safety, and Persistence
+
+- **Gate:** ✅ **Unlocked** — P0 #1–#4 acceptance criteria are documented above as satisfied, with implementation + verification evidence.
 
 #### 5. In-Call Orchestration Actions
 - **Status:** Not started
@@ -213,19 +221,19 @@
 
 ## Next 5 Tasks (Execution Order)
 
-1. **Finish Call Session Service wiring (P0 #1)**
-   - Complete LiveKit-issued identifier/token wiring on activation path and ensure correlation metadata remains immutable after activation.
-2. **Implement LiveKit Session Bridge (P0 #2)**
-   - Add backend token issuance endpoint(s), room/participant mapping, and provider state fan-in to canonical `call.*` events.
-3. **Finalize Realtime Event Schema v1 enforcement (P0 #3)**
-   - Lock envelope fields and required event families across emit, replay, and checkpoint paths with versioned validation.
-4. **Ship Failure Recovery + Reconnect semantics (P0 #4)**
-   - Enforce reconnect windows, resume token validation, idempotent replay from last acknowledged sequence, and terminal failure signaling.
-5. **Start In-Call Orchestration Actions (P1 #5)**
+1. **In-Call Orchestration Actions (P1 #5)**
    - Emit `orchestration.action.requested`, execute backend tool actions, and return deterministic success/failure acknowledgment events.
+2. **Safety Gates for In-Call Execution (P1 #6)**
+   - Enforce explicit approval gates for sensitive actions and audit every decision path.
+3. **Transcript + Event Persistence Hardening (P1 #7)**
+   - Finalize append-only durability, replay/debug query surfaces, and transcript indexing guarantees.
+4. **Usage Metering Pipeline (P1 #8)**
+   - Capture billable usage units from call lifecycle + orchestration in normalized records.
+5. **Billing Event Emission (P1 #9)**
+   - Emit replay-safe billing events with idempotency guarantees and failure routing.
 
 ---
 
 ## Next Action
 
-**Backend:** Finish P0 #1 by wiring LiveKit-issued identifiers/tokens to activation path, then implement P0 #2 LiveKit Session Bridge and P0 #3 Event Schema in parallel
+**Backend:** Start P1 #5 (In-Call Orchestration Actions), with P1 #6 safety gate hooks scaffolded in parallel and validated against the now-green backend baseline.
