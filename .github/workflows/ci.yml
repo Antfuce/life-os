@@ -2,12 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main, master, develop]
+    branches: [main, master, develop, prod]
   pull_request:
-    branches: [main, master, develop]
+    branches: [main, master, develop, prod]
 
 jobs:
-  lint-and-build:
+  lint-test-build:
     runs-on: ubuntu-latest
 
     strategy:
@@ -24,6 +24,36 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
+      - name: Guard - fail on conflict markers and merge artifact labels
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking tracked files for conflict markers..."
+          if git ls-files -z | xargs -0 grep -nE '^(<<<<<<<|=======|>>>>>>>)' > /tmp/conflict-markers.txt; then
+            echo "Conflict markers detected:"
+            cat /tmp/conflict-markers.txt
+            exit 1
+          fi
+
+          echo "Checking backend/test files for stray branch-label artifacts..."
+          backend_files=$(git ls-files | grep '^server/' || true)
+          if [ -n "$backend_files" ]; then
+            if echo "$backend_files" | xargs grep -nE '^[[:space:]]*(codex/[A-Za-z0-9._/-]+|prod)[[:space:]]*$' > /tmp/backend-merge-artifacts.txt; then
+              echo "Merge artifact label lines detected in backend files:"
+              cat /tmp/backend-merge-artifacts.txt
+              exit 1
+            fi
+          fi
+
+      - name: Guard - backend syntax check
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            node --check "$file"
+          done < <(find server \( -path 'server/node_modules' -o -path 'server/node_modules/*' \) -prune -o -type f \( -name '*.mjs' -o -name '*.js' \) -print0)
+
       - name: Install dependencies
         run: npm ci
 
@@ -33,12 +63,15 @@ jobs:
       - name: Run typecheck
         run: npm run typecheck
 
+      - name: Run backend tests
+        run: node --test server/test/*.test.mjs
+
       - name: Build project
         run: npm run build
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
-        if: matrix.node-version == '20.x' && github.ref == 'refs/heads/main'
+        if: matrix.node-version == '20.x' && github.ref == 'refs/heads/prod'
         with:
           name: dist
           path: dist/

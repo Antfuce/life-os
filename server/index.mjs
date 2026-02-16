@@ -1085,7 +1085,35 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
 
 
 fastify.post('/v1/realtime/events', async (req, reply) => {
-  const body = normalizeIncomingRealtimeEvent(req.body || {});
+  const rawBody = req.body || {};
+  const allowedIncomingKeys = new Set([
+    'eventId',
+    'sessionId',
+    'ts',
+    'timestamp',
+    'type',
+    'payload',
+    'schemaVersion',
+    'version',
+    'actor',
+  ]);
+
+  const unsupportedIncomingKeys = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody)
+    ? Object.keys(rawBody).filter((key) => !allowedIncomingKeys.has(key))
+    : [];
+
+  if (unsupportedIncomingKeys.length > 0) {
+    return sendError(
+      req,
+      reply,
+      400,
+      'INVALID_REALTIME_EVENT',
+      `REALTIME_EVENT_VALIDATION_FAILED:unsupported envelope key(s): ${unsupportedIncomingKeys.join(',')}`,
+      false,
+    );
+  }
+
+  const body = normalizeIncomingRealtimeEvent(rawBody);
   const event = createRealtimeEvent({
     sessionId: body?.sessionId !== undefined ? String(body.sessionId) : '',
     type: body?.type !== undefined ? String(body.type) : '',
