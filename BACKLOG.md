@@ -22,46 +22,69 @@
 - **Dependencies:** None (foundational)
 
 #### 2. LiveKit Session Bridge (Realtime Transport)
-- **Status:** **Done** (P0 acceptance satisfied)
-- **What:** LiveKit transport is wired through backend token issuance + provider event ingestion/translation.
-- **Proof notes:**
-  - **What changed:** Added backend token endpoint, session↔room/participant mapping persistence, and LiveKit webhook/event translation into canonical `call.*` / `transcript.*` / `orchestration.*` events.
-  - **Where:** `server/index.mjs`, `server/livekit-bridge.mjs`, `server/test/call-sessions.test.mjs`
-  - **Verification:**
-    - `node --test server/test/call-sessions.test.mjs` → **8/8 pass** (includes `livekit/token` and media-event canonical translation tests)
-    - `node --test server/test/*.test.mjs` → **13/13 pass** baseline
+- **Status:** **Partially implemented**
+- **What:** Wire LiveKit transport through backend token issuance + provider event ingestion/translation.
+- **Current status:** Token issuance, session↔room mapping persistence, and canonical event translation are in place.
+- **Acceptance criteria:**
+  - [x] Backend issues short-lived LiveKit access token tied to session/user mapping.
+  - [x] Inbound provider events translate into canonical `call.*` / `transcript.*` / `orchestration.*` families.
+  - [ ] End-to-end provider integration check against live LiveKit environment (room join/publish/subscribe roundtrip) is captured as repeatable evidence.
+  - [ ] Inbound provider event authenticity/replay protection is enforced and tested (signature verification + replay guard).
+- **Implementation:** `server/index.mjs`, `server/livekit-bridge.mjs`, `server/test/call-sessions.test.mjs`
+- **Verification (current):**
+  - `node --test server/test/call-sessions.test.mjs` (token + translation coverage)
 - **Owner:** Backend
 - **Dependencies:** Depends on **1. Call Session Service**
 
 #### 3. Realtime Event Schema v1
-- **Status:** **Done** (P0 acceptance satisfied)
-- **What:** Canonical envelope + typed families are implemented and enforced at ingestion.
-- **Proof notes:**
-  - **What changed:** Added strict envelope validator (`eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`), family/type payload checks, legacy key normalization (`timestamp`/`version`), and explicit rejection of unsupported envelope keys.
-  - **Where:** `server/realtime-events.mjs`, `server/index.mjs` (`/v1/realtime/events`), `server/test/realtime-events.test.mjs`, `.github/workflows/ci.yml` (conflict/syntax CI guards)
-  - **Verification:**
-    - `node --test server/test/realtime-events.test.mjs` → **3/3 pass** (schema validation, deterministic replay ordering, transcript supersession)
-    - `node --test server/test/*.test.mjs` → **13/13 pass** baseline
+- **Status:** **Partially implemented**
+- **What:** Enforce canonical realtime envelope + typed event families.
+- **Current status:** Core envelope validation and canonical replay semantics are enforced at ingest; new billing/event-family expansion is partially covered.
+- **Acceptance criteria:**
+  - [x] Canonical envelope (`eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`) is validated at ingest.
+  - [x] Legacy key normalization (`timestamp`/`version`) and unsupported-envelope-key rejection are enforced.
+  - [x] Deterministic replay ordering and transcript supersession behavior are covered by tests.
+  - [ ] Full payload-contract coverage across all emitted families (including newly added billing/dead-letter paths) is documented and test-locked with schema fixtures.
+  - [ ] Contract regression guard exists for newly introduced event types before prod push (beyond endpoint-level assertions).
+- **Implementation:** `server/realtime-events.mjs`, `server/index.mjs` (`/v1/realtime/events` + replay/event routes), `server/test/realtime-events.test.mjs`, `.github/workflows/ci.yml`
+- **Verification (current):**
+  - `node --test server/test/realtime-events.test.mjs`
 - **Owner:** Backend + OpenClaw
 - **Dependencies:** Parallel with **1**, required by **2** and all downstream realtime work
 
 #### 4. Failure Recovery + Reconnect Semantics
-- **Status:** **Done** (P0 acceptance satisfied)
-- **What:** Resume/reconnect path is implemented with replay/checkpoint semantics and terminal-failure signaling.
-- **Proof notes:**
-  - **What changed:** Added `resumeToken`, reconnect window expiry checks, replay from `lastAckSequence`, checkpoint persistence, and terminal failure event handling.
-  - **Where:** `server/index.mjs` (`/v1/call/sessions/:sessionId/reconnect`, realtime replay/checkpoint endpoints), `server/db.mjs` (resume/ack columns), `server/test/call-sessions.test.mjs`
-  - **Verification:**
-    - `node --test server/test/call-sessions.test.mjs` → **8/8 pass** (includes reconnect validity, bad token rejection, replay from ACK)
-    - `node --test server/test/*.test.mjs` → **13/13 pass** baseline
+- **Status:** **Partially implemented**
+- **What:** Provide resilient resume/reconnect behavior with replay/checkpoint semantics and terminal-failure signaling.
+- **Current status:** Resume token checks, replay-from-ack, and checkpoint persistence are implemented; resilience hardening is not fully closed.
+- **Acceptance criteria:**
+  - [x] Reconnect requires valid `resumeToken` and enforces reconnect window expiry.
+  - [x] Replay starts from acknowledged sequence/checkpoint and is deterministic.
+  - [x] Terminal session failure emits canonical failure event path.
+  - [ ] Concurrency/chaos reconnect tests cover duplicate reconnect attempts, ack races, and late checkpoints.
+  - [ ] Operational runbook + alerting expectations for reconnect failure modes are documented.
+- **Implementation:** `server/index.mjs` (`/v1/call/sessions/:sessionId/reconnect`, realtime replay/checkpoint endpoints), `server/db.mjs` (resume/ack columns), `server/test/call-sessions.test.mjs`
+- **Verification (current):**
+  - `node --test server/test/call-sessions.test.mjs`
 - **Owner:** Backend
 - **Dependencies:** Depends on **1**, **2**, and **3**
+
+#### P0 Phase-Gate Checklist (Mandatory before P1 continuation)
+- **Checklist status:** ✅ Completed (governance pass executed)
+- **Gate decision:** 🚧 **HOLD** until remaining P0 acceptance criteria in #2/#3/#4 are closed.
+
+- [x] Repo hygiene sweep completed on backend code/tests (`server/**/*.mjs`, `server/test/**/*.mjs`) for merge markers and branch-label debris.
+- [x] Hygiene verification commands executed (`grep` scans for `<<<<<<<`, `=======`, `>>>>>>>`, and stray branch-label lines) with no findings in backend sources/tests.
+- [x] Docs alignment completed: P0 #2/#3/#4 statuses reconciled to partially implemented with explicit acceptance criteria and current-state notes.
+- [x] Cross-agent audit log restored: latest production pushes and this stabilization pass documented in `docs/COORDINATION.md` using changed / next / risks format.
+- [x] Stabilization sign-off recorded by execution owner (OpenClaw run note + baseline checks).
+
+**Feature freeze rule:** Until this gate is flipped from **HOLD** to **GO**, only stabilization/closure work for P0 acceptance criteria is allowed; no net-new P1 feature scope.
 
 ---
 
 ### P1 — Orchestration, Safety, and Persistence
 
-- **Gate:** ✅ **GO** (2026-02-16) — P0 #1–#4 acceptance criteria are documented as satisfied; reviewer decision is **go** for P1 kickoff.
+- **Gate:** 🚧 **HOLD** (2026-02-16 stabilization pass) — P0 #2/#3/#4 are now explicitly tracked as partial; no additional P1 feature expansion until the formal P0 phase-gate checklist above stays green and unresolved acceptance criteria are closed.
 
 #### 5. In-Call Orchestration Actions
 - **Status:** **In progress**
@@ -226,19 +249,19 @@
 
 ## Next 5 Tasks (Execution Order)
 
-1. **Hourly Charging Reconciliation (P2 #10)**
-   - Add reconciliation windowing, mismatch reporting, and alert hooks.
-2. **In-call action idempotency hardening (P1 #5 remainder)**
-   - Deterministic behavior for repeated successful retries and richer executor outcomes.
-3. **Safety token workflow (P1 #6 remainder)**
-   - Replace boolean confirmation with explicit tokenized approval lifecycle.
-4. **MVP hardening gates (operational)**
-   - Stable origin/tunnel, limits/rate controls, observability, and failure UX baseline.
-5. **Recruitment outcomes closure loop**
-   - Close CV/interview/outreach outcome loop on top of live orchestration.
+1. **Close P0 #2 remaining acceptance criteria (LiveKit bridge hardening)**
+   - Add provider event authenticity/replay protection and capture repeatable live-integration evidence.
+2. **Close P0 #3 remaining acceptance criteria (schema contract hardening)**
+   - Add full event-family payload contract fixtures/regression guards for new billing/dead-letter event paths.
+3. **Close P0 #4 remaining acceptance criteria (recovery hardening)**
+   - Add reconnect race/chaos tests + operational runbook/alerts for reconnect failure modes.
+4. **Re-run P0 phase gate and flip HOLD→GO**
+   - Require hygiene, docs, and evidence checklist to stay green before reopening P1 expansion.
+5. **Resume P1 remainder only after GO**
+   - Continue #5/#6 remainder once P0 gate is explicitly re-approved.
 
 ---
 
 ## Next Action
 
-**Backend:** Start P2 #10 hourly reconciliation scaffolding (windowing + mismatch report schema + alert hook contract).
+**Backend stabilization:** implement P0 #2 authenticity/replay protection for inbound LiveKit events and attach repeatable integration evidence to clear the first remaining P0 gate item.

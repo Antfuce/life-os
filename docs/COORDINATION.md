@@ -48,3 +48,18 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Completed P1 #8/#9 with signed metering records, account-level usage summaries, `billing.adjustment.created` emission, and billing dead-letter routing (`billing_dead_letter`) plus retrieval APIs.
 - Next: Start P2 #10 hourly reconciliation scaffolding (windowing + mismatch report contract + alert hooks).
 - Risks: Reconciliation logic is not yet active; billing correctness still depends on downstream consumers until P2 #10 closes.
+
+## 2026-02-16T14:35:00Z — OpenClaw run note (prod push `cb9685f`)
+- Changed: P1 #8/#9 foundation push landed (`usage_meter_record`, `billing_usage_event`, session billing query APIs) with idempotent usage emission from canonical source events.
+- Next: Extend to signed records + account aggregation + adjustment/dead-letter pipeline.
+- Risks: Session-scoped-only usage at this point was not yet settlement-grade without account normalization/signing.
+
+## 2026-02-16T14:41:00Z — OpenClaw run note (prod push `4afc623`)
+- Changed: Landed signed meter records, account usage summary endpoint, `billing.adjustment.created`, and dead-letter routing/retrieval.
+- Next: Shift to stabilization/governance pass before additional feature expansion.
+- Risks: Documentation/gate drift risk if P0 closure assumptions remain overstated.
+
+## 2026-02-16T14:54:00Z — OpenClaw stabilization pass (governance reset)
+- Changed: Completed backend hygiene sweep (merge-marker/branch-label debris scan), reconciled `BACKLOG.md` P0 #2/#3/#4 from "done" to partial with explicit acceptance criteria, and added formal P0 phase-gate checklist with HOLD decision before further P1 scope.
+- Next: Close outstanding P0 acceptance items (#2 authenticity/replay protection, #3 payload-contract guard, #4 reconnect hardening), then rerun and flip phase gate HOLD→GO.
+- Risks: If P1 expansion resumes before clearing P0 checklist criteria, regression and auditability risk increases despite green unit-test snapshots.
