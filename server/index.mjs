@@ -296,11 +296,13 @@ const dbCtx = await initDb(process.env.LIFE_OS_DB);
 
 const DEFAULT_RECONNECT_WINDOW_MS = 2 * 60 * 1000;
 const DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST = 2000;
+const DEFAULT_RECONCILIATION_LOOKBACK_HOURS = 1;
+const DEFAULT_RECONCILIATION_LATENESS_MS = 5 * 60 * 1000;
 
 fastify.get('/health', async () => ({ 
   ok: true, 
   contract: 'v1.0',
-  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark', 'usage-metering', 'billing-events', 'dead-letter-routing']
+  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark', 'usage-metering', 'billing-events', 'dead-letter-routing', 'billing-reconciliation-scaffold']
 }));
 
 fastify.get('/', async () => ({
@@ -324,6 +326,9 @@ fastify.get('/', async () => ({
     listBillingUsageEvents: '/v1/billing/sessions/:sessionId/events (GET)',
     listBillingDeadLetters: '/v1/billing/sessions/:sessionId/dead-letters (GET)',
     summarizeBillingAccountUsage: '/v1/billing/accounts/:accountId/usage-summary (GET)',
+    listBillingReconciliationRuns: '/v1/billing/accounts/:accountId/reconciliation/runs (GET)',
+    runBillingReconciliation: '/v1/billing/reconciliation/run (POST json)',
+    getBillingReconciliationRun: '/v1/billing/reconciliation/runs/:runId (GET)',
     createBillingAdjustment: '/v1/billing/adjustments (POST json)',
     executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
     actionDecision: '/v1/actions/decision (POST json)',
@@ -690,6 +695,60 @@ function normalizeBillingDeadLetterRow(row) {
   };
 }
 
+function parseStoredJsonArray(rawJson) {
+  if (!rawJson || typeof rawJson !== 'string') return [];
+  try {
+    const parsed = JSON.parse(rawJson);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeBillingReconciliationRunRow(row) {
+  return {
+    runId: row.runId,
+    accountId: row.accountId,
+    windowStartMs: Number(row.windowStartMs || 0),
+    windowEndMs: Number(row.windowEndMs || 0),
+    expectedSummary: parseStoredJsonArray(row.expectedSummaryJson),
+    actualSummary: parseStoredJsonArray(row.actualSummaryJson),
+    mismatchCount: Number(row.mismatchCount || 0),
+    status: row.status,
+    alertDispatched: Number(row.alertDispatched || 0) > 0,
+    metadata: parseStoredMetadata(row.metadataJson),
+    createdAtMs: Number(row.createdAtMs || 0),
+  };
+}
+
+function normalizeBillingReconciliationMismatchRow(row) {
+  return {
+    mismatchId: row.mismatchId,
+    runId: row.runId,
+    accountId: row.accountId,
+    meterId: row.meterId,
+    unit: row.unit,
+    expectedQuantity: Number(row.expectedQuantity || 0),
+    actualQuantity: Number(row.actualQuantity || 0),
+    deltaQuantity: Number(row.deltaQuantity || 0),
+    severity: row.severity,
+    payload: parseStoredMetadata(row.payloadJson),
+    createdAtMs: Number(row.createdAtMs || 0),
+  };
+}
+
+function normalizeBillingReconciliationAlertRow(row) {
+  return {
+    alertId: row.alertId,
+    runId: row.runId,
+    accountId: row.accountId,
+    status: row.status,
+    channel: row.channel,
+    payload: parseStoredMetadata(row.payloadJson),
+    createdAtMs: Number(row.createdAtMs || 0),
+  };
+}
+
 function buildBillingUsagePayload({ usageRecordId, accountId, meterId, unit, quantity, sourceEventId, signature, signatureVersion }) {
   const payload = {
     usageRecordId,
@@ -858,6 +917,216 @@ function recordUsageAndEmitBillingEvent({ accountId, sessionId, meterId, unit, q
     deadLetterId: emit.deadLetterId || null,
     usageRecordId: recordId,
     billingEventId,
+  };
+}
+
+function parseReconciliationWindowInput(body = {}, nowMs = Date.now()) {
+  const explicitStart = Number(body.windowStartMs);
+  const explicitEnd = Number(body.windowEndMs);
+  if (Number.isFinite(explicitStart) && Number.isFinite(explicitEnd)) {
+    const windowStartMs = Math.max(0, Math.trunc(explicitStart));
+    const windowEndMs = Math.max(0, Math.trunc(explicitEnd));
+    if (windowEndMs <= windowStartMs) {
+      return { ok: false, code: 'INVALID_RECONCILIATION_WINDOW', message: 'windowEndMs must be greater than windowStartMs' };
+    }
+    return {
+      ok: true,
+      windowStartMs,
+      windowEndMs,
+      lookbackHours: null,
+      latenessMs: null,
+      mode: 'explicit',
+    };
+  }
+
+  const lookbackHoursRaw = Number(body.lookbackHours);
+  const latenessMsRaw = Number(body.latenessMs);
+  const lookbackHours = Number.isFinite(lookbackHoursRaw)
+    ? Math.max(1, Math.min(168, Math.trunc(lookbackHoursRaw)))
+    : DEFAULT_RECONCILIATION_LOOKBACK_HOURS;
+  const latenessMs = Number.isFinite(latenessMsRaw)
+    ? Math.max(0, Math.min(24 * 60 * 60 * 1000, Math.trunc(latenessMsRaw)))
+    : DEFAULT_RECONCILIATION_LATENESS_MS;
+
+  const windowEndMs = Math.max(0, nowMs - latenessMs);
+  const windowStartMs = Math.max(0, windowEndMs - (lookbackHours * 60 * 60 * 1000));
+  if (windowEndMs <= windowStartMs) {
+    return { ok: false, code: 'INVALID_RECONCILIATION_WINDOW', message: 'computed reconciliation window is empty' };
+  }
+
+  return {
+    ok: true,
+    windowStartMs,
+    windowEndMs,
+    lookbackHours,
+    latenessMs,
+    mode: 'derived',
+  };
+}
+
+function summarizeRowsToMap(rows) {
+  const summary = [];
+  const map = new Map();
+
+  for (const row of rows || []) {
+    const meterId = String(row.meterId || '').trim();
+    const unit = String(row.unit || '').trim();
+    if (!meterId || !unit) continue;
+
+    const totalQuantity = Number.isFinite(Number(row.totalQuantity)) ? Math.trunc(Number(row.totalQuantity)) : 0;
+    const recordsCount = Number.isFinite(Number(row.recordsCount)) ? Math.max(0, Math.trunc(Number(row.recordsCount))) : 0;
+    const key = `${meterId}::${unit}`;
+
+    const normalized = { meterId, unit, totalQuantity, recordsCount };
+    map.set(key, normalized);
+    summary.push(normalized);
+  }
+
+  return { summary, map };
+}
+
+function runBillingReconciliationScaffold({ accountId, windowStartMs, windowEndMs, initiatedBy, reason, metadata = {} }) {
+  const expectedRows = dbCtx.summarizeUsageByAccountWindow.all(accountId, windowStartMs, windowEndMs);
+  const actualRows = dbCtx.summarizeBillingByAccountWindow.all(accountId, windowStartMs, windowEndMs);
+
+  const expected = summarizeRowsToMap(expectedRows);
+  const actual = summarizeRowsToMap(actualRows);
+  const allKeys = new Set([...expected.map.keys(), ...actual.map.keys()]);
+
+  const createdAtMs = Date.now();
+  const runId = `recon_${stableId(accountId, windowStartMs, windowEndMs, createdAtMs).slice(0, 20)}`;
+
+  const mismatches = [];
+  for (const key of allKeys) {
+    const expectedRow = expected.map.get(key) || null;
+    const actualRow = actual.map.get(key) || null;
+    const meterId = expectedRow?.meterId || actualRow?.meterId || 'unknown';
+    const unit = expectedRow?.unit || actualRow?.unit || 'unknown';
+    const expectedQuantity = Number(expectedRow?.totalQuantity || 0);
+    const actualQuantity = Number(actualRow?.totalQuantity || 0);
+    const deltaQuantity = actualQuantity - expectedQuantity;
+
+    if (deltaQuantity === 0) continue;
+
+    const severity = deltaQuantity > 0 ? 'over_charge' : 'under_charge';
+    const mismatchId = `reconmm_${stableId(runId, meterId, unit).slice(0, 20)}`;
+    const payload = {
+      runId,
+      meterId,
+      unit,
+      expectedQuantity,
+      actualQuantity,
+      deltaQuantity,
+      severity,
+      expectedRecordsCount: Number(expectedRow?.recordsCount || 0),
+      actualRecordsCount: Number(actualRow?.recordsCount || 0),
+    };
+
+    dbCtx.insertBillingReconciliationMismatch.run(
+      mismatchId,
+      runId,
+      accountId,
+      meterId,
+      unit,
+      expectedQuantity,
+      actualQuantity,
+      deltaQuantity,
+      severity,
+      JSON.stringify(payload),
+      createdAtMs,
+    );
+
+    mismatches.push({
+      mismatchId,
+      runId,
+      accountId,
+      meterId,
+      unit,
+      expectedQuantity,
+      actualQuantity,
+      deltaQuantity,
+      severity,
+      payload,
+      createdAtMs,
+    });
+  }
+
+  const mismatchCount = mismatches.length;
+  const status = mismatchCount > 0 ? 'mismatch' : 'ok';
+
+  let alert = null;
+  if (mismatchCount > 0) {
+    const alertId = `reconal_${stableId(runId, accountId, mismatchCount).slice(0, 20)}`;
+    const payload = {
+      runId,
+      accountId,
+      mismatchCount,
+      windowStartMs,
+      windowEndMs,
+      reason: reason || null,
+      initiatedBy,
+      channel: 'hook.billing.reconciliation.v1',
+    };
+
+    dbCtx.insertBillingReconciliationAlert.run(
+      alertId,
+      runId,
+      accountId,
+      'pending',
+      'hook.billing.reconciliation.v1',
+      JSON.stringify(payload),
+      createdAtMs,
+    );
+
+    alert = {
+      alertId,
+      runId,
+      accountId,
+      status: 'pending',
+      channel: 'hook.billing.reconciliation.v1',
+      payload,
+      createdAtMs,
+    };
+  }
+
+  dbCtx.insertBillingReconciliationRun.run(
+    runId,
+    accountId,
+    windowStartMs,
+    windowEndMs,
+    JSON.stringify(expected.summary),
+    JSON.stringify(actual.summary),
+    mismatchCount,
+    status,
+    alert ? 1 : 0,
+    JSON.stringify({
+      initiatedBy,
+      reason: reason || null,
+      ...metadata,
+    }),
+    createdAtMs,
+  );
+
+  return {
+    run: {
+      runId,
+      accountId,
+      windowStartMs,
+      windowEndMs,
+      expectedSummary: expected.summary,
+      actualSummary: actual.summary,
+      mismatchCount,
+      status,
+      alertDispatched: Boolean(alert),
+      metadata: {
+        initiatedBy,
+        reason: reason || null,
+        ...metadata,
+      },
+      createdAtMs,
+    },
+    mismatches,
+    alert,
   };
 }
 
@@ -1805,6 +2074,117 @@ fastify.post('/v1/billing/adjustments', async (req, reply) => {
     published: emit.published,
     deduped: emit.deduped,
     deadLetterId: emit.deadLetterId,
+  };
+});
+
+fastify.post('/v1/billing/reconciliation/run', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const accountId = String(body.accountId || auth.userId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+  if (accountId !== auth.userId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const window = parseReconciliationWindowInput(body);
+  if (!window.ok) {
+    return sendError(req, reply, 400, window.code || 'INVALID_REQUEST', window.message || 'invalid reconciliation window', false);
+  }
+
+  const reason = body.reason ? String(body.reason) : null;
+  const reconciliation = runBillingReconciliationScaffold({
+    accountId,
+    windowStartMs: window.windowStartMs,
+    windowEndMs: window.windowEndMs,
+    initiatedBy: auth.userId,
+    reason,
+    metadata: {
+      mode: window.mode,
+      lookbackHours: window.lookbackHours,
+      latenessMs: window.latenessMs,
+    },
+  });
+
+  return {
+    ok: true,
+    accountId,
+    window: {
+      startMs: window.windowStartMs,
+      endMs: window.windowEndMs,
+      mode: window.mode,
+      lookbackHours: window.lookbackHours,
+      latenessMs: window.latenessMs,
+    },
+    run: reconciliation.run,
+    mismatches: reconciliation.mismatches,
+    alert: reconciliation.alert,
+  };
+});
+
+fastify.get('/v1/billing/accounts/:accountId/reconciliation/runs', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 100;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.trunc(limitRaw))) : 100;
+
+  const runs = dbCtx.listBillingReconciliationRunsByAccount
+    .all(accountId, limit)
+    .map(normalizeBillingReconciliationRunRow);
+
+  const alerts = dbCtx.listBillingReconciliationAlertsByAccount
+    .all(accountId, limit)
+    .map(normalizeBillingReconciliationAlertRow);
+
+  return {
+    ok: true,
+    accountId,
+    count: runs.length,
+    runs,
+    alerts,
+  };
+});
+
+fastify.get('/v1/billing/reconciliation/runs/:runId', async (req, reply) => {
+  const runId = String(req.params?.runId || '').trim();
+  if (!runId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'runId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const runRow = dbCtx.getBillingReconciliationRunById.get(runId);
+  if (!runRow) return sendError(req, reply, 404, 'RECONCILIATION_RUN_NOT_FOUND', 'Reconciliation run not found', false);
+  if (runRow.accountId !== auth.userId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'Run does not belong to authenticated account', false);
+  }
+
+  const mismatchLimitRaw = req.query?.mismatchLimit !== undefined ? Number(req.query.mismatchLimit) : 1000;
+  const mismatchLimit = Number.isFinite(mismatchLimitRaw)
+    ? Math.max(1, Math.min(10_000, Math.trunc(mismatchLimitRaw)))
+    : 1000;
+
+  const run = normalizeBillingReconciliationRunRow(runRow);
+  const mismatches = dbCtx.listBillingReconciliationMismatchesByRun
+    .all(runId, mismatchLimit)
+    .map(normalizeBillingReconciliationMismatchRow);
+  const alerts = dbCtx.listBillingReconciliationAlertsByRun
+    .all(runId, mismatchLimit)
+    .map(normalizeBillingReconciliationAlertRow);
+
+  return {
+    ok: true,
+    run,
+    mismatchCount: mismatches.length,
+    mismatches,
+    alerts,
   };
 });
 

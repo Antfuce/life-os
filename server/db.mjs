@@ -144,6 +144,44 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       createdAtMs INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS billing_reconciliation_run (
+      runId TEXT PRIMARY KEY,
+      accountId TEXT NOT NULL,
+      windowStartMs INTEGER NOT NULL,
+      windowEndMs INTEGER NOT NULL,
+      expectedSummaryJson TEXT NOT NULL,
+      actualSummaryJson TEXT NOT NULL,
+      mismatchCount INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      alertDispatched INTEGER NOT NULL,
+      metadataJson TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS billing_reconciliation_mismatch (
+      mismatchId TEXT PRIMARY KEY,
+      runId TEXT NOT NULL,
+      accountId TEXT NOT NULL,
+      meterId TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      expectedQuantity INTEGER NOT NULL,
+      actualQuantity INTEGER NOT NULL,
+      deltaQuantity INTEGER NOT NULL,
+      severity TEXT NOT NULL,
+      payloadJson TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS billing_reconciliation_alert (
+      alertId TEXT PRIMARY KEY,
+      runId TEXT NOT NULL,
+      accountId TEXT NOT NULL,
+      status TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      payloadJson TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
@@ -159,6 +197,10 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     CREATE INDEX IF NOT EXISTS idx_billing_usage_event_account_created ON billing_usage_event(accountId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_billing_dead_letter_session_created ON billing_dead_letter(sessionId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_billing_dead_letter_account_created ON billing_dead_letter(accountId, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_run_account_created ON billing_reconciliation_run(accountId, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_mismatch_run ON billing_reconciliation_mismatch(runId, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_run ON billing_reconciliation_alert(runId, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_account ON billing_reconciliation_alert(accountId, createdAtMs);
   `);
 
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
@@ -352,6 +394,78 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       LIMIT ?`
   );
 
+  const summarizeUsageByAccountWindow = db.prepare(
+    `SELECT meterId, unit, COALESCE(SUM(quantity), 0) AS totalQuantity, COUNT(*) AS recordsCount
+      FROM usage_meter_record
+      WHERE accountId = ?
+        AND createdAtMs >= ?
+        AND createdAtMs < ?
+      GROUP BY meterId, unit
+      ORDER BY meterId ASC, unit ASC`
+  );
+
+  const summarizeBillingByAccountWindow = db.prepare(
+    `SELECT meterId, unit, COALESCE(SUM(quantity), 0) AS totalQuantity, COUNT(*) AS recordsCount
+      FROM billing_usage_event
+      WHERE accountId = ?
+        AND createdAtMs >= ?
+        AND createdAtMs < ?
+      GROUP BY meterId, unit
+      ORDER BY meterId ASC, unit ASC`
+  );
+
+  const insertBillingReconciliationRun = db.prepare(
+    `INSERT OR IGNORE INTO billing_reconciliation_run (
+      runId, accountId, windowStartMs, windowEndMs, expectedSummaryJson,
+      actualSummaryJson, mismatchCount, status, alertDispatched, metadataJson, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const getBillingReconciliationRunById = db.prepare(
+    `SELECT * FROM billing_reconciliation_run WHERE runId = ?`
+  );
+
+  const listBillingReconciliationRunsByAccount = db.prepare(
+    `SELECT * FROM billing_reconciliation_run
+      WHERE accountId = ?
+      ORDER BY createdAtMs DESC
+      LIMIT ?`
+  );
+
+  const insertBillingReconciliationMismatch = db.prepare(
+    `INSERT OR IGNORE INTO billing_reconciliation_mismatch (
+      mismatchId, runId, accountId, meterId, unit, expectedQuantity,
+      actualQuantity, deltaQuantity, severity, payloadJson, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const listBillingReconciliationMismatchesByRun = db.prepare(
+    `SELECT * FROM billing_reconciliation_mismatch
+      WHERE runId = ?
+      ORDER BY createdAtMs ASC
+      LIMIT ?`
+  );
+
+  const insertBillingReconciliationAlert = db.prepare(
+    `INSERT OR IGNORE INTO billing_reconciliation_alert (
+      alertId, runId, accountId, status, channel, payloadJson, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const listBillingReconciliationAlertsByRun = db.prepare(
+    `SELECT * FROM billing_reconciliation_alert
+      WHERE runId = ?
+      ORDER BY createdAtMs ASC
+      LIMIT ?`
+  );
+
+  const listBillingReconciliationAlertsByAccount = db.prepare(
+    `SELECT * FROM billing_reconciliation_alert
+      WHERE accountId = ?
+      ORDER BY createdAtMs DESC
+      LIMIT ?`
+  );
+
   const getTranscriptSnapshotStatsBySession = db.prepare(
     `SELECT
       COUNT(*) AS count,
@@ -455,6 +569,16 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     insertBillingDeadLetter,
     listBillingDeadLettersBySession,
     listBillingDeadLettersByAccount,
+    summarizeUsageByAccountWindow,
+    summarizeBillingByAccountWindow,
+    insertBillingReconciliationRun,
+    getBillingReconciliationRunById,
+    listBillingReconciliationRunsByAccount,
+    insertBillingReconciliationMismatch,
+    listBillingReconciliationMismatchesByRun,
+    insertBillingReconciliationAlert,
+    listBillingReconciliationAlertsByRun,
+    listBillingReconciliationAlertsByAccount,
     getTranscriptSnapshotStatsBySession,
     compactTranscriptSnapshotsBySessionKeepLast,
     listRealtimeEventsAfterSequence,

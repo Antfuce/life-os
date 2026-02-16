@@ -63,3 +63,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Completed backend hygiene sweep (merge-marker/branch-label debris scan), reconciled `BACKLOG.md` P0 #2/#3/#4 from "done" to partial with explicit acceptance criteria, and added formal P0 phase-gate checklist with HOLD decision before further P1 scope.
 - Next: Close outstanding P0 acceptance items (#2 authenticity/replay protection, #3 payload-contract guard, #4 reconnect hardening), then rerun and flip phase gate HOLD→GO.
 - Risks: If P1 expansion resumes before clearing P0 checklist criteria, regression and auditability risk increases despite green unit-test snapshots.
+
+## 2026-02-16T14:59:00Z — OpenClaw run note (P2 #10 scaffolding kickoff)
+- Changed: Implemented hourly reconciliation scaffolding with window/lateness controls, persisted reconciliation artifacts (`billing_reconciliation_run`, `billing_reconciliation_mismatch`, `billing_reconciliation_alert`), and new APIs for run/list/detail flows.
+- Next: Wire scheduler-triggered hourly execution and alert-delivery worker; then close remaining P0 acceptance hardening items in parallel governance track.
+- Risks: Reconciliation currently scaffolds persistence/analysis only; without scheduler + real alert transport, unresolved mismatches are tracked but not actively delivered.

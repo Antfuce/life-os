@@ -146,12 +146,14 @@
 - **Dependencies:** Depends on **8** and **7**
 
 #### 10. Hourly Charging Reconciliation Job (P2)
-- **Status:** Not started
+- **Status:** **In progress**
 - **What:** Reconcile metered usage vs charged amounts every hour.
-- **Scope:**
-  - Aggregation window and late-arrival handling
-  - Diff reports for under/over-charge
-  - Alerting hooks for unresolved mismatches
+- **Progress:** Added reconciliation scaffolding with windowing + lateness controls, persisted run/mismatch/alert artifacts, and audit/query endpoints (`/v1/billing/reconciliation/run`, `/v1/billing/accounts/:accountId/reconciliation/runs`, `/v1/billing/reconciliation/runs/:runId`).
+- **Implementation:** `server/db.mjs` (`billing_reconciliation_run`, `billing_reconciliation_mismatch`, `billing_reconciliation_alert`, window summary queries), `server/index.mjs` (reconciliation execution + alert hook queue contract), `server/test/reconciliation.test.mjs`
+- **Verification:**
+  - `node --test server/test/reconciliation.test.mjs` → ok-path, mismatch-path, and account-scoping checks pass.
+  - `node --test server/test/*.test.mjs` → green backend baseline.
+- **Remaining scope:** wire scheduler/cron trigger, implement real alert delivery transport, and define late-arrival backfill reconciliation policy.
 - **Owner:** Backend
 - **Dependencies:** Depends on **9**
 
@@ -249,19 +251,19 @@
 
 ## Next 5 Tasks (Execution Order)
 
-1. **Close P0 #2 remaining acceptance criteria (LiveKit bridge hardening)**
+1. **P2 #10 reconciliation hardening (scheduler + delivery)**
+   - Wire hourly scheduler trigger, deliver queued reconciliation alerts, and finalize late-arrival backfill policy.
+2. **Close P0 #2 remaining acceptance criteria (LiveKit bridge hardening)**
    - Add provider event authenticity/replay protection and capture repeatable live-integration evidence.
-2. **Close P0 #3 remaining acceptance criteria (schema contract hardening)**
+3. **Close P0 #3 remaining acceptance criteria (schema contract hardening)**
    - Add full event-family payload contract fixtures/regression guards for new billing/dead-letter event paths.
-3. **Close P0 #4 remaining acceptance criteria (recovery hardening)**
+4. **Close P0 #4 remaining acceptance criteria (recovery hardening)**
    - Add reconnect race/chaos tests + operational runbook/alerts for reconnect failure modes.
-4. **Re-run P0 phase gate and flip HOLD→GO**
-   - Require hygiene, docs, and evidence checklist to stay green before reopening P1 expansion.
-5. **Resume P1 remainder only after GO**
-   - Continue #5/#6 remainder once P0 gate is explicitly re-approved.
+5. **Re-run P0 phase gate and flip HOLD→GO (for further P1 expansion)**
+   - Require hygiene, docs, and evidence checklist to stay green before reopening net-new P1 scope.
 
 ---
 
 ## Next Action
 
-**Backend stabilization:** implement P0 #2 authenticity/replay protection for inbound LiveKit events and attach repeatable integration evidence to clear the first remaining P0 gate item.
+**Backend:** continue P2 #10 by wiring hourly reconciliation scheduling + alert-delivery worker against the new reconciliation run/mismatch/alert scaffolding.
