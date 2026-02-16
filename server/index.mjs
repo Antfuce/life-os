@@ -299,12 +299,233 @@ const DEFAULT_RECONNECT_WINDOW_MS = 2 * 60 * 1000;
 const DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST = 2000;
 const DEFAULT_RECONCILIATION_LOOKBACK_HOURS = 1;
 const DEFAULT_RECONCILIATION_LATENESS_MS = 5 * 60 * 1000;
+const DEFAULT_RATE_LIMIT_WINDOW_MS = process.env.RATE_LIMIT_WINDOW_MS ? Number(process.env.RATE_LIMIT_WINDOW_MS) : 60_000;
+const DEFAULT_RATE_LIMIT_MAX_REQUESTS = process.env.RATE_LIMIT_MAX_REQUESTS ? Number(process.env.RATE_LIMIT_MAX_REQUESTS) : 300;
+const RATE_LIMIT_EXEMPT_PATHS = new Set(['/health', '/health/ready', '/metrics']);
+const SLO_BASELINE = {
+  availabilityTarget: 0.995,
+  p95ApiLatencyMs: 350,
+  errorRateTarget: 0.01,
+};
 
-fastify.get('/health', async () => ({ 
-  ok: true, 
+const runtimeObservability = {
+  startedAtMs: Date.now(),
+  requestsTotal: 0,
+  errorsTotal: 0,
+  rateLimitedTotal: 0,
+  latencySamplesMs: [],
+  routeStats: new Map(),
+};
+
+const rateLimitState = new Map();
+
+function p95(values = []) {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1));
+  return sorted[index];
+}
+
+function routePathFromRequest(req) {
+  const raw = req?.routerPath || req?.routeOptions?.url || req?.url || '';
+  const pathOnly = String(raw).split('?')[0] || '/';
+  return pathOnly.startsWith('/') ? pathOnly : `/${pathOnly}`;
+}
+
+function updateRouteStats(route, durationMs, statusCode) {
+  const existing = runtimeObservability.routeStats.get(route) || {
+    requests: 0,
+    errors: 0,
+    totalDurationMs: 0,
+    latencySamplesMs: [],
+  };
+
+  existing.requests += 1;
+  if (Number(statusCode || 0) >= 500) existing.errors += 1;
+  existing.totalDurationMs += durationMs;
+  existing.latencySamplesMs.push(durationMs);
+
+  if (existing.latencySamplesMs.length > 500) existing.latencySamplesMs.shift();
+  runtimeObservability.routeStats.set(route, existing);
+}
+
+function currentSloSnapshot() {
+  const requestsTotal = runtimeObservability.requestsTotal;
+  const errorsTotal = runtimeObservability.errorsTotal;
+  const errorRate = requestsTotal > 0 ? errorsTotal / requestsTotal : 0;
+  const availability = requestsTotal > 0 ? Math.max(0, 1 - errorRate) : 1;
+  const p95ApiLatencyMs = p95(runtimeObservability.latencySamplesMs);
+
+  return {
+    baseline: SLO_BASELINE,
+    measured: {
+      requestsTotal,
+      errorsTotal,
+      errorRate,
+      availability,
+      p95ApiLatencyMs,
+    },
+    gate: {
+      pass:
+        availability >= SLO_BASELINE.availabilityTarget
+        && errorRate <= SLO_BASELINE.errorRateTarget
+        && p95ApiLatencyMs <= SLO_BASELINE.p95ApiLatencyMs,
+    },
+  };
+}
+
+function buildMetricsPayload() {
+  const slo = currentSloSnapshot();
+  const uptimeMs = Date.now() - runtimeObservability.startedAtMs;
+  const routes = [];
+
+  for (const [route, stats] of runtimeObservability.routeStats.entries()) {
+    routes.push({
+      route,
+      requests: stats.requests,
+      errors: stats.errors,
+      avgLatencyMs: stats.requests > 0 ? stats.totalDurationMs / stats.requests : 0,
+      p95LatencyMs: p95(stats.latencySamplesMs),
+    });
+  }
+
+  return {
+    uptimeMs,
+    requestsTotal: runtimeObservability.requestsTotal,
+    errorsTotal: runtimeObservability.errorsTotal,
+    rateLimitedTotal: runtimeObservability.rateLimitedTotal,
+    slo,
+    routes,
+    realtime: realtimeMetrics,
+  };
+}
+
+function formatPrometheusMetrics(metrics) {
+  const lines = [
+    '# HELP lifeos_requests_total Total HTTP requests',
+    '# TYPE lifeos_requests_total counter',
+    `lifeos_requests_total ${metrics.requestsTotal}`,
+    '# HELP lifeos_errors_total Total HTTP errors (5xx)',
+    '# TYPE lifeos_errors_total counter',
+    `lifeos_errors_total ${metrics.errorsTotal}`,
+    '# HELP lifeos_rate_limited_total Total rate-limited requests',
+    '# TYPE lifeos_rate_limited_total counter',
+    `lifeos_rate_limited_total ${metrics.rateLimitedTotal}`,
+    '# HELP lifeos_slo_availability_measured Current measured availability',
+    '# TYPE lifeos_slo_availability_measured gauge',
+    `lifeos_slo_availability_measured ${metrics.slo.measured.availability}`,
+    '# HELP lifeos_slo_error_rate_measured Current measured error rate',
+    '# TYPE lifeos_slo_error_rate_measured gauge',
+    `lifeos_slo_error_rate_measured ${metrics.slo.measured.errorRate}`,
+    '# HELP lifeos_slo_p95_latency_ms_measured Current measured p95 latency in ms',
+    '# TYPE lifeos_slo_p95_latency_ms_measured gauge',
+    `lifeos_slo_p95_latency_ms_measured ${metrics.slo.measured.p95ApiLatencyMs}`,
+  ];
+
+  return `${lines.join('\n')}\n`;
+}
+
+fastify.addHook('onRequest', async (req, reply) => {
+  const now = Date.now();
+  const traceIdHeader = req.headers['x-trace-id'] ? String(req.headers['x-trace-id']).trim() : '';
+  const traceId = traceIdHeader || `trace_${stableId(req.id, now, Math.random()).slice(0, 16)}`;
+  req.traceId = traceId;
+  req.requestStartMs = now;
+
+  reply.header('x-trace-id', traceId);
+  reply.header('x-content-type-options', 'nosniff');
+  reply.header('x-frame-options', 'DENY');
+  reply.header('referrer-policy', 'no-referrer');
+
+  const routePath = routePathFromRequest(req);
+  const isInternal = OPENCLAW_GATEWAY_TOKEN && String(req.headers['x-gateway-token'] || '') === OPENCLAW_GATEWAY_TOKEN;
+  if (isInternal || RATE_LIMIT_EXEMPT_PATHS.has(routePath)) return;
+
+  const key = `${req.ip || 'unknown'}:${routePath}`;
+  const state = rateLimitState.get(key);
+  if (!state || now >= state.resetAtMs) {
+    rateLimitState.set(key, {
+      count: 1,
+      resetAtMs: now + DEFAULT_RATE_LIMIT_WINDOW_MS,
+    });
+    return;
+  }
+
+  state.count += 1;
+  if (state.count > DEFAULT_RATE_LIMIT_MAX_REQUESTS) {
+    runtimeObservability.rateLimitedTotal += 1;
+    const retryAfterSec = Math.max(1, Math.ceil((state.resetAtMs - now) / 1000));
+    reply.header('retry-after', String(retryAfterSec));
+    return sendError(req, reply, 429, 'RATE_LIMITED', 'Too many requests; retry later', true);
+  }
+});
+
+fastify.addHook('onResponse', async (req, reply) => {
+  const finishedAtMs = Date.now();
+  const startedAtMs = Number(req.requestStartMs || finishedAtMs);
+  const durationMs = Math.max(0, finishedAtMs - startedAtMs);
+  const route = routePathFromRequest(req);
+  const statusCode = Number(reply.statusCode || 0);
+
+  runtimeObservability.requestsTotal += 1;
+  if (statusCode >= 500) runtimeObservability.errorsTotal += 1;
+  runtimeObservability.latencySamplesMs.push(durationMs);
+  if (runtimeObservability.latencySamplesMs.length > 2000) runtimeObservability.latencySamplesMs.shift();
+  updateRouteStats(route, durationMs, statusCode);
+
+  fastify.log.info({
+    event: 'http.request.completed',
+    traceId: req.traceId,
+    method: req.method,
+    route,
+    statusCode,
+    durationMs,
+  });
+});
+
+fastify.get('/health', async () => ({
+  ok: true,
   contract: 'v1.0',
-  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark', 'usage-metering', 'billing-events', 'dead-letter-routing', 'billing-reconciliation-scaffold']
+  uptimeMs: Date.now() - runtimeObservability.startedAtMs,
+  slo: currentSloSnapshot(),
+  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark', 'usage-metering', 'billing-events', 'dead-letter-routing', 'billing-reconciliation-scaffold', 'observability-baseline', 'rate-limit-baseline', 'data-governance-controls', 'tenant-operator-controls']
 }));
+
+fastify.get('/health/ready', async (req, reply) => {
+  try {
+    const ping = dbCtx.db.prepare('SELECT 1 AS ok').get();
+    if (!ping || Number(ping.ok) !== 1) {
+      return sendError(req, reply, 503, 'READINESS_FAILED', 'database readiness probe failed', true);
+    }
+
+    return {
+      ok: true,
+      ready: true,
+      checks: {
+        database: 'ok',
+      },
+      sloGate: currentSloSnapshot().gate,
+    };
+  } catch (err) {
+    req.log.error({ err }, 'health_ready_probe_failed');
+    return sendError(req, reply, 503, 'READINESS_FAILED', 'database readiness probe failed', true);
+  }
+});
+
+fastify.get('/metrics', async (req, reply) => {
+  const format = String(req.query?.format || '').toLowerCase();
+  const metrics = buildMetricsPayload();
+
+  if (format === 'prom' || format === 'prometheus') {
+    reply.type('text/plain; version=0.0.4');
+    return formatPrometheusMetrics(metrics);
+  }
+
+  return {
+    ok: true,
+    metrics,
+  };
+});
 
 fastify.get('/', async () => ({
   ok: true,
@@ -312,6 +533,8 @@ fastify.get('/', async () => ({
   contract: 'v1.0',
   endpoints: {
     health: '/health',
+    healthReady: '/health/ready',
+    metrics: '/metrics?format=json|prom',
     chatTurn: '/v1/chat/turn (POST json)',
     chatStream: '/v1/chat/stream (POST SSE)',
     createCallSession: '/v1/call/sessions (POST json)',
@@ -328,6 +551,13 @@ fastify.get('/', async () => ({
     listBillingDeadLetters: '/v1/billing/sessions/:sessionId/dead-letters (GET)',
     listBillingAccountDeadLetters: '/v1/billing/accounts/:accountId/dead-letters (GET)',
     summarizeBillingAccountUsage: '/v1/billing/accounts/:accountId/usage-summary (GET)',
+    billingTraceability: '/v1/billing/accounts/:accountId/traceability (GET)',
+    governanceDataMap: '/v1/governance/accounts/:accountId/data-map (GET)',
+    governanceDeleteAccountData: '/v1/governance/accounts/:accountId/delete (POST json)',
+    governanceAudit: '/v1/governance/accounts/:accountId/audit (GET)',
+    listTenantConfigs: '/v1/operator/tenants (GET internal)',
+    getTenantConfig: '/v1/operator/tenants/:accountId/config (GET internal)',
+    upsertTenantConfig: '/v1/operator/tenants/:accountId/config (POST internal)',
     listBillingReconciliationRuns: '/v1/billing/accounts/:accountId/reconciliation/runs (GET)',
     runBillingReconciliation: '/v1/billing/reconciliation/run (POST json)',
     triggerHourlyReconciliation: '/v1/billing/reconciliation/hourly-trigger (POST internal)',
@@ -383,6 +613,7 @@ function sendError(req, reply, statusCode, code, message, retryable = false) {
     message,
     retryable,
     requestId: req.id,
+    traceId: req.traceId || null,
   });
 }
 
@@ -1104,6 +1335,12 @@ function runBillingReconciliationScaffold({ accountId, windowStartMs, windowEndM
     };
   }
 
+  const metadataPayload = {
+    initiatedBy,
+    reason: reason || null,
+    ...metadata,
+  };
+
   dbCtx.insertBillingReconciliationRun.run(
     runId,
     accountId,
@@ -1114,13 +1351,24 @@ function runBillingReconciliationScaffold({ accountId, windowStartMs, windowEndM
     mismatchCount,
     status,
     alert ? 1 : 0,
-    JSON.stringify({
-      initiatedBy,
-      reason: reason || null,
-      ...metadata,
-    }),
+    JSON.stringify(metadataPayload),
     createdAtMs,
   );
+
+  writeGovernanceAuditLog({
+    accountId,
+    actorId: initiatedBy,
+    eventType: 'billing.reconciliation.run',
+    payload: {
+      runId,
+      windowStartMs,
+      windowEndMs,
+      mismatchCount,
+      status,
+      alertDispatched: Boolean(alert),
+      metadata: metadataPayload,
+    },
+  });
 
   return {
     run: {
@@ -1215,6 +1463,88 @@ function parseStoredMetadata(rawJson) {
   } catch {
     return {};
   }
+}
+
+function writeGovernanceAuditLog({ accountId = null, actorId = null, eventType, payload = {} }) {
+  const createdAtMs = Date.now();
+  const auditId = `gov_${stableId(accountId || 'global', actorId || 'system', eventType, createdAtMs, Math.random()).slice(0, 20)}`;
+  dbCtx.insertGovernanceAuditLog.run(
+    auditId,
+    accountId,
+    actorId,
+    eventType,
+    JSON.stringify(payload),
+    createdAtMs,
+  );
+  return {
+    auditId,
+    accountId,
+    actorId,
+    eventType,
+    payload,
+    createdAtMs,
+  };
+}
+
+function buildDataGovernanceCounts(accountId) {
+  return {
+    callSessions: Number(dbCtx.countCallSessionsByUser.get(accountId)?.count || 0),
+    realtimeEvents: Number(dbCtx.countRealtimeEventsByUser.get(accountId)?.count || 0),
+    transcriptSnapshots: Number(dbCtx.countTranscriptSnapshotsByUser.get(accountId)?.count || 0),
+    realtimeCheckpoints: Number(dbCtx.countRealtimeCheckpointsByUser.get(accountId)?.count || 0),
+    usageMeterRecords: Number(dbCtx.countUsageMeterRecordsByAccount.get(accountId)?.count || 0),
+    billingUsageEvents: Number(dbCtx.countBillingUsageEventsByAccount.get(accountId)?.count || 0),
+    billingDeadLetters: Number(dbCtx.countBillingDeadLettersByAccount.get(accountId)?.count || 0),
+    reconciliationRuns: Number(dbCtx.countBillingReconciliationRunsByAccount.get(accountId)?.count || 0),
+    reconciliationMismatches: Number(dbCtx.countBillingReconciliationMismatchesByAccount.get(accountId)?.count || 0),
+    reconciliationAlerts: Number(dbCtx.countBillingReconciliationAlertsByAccount.get(accountId)?.count || 0),
+  };
+}
+
+function executeAccountDataDeletion(accountId) {
+  const deletion = {
+    realtimeCheckpoints: Number(dbCtx.deleteRealtimeCheckpointsByUser.run(accountId)?.changes || 0),
+    transcriptSnapshots: Number(dbCtx.deleteTranscriptSnapshotsByUser.run(accountId)?.changes || 0),
+    realtimeEvents: Number(dbCtx.deleteRealtimeEventsByUser.run(accountId)?.changes || 0),
+    callSessions: Number(dbCtx.deleteCallSessionsByUser.run(accountId)?.changes || 0),
+    usageMeterRecords: Number(dbCtx.deleteUsageMeterRecordsByAccount.run(accountId)?.changes || 0),
+    billingUsageEvents: Number(dbCtx.deleteBillingUsageEventsByAccount.run(accountId)?.changes || 0),
+    billingDeadLetters: Number(dbCtx.deleteBillingDeadLettersByAccount.run(accountId)?.changes || 0),
+    reconciliationMismatches: Number(dbCtx.deleteBillingReconciliationMismatchesByAccount.run(accountId)?.changes || 0),
+    reconciliationAlerts: Number(dbCtx.deleteBillingReconciliationAlertsByAccount.run(accountId)?.changes || 0),
+    reconciliationRuns: Number(dbCtx.deleteBillingReconciliationRunsByAccount.run(accountId)?.changes || 0),
+    tenantConfig: Number(dbCtx.deleteTenantConfigByAccountId.run(accountId)?.changes || 0),
+  };
+
+  return {
+    ...deletion,
+    totalDeleted: Object.values(deletion).reduce((sum, n) => sum + Number(n || 0), 0),
+  };
+}
+
+function normalizeTenantConfigRow(row) {
+  if (!row) return null;
+  return {
+    accountId: row.accountId,
+    status: row.status,
+    plan: row.plan,
+    maxConcurrentCalls: Number(row.maxConcurrentCalls || 0),
+    flags: parseStoredMetadata(row.flagsJson),
+    metadata: parseStoredMetadata(row.metadataJson),
+    createdAtMs: Number(row.createdAtMs || 0),
+    updatedAtMs: Number(row.updatedAtMs || 0),
+  };
+}
+
+function normalizeGovernanceAuditRow(row) {
+  return {
+    auditId: row.auditId,
+    accountId: row.accountId || null,
+    actorId: row.actorId || null,
+    eventType: row.eventType,
+    payload: parseStoredMetadata(row.payloadJson),
+    createdAtMs: Number(row.createdAtMs || 0),
+  };
 }
 
 function normalizeCallSessionRow(row) {
@@ -2102,6 +2432,47 @@ fastify.get('/v1/billing/accounts/:accountId/usage-summary', async (req, reply) 
   };
 });
 
+fastify.get('/v1/billing/accounts/:accountId/traceability', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 100;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, Math.trunc(limitRaw))) : 100;
+
+  const usageRecords = dbCtx.listUsageMeterRecordsByAccount.all(accountId, limit).map(normalizeUsageMeterRecordRow);
+  const billingEvents = dbCtx.listBillingUsageEventsByAccount.all(accountId, limit).map(normalizeBillingUsageEventRow);
+  const reconciliationRuns = dbCtx.listBillingReconciliationRunsByAccount.all(accountId, limit).map(normalizeBillingReconciliationRunRow);
+
+  const usageByRecordId = new Map();
+  for (const usage of usageRecords) usageByRecordId.set(usage.recordId, usage);
+
+  const traceLinks = billingEvents
+    .filter((evt) => evt.usageRecordId)
+    .map((evt) => ({
+      billingEventId: evt.billingEventId,
+      usageRecordId: evt.usageRecordId,
+      meterId: evt.meterId,
+      unit: evt.unit,
+      quantity: evt.quantity,
+      usageRecordFound: usageByRecordId.has(evt.usageRecordId),
+    }));
+
+  return {
+    ok: true,
+    accountId,
+    usageRecords,
+    billingEvents,
+    reconciliationRuns,
+    traceLinks,
+  };
+});
+
 fastify.post('/v1/billing/adjustments', async (req, reply) => {
   const body = req.body || {};
   const auth = getAuthenticatedUserId(req, body);
@@ -2431,6 +2802,215 @@ fastify.get('/v1/billing/reconciliation/runs/:runId', async (req, reply) => {
     mismatchCount: mismatches.length,
     mismatches,
     alerts,
+  };
+});
+
+fastify.get('/v1/governance/accounts/:accountId/data-map', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const retentionDays = {
+    callSessions: 30,
+    realtimeEvents: 30,
+    transcriptSnapshots: 14,
+    usageMeterRecords: 365,
+    billingUsageEvents: 365,
+    reconciliationArtifacts: 365,
+    governanceAuditLogs: 365,
+  };
+
+  const dataMap = {
+    ingress: ['realtime call events', 'orchestration actions', 'billing adjustments', 'reconciliation triggers'],
+    storage: [
+      'call_session',
+      'realtime_event',
+      'transcript_snapshot',
+      'usage_meter_record',
+      'billing_usage_event',
+      'billing_dead_letter',
+      'billing_reconciliation_run',
+      'billing_reconciliation_mismatch',
+      'billing_reconciliation_alert',
+      'tenant_config',
+      'governance_audit_log',
+    ],
+    egress: ['reconciliation alert webhook (optional)', 'billing traceability exports'],
+    retentionDays,
+  };
+
+  return {
+    ok: true,
+    accountId,
+    dataMap,
+    currentCounts: buildDataGovernanceCounts(accountId),
+  };
+});
+
+fastify.get('/v1/governance/accounts/:accountId/audit', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 200;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 200;
+  const rows = dbCtx.listGovernanceAuditByAccount.all(accountId, limit);
+
+  return {
+    ok: true,
+    accountId,
+    count: rows.length,
+    entries: rows.map(normalizeGovernanceAuditRow),
+  };
+});
+
+fastify.post('/v1/governance/accounts/:accountId/delete', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const mode = String(body.mode || 'dry-run').toLowerCase();
+  const dryRun = mode !== 'execute';
+
+  const before = buildDataGovernanceCounts(accountId);
+  if (dryRun) {
+    const audit = writeGovernanceAuditLog({
+      accountId,
+      actorId: auth.userId,
+      eventType: 'governance.delete.dry_run',
+      payload: { mode, before },
+    });
+
+    return {
+      ok: true,
+      accountId,
+      dryRun: true,
+      before,
+      deleted: null,
+      audit,
+      note: 'Set mode=execute and confirm=true to perform deletion',
+    };
+  }
+
+  if (body.confirm !== true) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'mode=execute requires confirm=true', false);
+  }
+
+  const deleted = executeAccountDataDeletion(accountId);
+  const after = buildDataGovernanceCounts(accountId);
+  const audit = writeGovernanceAuditLog({
+    accountId,
+    actorId: auth.userId,
+    eventType: 'governance.delete.execute',
+    payload: { before, deleted, after },
+  });
+
+  return {
+    ok: true,
+    accountId,
+    dryRun: false,
+    before,
+    deleted,
+    after,
+    audit,
+  };
+});
+
+fastify.get('/v1/operator/tenants', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 200;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 200;
+
+  const tenants = dbCtx.listTenantConfigs.all(limit).map(normalizeTenantConfigRow);
+  return {
+    ok: true,
+    count: tenants.length,
+    tenants,
+  };
+});
+
+fastify.get('/v1/operator/tenants/:accountId/config', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const row = dbCtx.getTenantConfigByAccountId.get(accountId);
+  return {
+    ok: true,
+    tenant: normalizeTenantConfigRow(row),
+  };
+});
+
+fastify.post('/v1/operator/tenants/:accountId/config', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const body = req.body || {};
+  const nowMs = Date.now();
+  const existing = dbCtx.getTenantConfigByAccountId.get(accountId);
+
+  const status = body.status ? String(body.status) : (existing?.status || 'active');
+  const plan = body.plan ? String(body.plan) : (existing?.plan || 'mvp');
+  const maxConcurrentCallsRaw = Number(body.maxConcurrentCalls);
+  const maxConcurrentCalls = Number.isFinite(maxConcurrentCallsRaw)
+    ? Math.max(1, Math.min(1000, Math.trunc(maxConcurrentCallsRaw)))
+    : Number(existing?.maxConcurrentCalls || 3);
+
+  const flags = {
+    ...(existing ? parseStoredMetadata(existing.flagsJson) : {}),
+    ...parseRequestMetadata(body.flags),
+  };
+
+  const metadata = {
+    ...(existing ? parseStoredMetadata(existing.metadataJson) : {}),
+    ...parseRequestMetadata(body.metadata),
+  };
+
+  dbCtx.upsertTenantConfig.run(
+    accountId,
+    status,
+    plan,
+    maxConcurrentCalls,
+    JSON.stringify(flags),
+    JSON.stringify(metadata),
+    Number(existing?.createdAtMs || nowMs),
+    nowMs,
+  );
+
+  const tenant = normalizeTenantConfigRow(dbCtx.getTenantConfigByAccountId.get(accountId));
+  writeGovernanceAuditLog({
+    accountId,
+    actorId: 'operator.internal',
+    eventType: 'tenant.config.upsert',
+    payload: { status: tenant.status, plan: tenant.plan, maxConcurrentCalls: tenant.maxConcurrentCalls },
+  });
+
+  return {
+    ok: true,
+    tenant,
   };
 });
 

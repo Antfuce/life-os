@@ -157,6 +157,22 @@
 - **Owner:** Backend
 - **Dependencies:** Depends on **9**
 
+### MVP Milestone — Production Readiness Layer
+- **Status:** **Done (baseline shipped)**
+- **Objective:** Cross-cutting hardening layer for sellable paid-pilot readiness without enterprise bloat.
+- **Shipped in this milestone increment:**
+  - MVP sellability contract + scope boundary docs.
+  - Baseline reliability SLO + release-gate documentation.
+  - Observability baseline in code (trace IDs, structured request logs, health/readiness, metrics).
+  - Security baseline in code (rate limiting, stricter internal auth boundaries, security headers).
+  - Data governance controls (data-map, account deletion capability, governance audit trail).
+  - Billing traceability endpoint (`usage -> billing -> reconciliation` links).
+  - Tenant/operator controls for onboarding (`/v1/operator/tenants*`).
+  - Buyer-visible acceptance scenarios + production readiness tests + CI release-gate checks.
+  - Mandatory evidence bundle verification (`scripts/verify-production-readiness.mjs`).
+- **Implementation:** `server/index.mjs`, `server/db.mjs`, `server/test/release-acceptance.test.mjs`, `server/test/production-readiness.test.mjs`, `.github/workflows/ci.yml`, `docs/production-readiness/*`, `docs/runbooks/*`, `docs/releases/LATEST_EVIDENCE_BUNDLE.md`
+- **Follow-up ops hardening:** automate cron policy for hourly trigger + worker retries/backoff and finalize production late-arrival reconciliation policy.
+
 ---
 
 ### Deferred / Roadmap (Not in Current Sprint)

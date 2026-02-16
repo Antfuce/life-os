@@ -73,3 +73,13 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Added internal hourly trigger endpoint (`/v1/billing/reconciliation/hourly-trigger`) with per-window account discovery + skip-existing behavior, plus alert-delivery worker endpoint (`/v1/billing/reconciliation/alerts/deliver`) that marks delivered alerts and dead-letters delivery failures.
 - Next: Operationalize these endpoints with explicit cron policy/retry behavior and finalize late-arrival backfill handling.
 - Risks: Worker currently uses webhook/stub delivery path; production reliability still requires retry/backoff policy and monitoring SLOs.
+
+## 2026-02-16T15:44:00Z — OpenClaw run note (Production Readiness Layer milestone increment)
+- Changed: Implemented cross-cutting MVP hardening layer: sellability contract docs, SLO/release-gate package, observability baseline (trace/log/health/metrics), security baseline (rate limits + internal auth + headers), governance controls (data map/delete/audit), billing traceability API, tenant operator controls, release acceptance scenarios, production readiness tests, and CI-enforced evidence bundle verification.
+- Next: Wire explicit cron policy (hourly trigger + alert worker cadence/retries), then close remaining P0 acceptance criteria and rerun phase gate HOLD→GO.
+- Risks: Metrics are in-process and alert worker may run in stub mode when webhook is unset; production rollout still needs retry/backoff + monitoring policy decisions.
+
+## 2026-02-16T16:09:00Z — OpenClaw run note (Production Readiness Layer validation + gate lock)
+- Changed: Completed milestone validation sweep (`lint`, full backend tests, release acceptance tests, production readiness tests, docs/evidence verifier), updated review checklist with mandatory Gate 6 sellability release criteria, and added evidence/runbook docs under `docs/production-readiness`, `docs/runbooks`, `docs/releases`.
+- Next: Schedule internal cron policy for hourly reconciliation trigger + alert worker and define retry/backoff defaults before pilot onboarding.
+- Risks: Without cron automation and explicit retry policy, reconciliation operations remain partially manual despite functional worker/trigger endpoints.

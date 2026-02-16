@@ -182,6 +182,26 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       createdAtMs INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS tenant_config (
+      accountId TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      plan TEXT NOT NULL,
+      maxConcurrentCalls INTEGER NOT NULL,
+      flagsJson TEXT NOT NULL,
+      metadataJson TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL,
+      updatedAtMs INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS governance_audit_log (
+      auditId TEXT PRIMARY KEY,
+      accountId TEXT,
+      actorId TEXT,
+      eventType TEXT NOT NULL,
+      payloadJson TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
@@ -202,6 +222,9 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_run ON billing_reconciliation_alert(runId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_account ON billing_reconciliation_alert(accountId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_status_created ON billing_reconciliation_alert(status, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_tenant_config_status_updated ON tenant_config(status, updatedAtMs);
+    CREATE INDEX IF NOT EXISTS idx_governance_audit_account_created ON governance_audit_log(accountId, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_governance_audit_event_created ON governance_audit_log(eventType, createdAtMs);
   `);
 
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
@@ -505,6 +528,139 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       LIMIT 1`
   );
 
+  const upsertTenantConfig = db.prepare(
+    `INSERT INTO tenant_config (
+      accountId, status, plan, maxConcurrentCalls, flagsJson, metadataJson, createdAtMs, updatedAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(accountId)
+    DO UPDATE SET
+      status = excluded.status,
+      plan = excluded.plan,
+      maxConcurrentCalls = excluded.maxConcurrentCalls,
+      flagsJson = excluded.flagsJson,
+      metadataJson = excluded.metadataJson,
+      updatedAtMs = excluded.updatedAtMs`
+  );
+
+  const getTenantConfigByAccountId = db.prepare(
+    `SELECT * FROM tenant_config WHERE accountId = ?`
+  );
+
+  const listTenantConfigs = db.prepare(
+    `SELECT * FROM tenant_config
+      ORDER BY updatedAtMs DESC
+      LIMIT ?`
+  );
+
+  const insertGovernanceAuditLog = db.prepare(
+    `INSERT OR IGNORE INTO governance_audit_log (
+      auditId, accountId, actorId, eventType, payloadJson, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?)`
+  );
+
+  const listGovernanceAuditByAccount = db.prepare(
+    `SELECT * FROM governance_audit_log
+      WHERE accountId = ?
+      ORDER BY createdAtMs DESC
+      LIMIT ?`
+  );
+
+  const countCallSessionsByUser = db.prepare(
+    `SELECT COUNT(*) AS count FROM call_session WHERE userId = ?`
+  );
+
+  const countRealtimeEventsByUser = db.prepare(
+    `SELECT COUNT(*) AS count
+       FROM realtime_event
+      WHERE sessionId IN (SELECT id FROM call_session WHERE userId = ?)`
+  );
+
+  const countTranscriptSnapshotsByUser = db.prepare(
+    `SELECT COUNT(*) AS count
+       FROM transcript_snapshot
+      WHERE sessionId IN (SELECT id FROM call_session WHERE userId = ?)`
+  );
+
+  const countRealtimeCheckpointsByUser = db.prepare(
+    `SELECT COUNT(*) AS count
+       FROM realtime_checkpoint
+      WHERE sessionId IN (SELECT id FROM call_session WHERE userId = ?)`
+  );
+
+  const countUsageMeterRecordsByAccount = db.prepare(
+    `SELECT COUNT(*) AS count FROM usage_meter_record WHERE accountId = ?`
+  );
+
+  const countBillingUsageEventsByAccount = db.prepare(
+    `SELECT COUNT(*) AS count FROM billing_usage_event WHERE accountId = ?`
+  );
+
+  const countBillingDeadLettersByAccount = db.prepare(
+    `SELECT COUNT(*) AS count FROM billing_dead_letter WHERE accountId = ?`
+  );
+
+  const countBillingReconciliationRunsByAccount = db.prepare(
+    `SELECT COUNT(*) AS count FROM billing_reconciliation_run WHERE accountId = ?`
+  );
+
+  const countBillingReconciliationMismatchesByAccount = db.prepare(
+    `SELECT COUNT(*) AS count
+       FROM billing_reconciliation_mismatch
+      WHERE runId IN (SELECT runId FROM billing_reconciliation_run WHERE accountId = ?)`
+  );
+
+  const countBillingReconciliationAlertsByAccount = db.prepare(
+    `SELECT COUNT(*) AS count FROM billing_reconciliation_alert WHERE accountId = ?`
+  );
+
+  const deleteRealtimeCheckpointsByUser = db.prepare(
+    `DELETE FROM realtime_checkpoint
+      WHERE sessionId IN (SELECT id FROM call_session WHERE userId = ?)`
+  );
+
+  const deleteTranscriptSnapshotsByUser = db.prepare(
+    `DELETE FROM transcript_snapshot
+      WHERE sessionId IN (SELECT id FROM call_session WHERE userId = ?)`
+  );
+
+  const deleteRealtimeEventsByUser = db.prepare(
+    `DELETE FROM realtime_event
+      WHERE sessionId IN (SELECT id FROM call_session WHERE userId = ?)`
+  );
+
+  const deleteCallSessionsByUser = db.prepare(
+    `DELETE FROM call_session WHERE userId = ?`
+  );
+
+  const deleteUsageMeterRecordsByAccount = db.prepare(
+    `DELETE FROM usage_meter_record WHERE accountId = ?`
+  );
+
+  const deleteBillingUsageEventsByAccount = db.prepare(
+    `DELETE FROM billing_usage_event WHERE accountId = ?`
+  );
+
+  const deleteBillingDeadLettersByAccount = db.prepare(
+    `DELETE FROM billing_dead_letter WHERE accountId = ?`
+  );
+
+  const deleteBillingReconciliationMismatchesByAccount = db.prepare(
+    `DELETE FROM billing_reconciliation_mismatch
+      WHERE runId IN (SELECT runId FROM billing_reconciliation_run WHERE accountId = ?)`
+  );
+
+  const deleteBillingReconciliationAlertsByAccount = db.prepare(
+    `DELETE FROM billing_reconciliation_alert WHERE accountId = ?`
+  );
+
+  const deleteBillingReconciliationRunsByAccount = db.prepare(
+    `DELETE FROM billing_reconciliation_run WHERE accountId = ?`
+  );
+
+  const deleteTenantConfigByAccountId = db.prepare(
+    `DELETE FROM tenant_config WHERE accountId = ?`
+  );
+
   const getTranscriptSnapshotStatsBySession = db.prepare(
     `SELECT
       COUNT(*) AS count,
@@ -622,6 +778,32 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     updateBillingReconciliationAlertStatus,
     listBillingReconciliationAccountsByWindow,
     findBillingReconciliationRunByAccountWindow,
+    upsertTenantConfig,
+    getTenantConfigByAccountId,
+    listTenantConfigs,
+    insertGovernanceAuditLog,
+    listGovernanceAuditByAccount,
+    countCallSessionsByUser,
+    countRealtimeEventsByUser,
+    countTranscriptSnapshotsByUser,
+    countRealtimeCheckpointsByUser,
+    countUsageMeterRecordsByAccount,
+    countBillingUsageEventsByAccount,
+    countBillingDeadLettersByAccount,
+    countBillingReconciliationRunsByAccount,
+    countBillingReconciliationMismatchesByAccount,
+    countBillingReconciliationAlertsByAccount,
+    deleteRealtimeCheckpointsByUser,
+    deleteTranscriptSnapshotsByUser,
+    deleteRealtimeEventsByUser,
+    deleteCallSessionsByUser,
+    deleteUsageMeterRecordsByAccount,
+    deleteBillingUsageEventsByAccount,
+    deleteBillingDeadLettersByAccount,
+    deleteBillingReconciliationMismatchesByAccount,
+    deleteBillingReconciliationAlertsByAccount,
+    deleteBillingReconciliationRunsByAccount,
+    deleteTenantConfigByAccountId,
     getTranscriptSnapshotStatsBySession,
     compactTranscriptSnapshotsBySessionKeepLast,
     listRealtimeEventsAfterSequence,

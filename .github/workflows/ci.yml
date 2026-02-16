@@ -66,6 +66,15 @@ jobs:
       - name: Run backend tests
         run: node --test server/test/*.test.mjs
 
+      - name: Run release acceptance scenarios (buyer-visible)
+        run: node --test server/test/release-acceptance.test.mjs
+
+      - name: Run production readiness tests
+        run: node --test server/test/production-readiness.test.mjs
+
+      - name: Verify production readiness docs + evidence bundle
+        run: node scripts/verify-production-readiness.mjs
+
       - name: Build project
         run: npm run build
 

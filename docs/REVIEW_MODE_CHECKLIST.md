@@ -31,3 +31,11 @@ Required artifacts:
 2. Command outputs for lint/tests/syntax checks.
 3. Links or explicit references to updated `BACKLOG.md` and `docs/COORDINATION.md` entries.
 4. Explicit reviewer go/no-go decision before any Phase transition.
+
+## Gate 6 — MVP Sellability release gate (mandatory)
+Before any release intended for paid pilots:
+1. `docs/releases/LATEST_EVIDENCE_BUNDLE.md` is present and complete.
+2. Production readiness docs under `docs/production-readiness/` are updated for scope changes.
+3. Runbook exists and is current: `docs/runbooks/LIVE_CALL_INCIDENT_RESPONSE.md`.
+4. Buyer-visible acceptance scenarios pass: `server/test/release-acceptance.test.mjs`.
+5. Production readiness checks pass: `server/test/production-readiness.test.mjs` + `scripts/verify-production-readiness.mjs`.
