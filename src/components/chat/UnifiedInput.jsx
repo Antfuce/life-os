@@ -21,6 +21,9 @@ export default function UnifiedInput({
   const [text, setText] = useState("");
   const [showTranscript, setShowTranscript] = useState(false);
   const inputRef = useRef(null);
+  const previousListeningRef = useRef(false);
+  const autoSendVoiceRef = useRef(false);
+  const latestVoiceDraftRef = useRef("");
 
   const {
     supported,
@@ -33,6 +36,7 @@ export default function UnifiedInput({
   } = useSpeechRecognition({
     lang: "en-US",
     continuous: true,
+    autoRestart: true,
     interimResults: true,
   });
 
@@ -41,10 +45,28 @@ export default function UnifiedInput({
     if (finalTranscript) {
       setText((prev) => {
         const combined = prev ? `${prev} ${finalTranscript}` : finalTranscript;
-        return combined.trim();
+        const normalized = combined.trim();
+        latestVoiceDraftRef.current = normalized;
+        return normalized;
       });
     }
   }, [finalTranscript]);
+
+  // Auto-send voice-only turns when recording ends
+  useEffect(() => {
+    const wasListening = previousListeningRef.current;
+    if (wasListening && !listening) {
+      const candidate = String(latestVoiceDraftRef.current || "").trim();
+      if (autoSendVoiceRef.current && candidate && !disabled) {
+        onSend?.(candidate);
+        setText("");
+      }
+      autoSendVoiceRef.current = false;
+      latestVoiceDraftRef.current = "";
+      setShowTranscript(false);
+    }
+    previousListeningRef.current = listening;
+  }, [listening, disabled, onSend]);
 
   // Emit interim for parent captions
   useEffect(() => {
@@ -60,6 +82,8 @@ export default function UnifiedInput({
   const handleSubmit = (e) => {
     e?.preventDefault();
     if (!text.trim() || disabled) return;
+    autoSendVoiceRef.current = false;
+    latestVoiceDraftRef.current = "";
     onSend?.(text.trim());
     setText("");
     stop();
@@ -71,6 +95,8 @@ export default function UnifiedInput({
       stop();
     } else {
       window.speechSynthesis?.cancel?.();
+      autoSendVoiceRef.current = !text.trim();
+      latestVoiceDraftRef.current = "";
       setShowTranscript(true);
       start();
     }
@@ -84,7 +110,8 @@ export default function UnifiedInput({
   };
 
   // Permission denied or not supported UI
-  const showMicError = error?.error === "not-allowed" || !supported;
+  const micErrorCode = String(error?.error || "");
+  const showMicError = !supported || Boolean(micErrorCode);
 
   return (
     <div className="w-full max-w-2xl mx-auto">
@@ -166,9 +193,21 @@ export default function UnifiedInput({
               <span className="text-neutral-400">
                 Voice not supported — type instead
               </span>
-            ) : (
+            ) : micErrorCode === "not-allowed" || micErrorCode === "service-not-allowed" ? (
               <span className="text-amber-600">
                 Mic blocked — enable permissions or type instead
+              </span>
+            ) : micErrorCode === "audio-capture" ? (
+              <span className="text-amber-600">
+                No microphone detected — check your input device
+              </span>
+            ) : micErrorCode === "no-speech" ? (
+              <span className="text-neutral-500">
+                No speech detected — keep talking after tapping mic
+              </span>
+            ) : (
+              <span className="text-neutral-500">
+                Voice input interrupted — try again
               </span>
             )}
           </motion.div>

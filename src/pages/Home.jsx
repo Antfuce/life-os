@@ -6,7 +6,6 @@ import { useUIEventReducer, UI_EVENT_TYPES } from "../hooks/useUIEventReducer";
 import { renderModule, renderInlineModule, executeModuleAction, getActionMetadata } from "../lib/moduleRegistry";
 import MessageBubble from "../components/chat/MessageBubble";
 import UnifiedInput from "../components/chat/UnifiedInput";
-import PersonaSelector from "../components/chat/PersonaSelector";
 import WhisperCaption from "../components/chat/WhisperCaption";
 import FloatingHints from "../components/chat/FloatingHints";
 import WhisperResponse from "../components/voice/WhisperResponse";
@@ -14,10 +13,30 @@ import AvatarWithWaves from "../components/voice/AvatarWithWaves";
 import FloatingModule from "../components/voice/FloatingModule";
 
 const WELCOME_MESSAGES = {
-  antonio: "What's the move? Give me your situation and target — I'll map the fastest route.",
-  mariana: "Welcome. Tell me what's going on — we'll slow it down and get clarity.",
-  both: "Hey — we're Antonio & Mariana. Tell us what's going on, and we'll make the next move.",
+  antonio: "Let’s go tactical. Tell me your target and constraints, and I’ll map the fastest route.",
+  mariana: "Tell me what’s heavy right now — we’ll slow it down and make a clear next step.",
+  both: "Tell me what you’re trying to do, and I’ll adapt as we go.",
 };
+
+const STRATEGY_KEYWORDS = [
+  'cv', 'resume', 'interview', 'job', 'role', 'hiring', 'application', 'linkedin', 'cover letter',
+];
+
+const COACHING_KEYWORDS = [
+  'coach', 'coaching', 'confidence', 'anxious', 'anxiety', 'stress', 'overwhelmed', 'burnout', 'motivation', 'stuck',
+];
+
+function inferPersonaHint({ text = '', activeModes = {}, currentSpeaker = 'both' } = {}) {
+  if (currentSpeaker === 'antonio' || currentSpeaker === 'mariana') return currentSpeaker;
+  if (activeModes?.cv?.active || activeModes?.interview?.active) return 'antonio';
+
+  const normalized = String(text || '').toLowerCase();
+  if (!normalized) return 'both';
+
+  if (STRATEGY_KEYWORDS.some((k) => normalized.includes(k))) return 'antonio';
+  if (COACHING_KEYWORDS.some((k) => normalized.includes(k))) return 'mariana';
+  return 'both';
+}
 
 export default function Home() {
   const {
@@ -55,7 +74,6 @@ export default function Home() {
   const [whisper, setWhisper] = React.useState("");
   const [ttsEnabled, setTtsEnabled] = React.useState(false);
   const [showMemory, setShowMemory] = React.useState(false);
-  const [selectedPersona, setSelectedPersona] = React.useState("both");
   const confirmationTimersRef = useRef({});
 
   const clearConfirmationTimer = useCallback((actionId) => {
@@ -78,6 +96,10 @@ export default function Home() {
       console.error('Failed to persist action decision', e);
     }
   }, []);
+
+  const resolvePersonaHint = useCallback((text = '') => {
+    return inferPersonaHint({ text, activeModes, currentSpeaker });
+  }, [activeModes, currentSpeaker]);
 
 
   // Auto-scroll to bottom
@@ -118,11 +140,12 @@ export default function Home() {
   // Start conversation
   const startConversation = async (initialText) => {
     const id = `${Date.now()}`;
+    const initialPersona = resolvePersonaHint(initialText || '');
 
     const welcomeMsg = {
       role: "assistant",
-      content: WELCOME_MESSAGES[selectedPersona],
-      persona: selectedPersona,
+      content: WELCOME_MESSAGES[initialPersona] || WELCOME_MESSAGES.both,
+      persona: initialPersona,
       timestamp: new Date().toISOString(),
     };
 
@@ -132,7 +155,7 @@ export default function Home() {
       payload: {
         fullText: welcomeMsg.content,
         messageId: id,
-        speaker: selectedPersona,
+        speaker: initialPersona,
       },
     });
 
@@ -157,16 +180,22 @@ export default function Home() {
 
     if (!t) return;
 
+    const personaHint = resolvePersonaHint(t);
+
     // Add user message
     sendMessage(t);
     setVoiceCaption("");
+    processEvent({
+      type: UI_EVENT_TYPES.SPEAKER_CHANGE,
+      payload: { speaker: personaHint },
+    });
 
     // Send to backend
-    await streamFromBackend(t);
+    await streamFromBackend(t, personaHint);
   };
 
   // Stream from backend with UI event parsing
-  const streamFromBackend = async (text) => {
+  const streamFromBackend = async (text, personaHint = 'both') => {
     const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
     let latestAssistantText = '';
 
@@ -191,7 +220,7 @@ export default function Home() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           conversationId,
-          persona: selectedPersona,
+          persona: personaHint,
           messages: [...messages, { role: 'user', content: text }],
         }),
       });
@@ -435,26 +464,17 @@ export default function Home() {
                 className="text-center mb-10"
               >
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 mx-auto mb-8 flex items-center justify-center shadow-xl">
-                  <span className="text-white text-lg font-bold tracking-tight">A·M</span>
+                  <span className="text-white text-lg font-bold tracking-tight">LO</span>
                 </div>
                 <h1 className="text-4xl md:text-5xl font-light text-neutral-800 tracking-tight mb-4">
-                  Antonio & Mariana
+                  Life OS
                 </h1>
                 <p className="text-neutral-400 text-sm tracking-[0.15em] uppercase font-medium">
-                  Matchmakers for work & life
+                  Adaptive guidance for work & life
                 </p>
                 <p className="text-neutral-500 text-xs mt-3">
-                  Running mode: <span className="font-medium">Executor</span> (UI Contract v1.0)
+                  Voice adapts dynamically by context during the conversation.
                 </p>
-              </motion.div>
-
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, delay: 0.3 }}
-                className="mb-8"
-              >
-                <PersonaSelector active={selectedPersona} onChange={setSelectedPersona} />
               </motion.div>
 
               <motion.div
@@ -693,7 +713,7 @@ export default function Home() {
                   onClick={handleReset}
                   className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 flex items-center justify-center hover:opacity-80 transition-opacity cursor-pointer"
                 >
-                  <span className="text-white text-[10px] font-bold">A·M</span>
+                  <span className="text-white text-[10px] font-bold">LO</span>
                 </button>
               </div>
 
