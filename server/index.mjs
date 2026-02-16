@@ -13,13 +13,10 @@ const HOST = process.env.HOST || '127.0.0.1';
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || null;
 const OPENCLAW_RESPONSES_URL = process.env.OPENCLAW_RESPONSES_URL || 'http://127.0.0.1:18789/v1/responses';
 const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || null;
+const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL || null;
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || null;
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || null;
-const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL || null;
 
-const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL || null;
-const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || null;
-const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || null;
 const liveKit = createLiveKitTokenIssuer({ apiKey: LIVEKIT_API_KEY, apiSecret: LIVEKIT_API_SECRET });
 
 // UI Contract v1.0 Event Types
@@ -569,7 +566,9 @@ function normalizeRealtimeEventRow(row) {
 function parseStoredMetadata(rawJson) {
   if (!rawJson || typeof rawJson !== 'string') return {};
   try {
-    return parseRequestMetadata(JSON.parse(rawJson));
+    const parsed = JSON.parse(rawJson);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed;
   } catch {
     return {};
   }
@@ -766,6 +765,10 @@ fastify.post('/v1/call/sessions/:sessionId/livekit/token', async (req, reply) =>
 
   dbCtx.updateCallSession.run(
     session.status,
+    session.resumeValidUntilMs || null,
+    session.lastAckSequence || null,
+    session.lastAckTimestamp || null,
+    session.lastAckEventId || null,
     'livekit',
     roomName,
     session.providerParticipantId || participantIdentity,
