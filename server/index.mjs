@@ -319,6 +319,8 @@ fastify.get('/', async () => ({
     reconnectCallSession: '/v1/call/sessions/:sessionId/reconnect (POST json)',
     listTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots (GET)',
     compactTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots/compact (POST json)',
+    listUsageMeterRecords: '/v1/billing/sessions/:sessionId/usage-records (GET)',
+    listBillingUsageEvents: '/v1/billing/sessions/:sessionId/events (GET)',
     executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
     actionDecision: '/v1/actions/decision (POST json)',
   },
@@ -634,6 +636,118 @@ function normalizeTranscriptSnapshotRow(row) {
     endMs: row.endMs,
     payload,
     createdAtMs: row.createdAtMs,
+  };
+}
+
+function normalizeUsageMeterRecordRow(row) {
+  return {
+    recordId: row.recordId,
+    sessionId: row.sessionId,
+    meterId: row.meterId,
+    unit: row.unit,
+    quantity: Number(row.quantity || 0),
+    sourceEventId: row.sourceEventId,
+    sourceSequence: row.sourceSequence,
+    sourceTimestamp: row.sourceTimestamp,
+    metadata: parseStoredMetadata(row.metadataJson),
+    createdAtMs: row.createdAtMs,
+  };
+}
+
+function normalizeBillingUsageEventRow(row) {
+  return {
+    billingEventId: row.billingEventId,
+    usageRecordId: row.usageRecordId,
+    sessionId: row.sessionId,
+    meterId: row.meterId,
+    unit: row.unit,
+    quantity: Number(row.quantity || 0),
+    payload: JSON.parse(row.payloadJson),
+    createdAtMs: row.createdAtMs,
+  };
+}
+
+function buildBillingUsagePayload({ usageRecordId, meterId, unit, quantity, sourceEventId }) {
+  const payload = {
+    usageRecordId,
+    meterId,
+    unit,
+    quantity,
+    sourceEventId,
+  };
+
+  if (unit === 'seconds') payload.billableSeconds = quantity;
+  return payload;
+}
+
+function recordUsageAndEmitBillingEvent({ sessionId, meterId, unit, quantity, sourceEvent, metadata = {} }) {
+  const numericQuantity = Number(quantity);
+  const normalizedQuantity = Number.isFinite(numericQuantity) ? Math.max(0, Math.trunc(numericQuantity)) : 0;
+  if (normalizedQuantity <= 0) {
+    return { ok: true, skipped: true, reason: 'non_positive_quantity' };
+  }
+
+  const sourceEventId = sourceEvent?.eventId ? String(sourceEvent.eventId).trim() : '';
+  if (!sourceEventId) {
+    return { ok: false, skipped: true, reason: 'missing_source_event_id' };
+  }
+
+  const sourceSequenceRaw = sourceEvent?.sequence !== undefined ? Number(sourceEvent.sequence) : null;
+  const sourceSequence = Number.isFinite(sourceSequenceRaw) ? Math.max(0, Math.trunc(sourceSequenceRaw)) : null;
+  const sourceTimestamp = typeof sourceEvent?.ts === 'string'
+    ? sourceEvent.ts
+    : (typeof sourceEvent?.timestamp === 'string' ? sourceEvent.timestamp : null);
+
+  const createdAtMs = Date.now();
+  const recordId = `mrec_${stableId(sessionId, meterId, unit, sourceEventId).slice(0, 24)}`;
+  const usageInsert = dbCtx.insertUsageMeterRecord.run(
+    recordId,
+    sessionId,
+    meterId,
+    unit,
+    normalizedQuantity,
+    sourceEventId,
+    sourceSequence,
+    sourceTimestamp,
+    JSON.stringify(metadata),
+    createdAtMs,
+  );
+
+  const payload = buildBillingUsagePayload({
+    usageRecordId: recordId,
+    meterId,
+    unit,
+    quantity: normalizedQuantity,
+    sourceEventId,
+  });
+
+  const billingEventId = `evt_${stableId('billing.usage.recorded', recordId).slice(0, 20)}`;
+  dbCtx.insertBillingUsageEvent.run(
+    billingEventId,
+    recordId,
+    sessionId,
+    meterId,
+    unit,
+    normalizedQuantity,
+    JSON.stringify(payload),
+    createdAtMs,
+  );
+
+  const billingEvent = createRealtimeEvent({
+    sessionId,
+    eventId: billingEventId,
+    type: 'billing.usage.recorded',
+    payload,
+    ts: sourceTimestamp || new Date(createdAtMs).toISOString(),
+  });
+
+  const publishResult = publishRealtimeEvent(billingEvent);
+  return {
+    ok: true,
+    usageDeduped: !usageInsert?.changes,
+    billingDeduped: publishResult.deduped,
+    usageRecordId: recordId,
+    billingEventId,
   };
 }
 
@@ -1102,6 +1216,7 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
   if (nextStatus === CALL_SESSION_STATUS.ACTIVE) {
     publishRealtimeEvent(createRealtimeEvent({
       sessionId,
+      eventId: `evt_${stableId(sessionId, 'call.connected').slice(0, 20)}`,
       type: 'call.connected',
       payload: {
         callId: sessionId,
@@ -1113,23 +1228,41 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
 
   if (nextStatus === CALL_SESSION_STATUS.ENDED) {
     const durationSeconds = session.startedAtMs ? Math.max(0, Math.floor((session.endedAtMs - session.startedAtMs) / 1000)) : 0;
-    publishRealtimeEvent(createRealtimeEvent({
+    const endedResult = publishRealtimeEvent(createRealtimeEvent({
       sessionId,
+      eventId: `evt_${stableId(sessionId, 'call.ended').slice(0, 20)}`,
       type: 'call.ended',
-        payload: {
+      payload: {
         callId: sessionId,
         endedAt: new Date(endedAtMs).toISOString(),
         durationSeconds,
         endReason: 'completed',
       },
     }));
+
+    try {
+      recordUsageAndEmitBillingEvent({
+        sessionId,
+        meterId: 'call.duration.seconds',
+        unit: 'seconds',
+        quantity: durationSeconds,
+        sourceEvent: endedResult.event,
+        metadata: {
+          source: 'call.ended',
+          idempotentReplay: isIdempotentReplay,
+        },
+      });
+    } catch (err) {
+      req.log.error({ err, sessionId }, 'metering_call_duration_record_failed');
+    }
   }
 
   if (nextStatus === CALL_SESSION_STATUS.FAILED) {
     publishRealtimeEvent(createRealtimeEvent({
       sessionId,
+      eventId: `evt_${stableId(sessionId, 'call.error').slice(0, 20)}`,
       type: 'call.error',
-        payload: {
+      payload: {
         callId: sessionId,
         code: 'CALL_SESSION_FAILED',
         message: session.lastError || 'call session failed',
@@ -1138,6 +1271,7 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
     }));
     publishRealtimeEvent(createRealtimeEvent({
       sessionId,
+      eventId: `evt_${stableId(sessionId, 'call.terminal_failure').slice(0, 20)}`,
       type: 'call.terminal_failure',
       actor: { role: 'system', id: 'backend' },
       payload: {
@@ -1390,6 +1524,52 @@ fastify.post('/v1/realtime/sessions/:sessionId/transcript-snapshots/compact', as
   };
 });
 
+fastify.get('/v1/billing/sessions/:sessionId/usage-records', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 500;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 500;
+  const meterIdFilter = req.query?.meterId ? String(req.query.meterId).trim() : null;
+
+  const rows = meterIdFilter
+    ? dbCtx.listUsageMeterRecordsBySessionAndMeter.all(sessionId, meterIdFilter, limit)
+    : dbCtx.listUsageMeterRecordsBySession.all(sessionId, limit);
+
+  const records = rows.map(normalizeUsageMeterRecordRow);
+  const totalsByMeter = records.reduce((acc, row) => {
+    const current = acc[row.meterId] || 0;
+    acc[row.meterId] = current + Number(row.quantity || 0);
+    return acc;
+  }, {});
+
+  return {
+    ok: true,
+    sessionId,
+    count: records.length,
+    records,
+    totalsByMeter,
+  };
+});
+
+fastify.get('/v1/billing/sessions/:sessionId/events', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 500;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 500;
+
+  const rows = dbCtx.listBillingUsageEventsBySession.all(sessionId, limit);
+  const events = rows.map(normalizeBillingUsageEventRow);
+
+  return {
+    ok: true,
+    sessionId,
+    count: events.length,
+    events,
+  };
+});
+
 fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) => {
   const sessionId = String(req.params?.sessionId || '').trim();
   if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
@@ -1600,7 +1780,25 @@ fastify.post('/v1/orchestration/actions/execute', async (req, reply) => {
       },
       ts: nowIso(),
     });
-    publishRealtimeEvent(executedEvent);
+    const executedResult = publishRealtimeEvent(executedEvent);
+
+    let metering = null;
+    try {
+      metering = recordUsageAndEmitBillingEvent({
+        sessionId,
+        meterId: 'orchestration.action.executed.count',
+        unit: 'count',
+        quantity: 1,
+        sourceEvent: executedResult.event,
+        metadata: {
+          actionId,
+          actionType,
+          riskTier,
+        },
+      });
+    } catch (err) {
+      req.log.error({ err, sessionId, actionId }, 'metering_action_execution_record_failed');
+    }
 
     return {
       ok: true,
@@ -1608,6 +1806,7 @@ fastify.post('/v1/orchestration/actions/execute', async (req, reply) => {
       actionId,
       actionType,
       result: execution,
+      metering,
       ack: {
         status: 'executed',
         outcomeRef: execution.resultRef,
@@ -1620,7 +1819,7 @@ fastify.post('/v1/orchestration/actions/execute', async (req, reply) => {
       events: {
         requested: requestedEvent,
         safety: safetyEvent,
-        executed: executedEvent,
+        executed: executedResult.event,
       },
     };
   } catch (err) {

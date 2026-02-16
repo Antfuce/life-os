@@ -38,3 +38,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Completed P1 #7 hardening with transcript snapshot stats + compaction support (`/v1/realtime/sessions/:sessionId/transcript-snapshots/compact`) and replay diagnostics (`eventsQueryMs`, `snapshotsQueryMs`, row counts).
 - Next: Move to P1 #8 metering records + idempotent billing emission path, then wire reconciliation scaffolding.
 - Risks: Compaction policy must be tuned per traffic profile to avoid losing useful debug history while keeping replay latency bounded.
+
+## 2026-02-16T14:20:00Z — OpenClaw run note (P1 #8/#9 kickoff increment)
+- Changed: Added metering + billing persistence foundation: `usage_meter_record` + `billing_usage_event` tables, idempotent billing emission from canonical source events, and billing query APIs (`/v1/billing/sessions/:sessionId/usage-records`, `/v1/billing/sessions/:sessionId/events`).
+- Next: Implement signed meter records, account-level aggregation, and `billing.adjustment.created` + dead-letter/failure routing to finish P1 #8/#9.
+- Risks: Without account-level aggregation/signing, emitted usage remains session-scoped and not yet settlement-grade.

@@ -103,6 +103,30 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       createdAtMs INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS usage_meter_record (
+      recordId TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL,
+      meterId TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      sourceEventId TEXT NOT NULL UNIQUE,
+      sourceSequence INTEGER,
+      sourceTimestamp TEXT,
+      metadataJson TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS billing_usage_event (
+      billingEventId TEXT PRIMARY KEY,
+      usageRecordId TEXT NOT NULL UNIQUE,
+      sessionId TEXT NOT NULL,
+      meterId TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      payloadJson TEXT NOT NULL,
+      createdAtMs INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_message_conv_ts ON message(conversationId, tsMs);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_call_ts ON action_audit(actionId, callTimestampMs);
     CREATE INDEX IF NOT EXISTS idx_call_session_user_created ON call_session(userId, createdAtMs);
@@ -111,6 +135,9 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     CREATE INDEX IF NOT EXISTS idx_realtime_event_session_sequence ON realtime_event(sessionId, sequence);
     CREATE INDEX IF NOT EXISTS idx_transcript_snapshot_session_sequence ON transcript_snapshot(sessionId, sequence);
     CREATE INDEX IF NOT EXISTS idx_transcript_snapshot_session_utterance_sequence ON transcript_snapshot(sessionId, utteranceId, sequence);
+    CREATE INDEX IF NOT EXISTS idx_usage_meter_record_session_created ON usage_meter_record(sessionId, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_usage_meter_record_session_meter_created ON usage_meter_record(sessionId, meterId, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_billing_usage_event_session_created ON billing_usage_event(sessionId, createdAtMs);
   `);
 
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
@@ -222,6 +249,41 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       LIMIT ?`
   );
 
+  const insertUsageMeterRecord = db.prepare(
+    `INSERT OR IGNORE INTO usage_meter_record (
+      recordId, sessionId, meterId, unit, quantity, sourceEventId,
+      sourceSequence, sourceTimestamp, metadataJson, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const listUsageMeterRecordsBySession = db.prepare(
+    `SELECT * FROM usage_meter_record
+      WHERE sessionId = ?
+      ORDER BY createdAtMs ASC
+      LIMIT ?`
+  );
+
+  const listUsageMeterRecordsBySessionAndMeter = db.prepare(
+    `SELECT * FROM usage_meter_record
+      WHERE sessionId = ?
+        AND meterId = ?
+      ORDER BY createdAtMs ASC
+      LIMIT ?`
+  );
+
+  const insertBillingUsageEvent = db.prepare(
+    `INSERT OR IGNORE INTO billing_usage_event (
+      billingEventId, usageRecordId, sessionId, meterId, unit, quantity, payloadJson, createdAtMs
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const listBillingUsageEventsBySession = db.prepare(
+    `SELECT * FROM billing_usage_event
+      WHERE sessionId = ?
+      ORDER BY createdAtMs ASC
+      LIMIT ?`
+  );
+
   const getTranscriptSnapshotStatsBySession = db.prepare(
     `SELECT
       COUNT(*) AS count,
@@ -314,6 +376,11 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     insertTranscriptSnapshot,
     listTranscriptSnapshotsBySession,
     listTranscriptSnapshotsBySessionAfterSequence,
+    insertUsageMeterRecord,
+    listUsageMeterRecordsBySession,
+    listUsageMeterRecordsBySessionAndMeter,
+    insertBillingUsageEvent,
+    listBillingUsageEventsBySession,
     getTranscriptSnapshotStatsBySession,
     compactTranscriptSnapshotsBySessionKeepLast,
     listRealtimeEventsAfterSequence,

@@ -31,10 +31,18 @@ const EVENT_PAYLOAD_VALIDATORS = {
   'safety.blocked': (p) => req(p, ['policyId', 'reason', 'decision']),
   'safety.approved': (p) => req(p, ['policyId', 'decision']),
 
-  'billing.usage.recorded': (p) => req(p, ['meterId', 'billableSeconds']) && isNonNegInt(p.billableSeconds),
+  'billing.usage.recorded': (p) => req(p, ['meterId'])
+    && (
+      isNonNegInt(p.billableSeconds)
+      || (isNonNegInt(p.quantity) && inEnum(p.unit, ['seconds', 'count']))
+    ),
   'billing.adjustment.created': (p) => req(p, ['adjustmentId', 'meterId', 'amount', 'currency'])
     && typeof p.amount === 'number',
-  'usage.tick': (p) => req(p, ['meterId', 'billableSeconds']) && isNonNegInt(p.billableSeconds),
+  'usage.tick': (p) => req(p, ['meterId'])
+    && (
+      isNonNegInt(p.billableSeconds)
+      || (isNonNegInt(p.quantity) && inEnum(p.unit, ['seconds', 'count']))
+    ),
   'usage.warning': (p) => req(p, ['meterId', 'thresholdType', 'thresholdValue', 'currentValue', 'message'])
     && inEnum(p.thresholdType, ['seconds', 'cost']),
   'usage.stopped': (p) => req(p, ['meterId', 'finalBillableSeconds', 'reason'])

@@ -102,22 +102,25 @@
 ### P1/P2 — Metering, Billing, and Reconciliation
 
 #### 8. Usage Metering Pipeline (P1)
-- **Status:** Not started
+- **Status:** **In progress**
 - **What:** Capture usage units from call lifecycle and orchestration actions.
-- **Scope:**
-  - Meter call duration and billable action counts
-  - Normalize units per session/account
-  - Emit signed metering records
+- **Progress:** Implemented persistent usage meter records (`usage_meter_record`) with idempotency keyed by source event, wired for `call.duration.seconds` and `orchestration.action.executed.count`.
+- **Implementation:** `server/db.mjs`, `server/index.mjs`, `server/test/metering-billing.test.mjs`
+- **Verification:**
+  - `node --test server/test/metering-billing.test.mjs` → call/action metering dedupe + blocked-action no-meter checks pass.
+  - `node --test server/test/*.test.mjs` → green backend baseline.
+- **Remaining scope:** add account-level aggregation/normalization and signed meter record support.
 - **Owner:** Backend
 - **Dependencies:** Depends on **1**, **3**, and **7**
 
 #### 9. Billing Event Emission (P1)
-- **Status:** Not started
+- **Status:** **In progress**
 - **What:** Emit billing-grade events from metering and persistence layers.
-- **Scope:**
-  - `billing.usage.recorded`, `billing.adjustment.created`
-  - Idempotency keys and replay-safe publishing
-  - Dead-letter queue for failed downstream writes
+- **Progress:** Added idempotent `billing.usage.recorded` emission linked to persisted usage records, plus persisted billing event log (`billing_usage_event`) and query endpoints.
+- **Implementation:** `server/db.mjs`, `server/index.mjs` (`/v1/billing/sessions/:sessionId/events`), `server/test/metering-billing.test.mjs`
+- **Verification:**
+  - `node --test server/test/metering-billing.test.mjs` → one billing event per deduped source action/call-end path.
+- **Remaining scope:** implement `billing.adjustment.created` pipeline and dead-letter/failure routing.
 - **Owner:** Backend
 - **Dependencies:** Depends on **8** and **7**
 
@@ -240,4 +243,4 @@
 
 ## Next Action
 
-**Backend:** Start P1 #8 metering records and idempotent billing emission scaffolding on top of the now-complete persistence baseline.
+**Backend:** Continue P1 #8/#9 by adding account-level aggregation, signed metering records, and `billing.adjustment.created` + failure-routing path.
