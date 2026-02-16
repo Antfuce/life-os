@@ -436,11 +436,32 @@ function createPolicyDecision({ actionId, actionType, riskTier, userConfirmation
   };
 }
 
-function executeOrchestrationAction({ actionType, payload }) {
-  const resultRef = `result_${stableId(actionType, JSON.stringify(payload || {}), Date.now()).slice(0, 18)}`;
+const SUPPORTED_ORCHESTRATION_ACTIONS = new Set([
+  'cv.generate',
+  'cv.edit',
+  'interview.generate',
+  'interview.practice',
+  'outreach.generate',
+  'outreach.edit',
+  'outreach.requestSend',
+]);
+
+function executeOrchestrationAction({ sessionId, actionId, actionType, payload }) {
+  if (!SUPPORTED_ORCHESTRATION_ACTIONS.has(actionType)) {
+    const err = new Error(`unsupported actionType: ${actionType}`);
+    err.code = 'UNSUPPORTED_ACTION_TYPE';
+    err.retryable = false;
+    err.statusCode = 422;
+    throw err;
+  }
+
+  const payloadFingerprint = stableId(JSON.stringify(payload || {})).slice(0, 12);
+  const resultRef = `result_${stableId(sessionId, actionId, actionType, payloadFingerprint).slice(0, 18)}`;
+
   return {
     ok: true,
     resultRef,
+    actionType,
   };
 }
 
@@ -1398,39 +1419,98 @@ fastify.post('/v1/orchestration/actions/execute', async (req, reply) => {
   }
 
   const startedAtMs = Date.now();
-  const execution = executeOrchestrationAction({ actionType, payload: body.payload });
-  const durationMs = Math.max(0, Date.now() - startedAtMs);
 
-  const executedEvent = createRealtimeEvent({
-    sessionId,
-    type: 'action.executed',
-    actor,
-    payload: {
+  try {
+    const execution = executeOrchestrationAction({
+      sessionId,
       actionId,
-      durationMs,
-      resultRef: execution.resultRef,
-    },
-    timestamp: nowIso(),
-  });
-  publishRealtimeEvent(executedEvent);
+      actionType,
+      payload: body.payload,
+    });
+    const durationMs = Math.max(0, Date.now() - startedAtMs);
 
-  return {
-    ok: true,
-    blocked: false,
-    actionId,
-    actionType,
-    result: execution,
-    decision: {
-      policyId: decision.policyId,
-      decision: decision.decision,
-      reason: decision.reason,
-    },
-    events: {
-      requested: requestedEvent,
-      safety: safetyEvent,
-      executed: executedEvent,
-    },
-  };
+    const executedEvent = createRealtimeEvent({
+      sessionId,
+      eventId: `evt_${stableId(sessionId, actionId, 'executed').slice(0, 20)}`,
+      type: 'action.executed',
+      actor,
+      payload: {
+        actionId,
+        durationMs,
+        resultRef: execution.resultRef,
+      },
+      ts: nowIso(),
+    });
+    publishRealtimeEvent(executedEvent);
+
+    return {
+      ok: true,
+      blocked: false,
+      actionId,
+      actionType,
+      result: execution,
+      ack: {
+        status: 'executed',
+        outcomeRef: execution.resultRef,
+      },
+      decision: {
+        policyId: decision.policyId,
+        decision: decision.decision,
+        reason: decision.reason,
+      },
+      events: {
+        requested: requestedEvent,
+        safety: safetyEvent,
+        executed: executedEvent,
+      },
+    };
+  } catch (err) {
+    const failedAtMs = Date.now();
+    const failureCode = String(err?.code || 'ACTION_EXECUTION_FAILED');
+    const failureMessage = String(err?.message || 'action execution failed');
+    const retryable = err?.retryable === true;
+    const statusCodeRaw = Number(err?.statusCode);
+    const statusCode = Number.isFinite(statusCodeRaw) ? Math.max(400, Math.min(599, Math.trunc(statusCodeRaw))) : 500;
+
+    const failedEvent = createRealtimeEvent({
+      sessionId,
+      eventId: `evt_${stableId(sessionId, actionId, 'failed', failureCode).slice(0, 20)}`,
+      type: 'action.failed',
+      actor,
+      payload: {
+        actionId,
+        code: failureCode,
+        message: failureMessage,
+        retryable,
+      },
+      ts: new Date(failedAtMs).toISOString(),
+    });
+    publishRealtimeEvent(failedEvent);
+
+    return reply.code(statusCode).send({
+      ok: false,
+      blocked: false,
+      code: failureCode,
+      message: failureMessage,
+      retryable,
+      actionId,
+      actionType,
+      ack: {
+        status: 'failed',
+        outcomeRef: failedEvent.eventId,
+      },
+      decision: {
+        policyId: decision.policyId,
+        decision: decision.decision,
+        reason: decision.reason,
+      },
+      events: {
+        requested: requestedEvent,
+        safety: safetyEvent,
+        failed: failedEvent,
+      },
+    });
+  }
 });
 
 // v2: Structured UI event streaming

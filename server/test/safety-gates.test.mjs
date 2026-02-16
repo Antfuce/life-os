@@ -99,6 +99,8 @@ test('confirmed outreach action emits safety.approved then executes', async () =
     const json = await response.json();
     assert.equal(response.status, 200);
     assert.equal(json.ok, true);
+    assert.equal(json.ack?.status, 'executed');
+    assert.equal(typeof json.ack?.outcomeRef, 'string');
 
     const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
     const replayJson = await replay.json();
@@ -107,6 +109,46 @@ test('confirmed outreach action emits safety.approved then executes', async () =
     assert.equal(replayJson.events[0].type, 'orchestration.action.requested');
     assert.equal(replayJson.events[1].type, 'safety.approved');
     assert.equal(replayJson.events[2].type, 'action.executed');
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('unsupported action emits action.failed with deterministic fail ack', async () => {
+  const srv = await startServer();
+  try {
+    const sessionId = 'sess_orch_fail_1';
+    const response = await fetch(`${srv.baseUrl}/v1/orchestration/actions/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({
+        sessionId,
+        actionId: 'act-unsupported-1',
+        actionType: 'unknown.action',
+        summary: 'Unsupported action type should fail deterministically',
+        riskTier: 'low-risk-write',
+        payload: { any: 'value' },
+      }),
+    });
+    const json = await response.json();
+
+    assert.equal(response.status, 422);
+    assert.equal(json.ok, false);
+    assert.equal(json.code, 'UNSUPPORTED_ACTION_TYPE');
+    assert.equal(json.ack?.status, 'failed');
+    assert.equal(typeof json.ack?.outcomeRef, 'string');
+
+    const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
+    const replayJson = await replay.json();
+    assert.equal(replay.status, 200);
+    assert.equal(replayJson.events.length, 3);
+    const types = replayJson.events.map((evt) => evt.type);
+    assert.ok(types.includes('orchestration.action.requested'));
+    assert.ok(types.includes('safety.approved'));
+    assert.ok(types.includes('action.failed'));
+
+    const failedEvent = replayJson.events.find((evt) => evt.type === 'action.failed');
+    assert.equal(failedEvent?.payload?.code, 'UNSUPPORTED_ACTION_TYPE');
   } finally {
     await srv.stop();
   }

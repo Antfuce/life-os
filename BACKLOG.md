@@ -61,25 +61,28 @@
 
 ### P1 — Orchestration, Safety, and Persistence
 
-- **Gate:** ✅ **Unlocked** — P0 #1–#4 acceptance criteria are documented above as satisfied, with implementation + verification evidence.
+- **Gate:** ✅ **GO** (2026-02-16) — P0 #1–#4 acceptance criteria are documented as satisfied; reviewer decision is **go** for P1 kickoff.
 
 #### 5. In-Call Orchestration Actions
-- **Status:** Not started
+- **Status:** **In progress**
 - **What:** Execute structured orchestration actions while call is live.
-- **Scope:**
-  - Action intents emitted as `orchestration.action.requested`
-  - Backend tool execution + result events
-  - Deterministic acknowledgement/failure handling
+- **Progress:** Action lifecycle now emits request + decision + terminal execution/failure events with deterministic ack semantics (`ack.status = executed|failed`, deterministic outcome refs).
+- **Implementation:** `server/index.mjs` (`/v1/orchestration/actions/execute`), `server/test/safety-gates.test.mjs`
+- **Verification:**
+  - `node --test server/test/safety-gates.test.mjs` → includes deterministic fail-ack path for unsupported action types.
+  - `node --test server/test/*.test.mjs` → green baseline.
+- **Remaining scope:** wire real tool-executor outcomes (beyond stub result refs) and add deterministic ack behavior for repeated successful retries at action-id level.
 - **Owner:** OpenClaw + Backend
 - **Dependencies:** Depends on **2** and **3**
 
 #### 6. Safety Gates for In-Call Execution
-- **Status:** Not started
+- **Status:** **In progress**
 - **What:** Add explicit policy and confirmation gates before sensitive actions.
-- **Scope:**
-  - Human confirmation for outreach/send-like operations
-  - Policy engine events (`safety.blocked`, `safety.approved`)
-  - Audit metadata in every decision
+- **Progress:** Sensitive outreach/send-like actions are blocked without explicit confirmation; approved decisions emit `safety.approved`; blocked decisions emit `safety.blocked`; decisions are audit-persisted.
+- **Implementation:** `server/index.mjs` (`createPolicyDecision`, `/v1/orchestration/actions/execute`, `/v1/actions/decision`), `server/test/safety-gates.test.mjs`
+- **Verification:**
+  - `node --test server/test/safety-gates.test.mjs` → blocked-without-confirmation + approved-with-confirmation paths pass.
+- **Remaining scope:** move from boolean confirmation to explicit confirmation-token/approval workflow and tighten policy configuration surface.
 - **Owner:** Backend
 - **Dependencies:** Depends on **5** and **3**
 

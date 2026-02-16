@@ -23,3 +23,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Completed backend/test merge-artifact cleanup, hardened realtime endpoint envelope validation, and added CI guards for conflict markers + backend syntax regressions.
 - Next: Close out P0 explicitly with evidence-linked documentation, then kick off P1 scope (in-call orchestration + safety gates) against a green lint/test baseline.
 - Risks: Direct-to-prod delivery without review artifacts can cause evidence drift between shipped code and documented acceptance proof.
+
+## 2026-02-16T11:57:00Z — OpenClaw run note (P1 kickoff)
+- Changed: Formally set P0 gate to GO in backlog docs and started P1 by hardening orchestration lifecycle with deterministic executed/failed acknowledgements plus explicit unsupported-action failure path (`action.failed`).
+- Next: Continue P1 #5/#6 by adding durable action-id idempotency for repeat submits and migrate confirmation from boolean to explicit tokenized approval flow; then start P1 #7 transcript/event persistence hardening.
+- Risks: Direct-to-prod cadence can outpace reviewer evidence unless each increment includes synchronized backlog + coordination updates and command-output proof.
