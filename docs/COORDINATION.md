@@ -133,3 +133,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Addressed two QA-reported buyer-visible issues: (1) microphone recording now stays resilient across premature `onend` interruptions via speech auto-restart and clearer mic error handling; voice-only turns now auto-submit when recording ends so mic tap produces actionable output, and (2) removed static/manual persona controls from UI (`PersonaSelector`, static "Executor", fixed "Antonio & Mariana" branding labels) and switched to dynamic context-driven persona hints (resume/interview→strategy, coaching terms→coaching, fallback collaborative) with neutral UI labels.
 - Next: Validate these fixes against live QA flows, then continue with action-approval UX polish and any new repro items.
 - Risks: Browser speech-recognition reliability still varies by device/browser permission model; for strict determinism a backend speech transport path may still be needed beyond Web Speech API.
+
+## 2026-02-16T21:17:00Z — OpenClaw run note (sync-path hardening)
+- Changed: Verified local↔remote git sync parity (`prod` HEAD equals `origin/prod`) and applied frontend env fallback hardening so API calls resolve via `VITE_API_ORIGIN` or `VITE_BASE44_APP_BASE_URL`, matching Base44 local setup docs and reducing environment misconfig drift.
+- Next: Ask operator to publish latest Base44 Builder revision and hard-refresh/Incognito validate that QA is running against latest commit.
+- Risks: Base44 visibility remains publish-gated; even with git sync parity, users can observe stale UI until Builder publish/cache refresh completes.

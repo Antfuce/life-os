@@ -85,7 +85,7 @@ export default function Home() {
   }, []);
 
   const postActionDecision = useCallback(async (payload) => {
-    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
+    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || import.meta.env.VITE_BASE44_APP_BASE_URL || "";
     try {
       await fetch(`${API_ORIGIN}/v1/actions/decision`, {
         method: 'POST',
@@ -196,7 +196,7 @@ export default function Home() {
 
   // Stream from backend with UI event parsing
   const streamFromBackend = async (text, personaHint = 'both') => {
-    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
+    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || import.meta.env.VITE_BASE44_APP_BASE_URL || "";
     let latestAssistantText = '';
 
     const mergeAssistantText = (incoming) => {
