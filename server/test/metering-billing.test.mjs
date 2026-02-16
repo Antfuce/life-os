@@ -97,6 +97,8 @@ test('call end writes one metering record and one billing event across idempoten
     assert.equal(usageJson.count, 1);
     assert.equal(usageJson.records[0].meterId, 'call.duration.seconds');
     assert.ok(usageJson.records[0].quantity >= 1);
+    assert.equal(typeof usageJson.records[0].signature, 'string');
+    assert.equal(usageJson.records[0].signatureVersion, 'hs256.v1');
 
     const billingResp = await fetch(`${srv.baseUrl}/v1/billing/sessions/${sessionId}/events`);
     const billingJson = await billingResp.json();
@@ -191,6 +193,109 @@ test('blocked sensitive action does not create metering/billing records', async 
     const billingJson = await billingResp.json();
     assert.equal(billingResp.status, 200);
     assert.equal(billingJson.count, 0);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('account usage summary aggregates signed records across sessions', async () => {
+  const srv = await startServer();
+  try {
+    const executeA = await fetch(`${srv.baseUrl}/v1/orchestration/actions/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({
+        sessionId: 'sess_account_sum_1',
+        actionId: 'act-account-sum-1',
+        actionType: 'cv.generate',
+        summary: 'Generate CV A',
+        riskTier: 'low-risk-write',
+        payload: { targetRole: 'chef' },
+      }),
+    });
+    assert.equal(executeA.status, 200);
+
+    const executeB = await fetch(`${srv.baseUrl}/v1/orchestration/actions/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({
+        sessionId: 'sess_account_sum_2',
+        actionId: 'act-account-sum-2',
+        actionType: 'cv.edit',
+        summary: 'Edit CV B',
+        riskTier: 'low-risk-write',
+        payload: { targetRole: 'waiter' },
+      }),
+    });
+    assert.equal(executeB.status, 200);
+
+    const summaryResp = await fetch(`${srv.baseUrl}/v1/billing/accounts/user-a/usage-summary`, {
+      headers: { 'x-user-id': 'user-a' },
+    });
+    const summaryJson = await summaryResp.json();
+    assert.equal(summaryResp.status, 200);
+
+    const row = summaryJson.summary.find((entry) => entry.meterId === 'orchestration.action.executed.count');
+    assert.ok(row);
+    assert.equal(row.unit, 'count');
+    assert.equal(row.totalQuantity, 2);
+    assert.equal(row.recordsCount, 2);
+    assert.equal(summaryJson.records.every((record) => typeof record.signature === 'string'), true);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('billing adjustment emits event and routes forced publish failures to dead-letter', async () => {
+  const srv = await startServer();
+  try {
+    const sessionId = 'sess_adjustment_1';
+
+    const adjOkResp = await fetch(`${srv.baseUrl}/v1/billing/adjustments`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({
+        sessionId,
+        accountId: 'user-a',
+        meterId: 'call.duration.seconds',
+        amount: -1.25,
+        currency: 'EUR',
+        reason: 'courtesy_credit',
+      }),
+    });
+    const adjOkJson = await adjOkResp.json();
+    assert.equal(adjOkResp.status, 200);
+    assert.equal(adjOkJson.published, true);
+
+    const eventsResp = await fetch(`${srv.baseUrl}/v1/billing/sessions/${sessionId}/events?eventType=billing.adjustment.created`);
+    const eventsJson = await eventsResp.json();
+    assert.equal(eventsResp.status, 200);
+    assert.equal(eventsJson.count, 1);
+    assert.equal(eventsJson.events[0].eventType, 'billing.adjustment.created');
+
+    const adjDlqResp = await fetch(`${srv.baseUrl}/v1/billing/adjustments`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-a' },
+      body: JSON.stringify({
+        sessionId,
+        accountId: 'user-a',
+        meterId: 'call.duration.seconds',
+        amount: 0.5,
+        currency: 'EUR',
+        reason: 'manual_patch',
+        forcePublishFailure: true,
+      }),
+    });
+    const adjDlqJson = await adjDlqResp.json();
+    assert.equal(adjDlqResp.status, 200);
+    assert.equal(adjDlqJson.published, false);
+    assert.equal(typeof adjDlqJson.deadLetterId, 'string');
+
+    const deadResp = await fetch(`${srv.baseUrl}/v1/billing/sessions/${sessionId}/dead-letters`);
+    const deadJson = await deadResp.json();
+    assert.equal(deadResp.status, 200);
+    assert.equal(deadJson.count, 1);
+    assert.equal(deadJson.deadLetters[0].eventType, 'billing.adjustment.created');
   } finally {
     await srv.stop();
   }

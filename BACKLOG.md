@@ -102,25 +102,23 @@
 ### P1/P2 — Metering, Billing, and Reconciliation
 
 #### 8. Usage Metering Pipeline (P1)
-- **Status:** **In progress**
+- **Status:** **Done**
 - **What:** Capture usage units from call lifecycle and orchestration actions.
-- **Progress:** Implemented persistent usage meter records (`usage_meter_record`) with idempotency keyed by source event, wired for `call.duration.seconds` and `orchestration.action.executed.count`.
-- **Implementation:** `server/db.mjs`, `server/index.mjs`, `server/test/metering-billing.test.mjs`
+- **Progress:** Added durable, idempotent usage metering records for call duration and action execution, plus account-level summary aggregation and signed meter records (`hs256.v1`).
+- **Implementation:** `server/db.mjs` (`usage_meter_record` schema/signature/account fields + account summary queries), `server/index.mjs` (metering pipeline + `/v1/billing/accounts/:accountId/usage-summary`), `server/test/metering-billing.test.mjs`
 - **Verification:**
-  - `node --test server/test/metering-billing.test.mjs` → call/action metering dedupe + blocked-action no-meter checks pass.
+  - `node --test server/test/metering-billing.test.mjs` → call/action dedupe + account usage summary + signature assertions pass.
   - `node --test server/test/*.test.mjs` → green backend baseline.
-- **Remaining scope:** add account-level aggregation/normalization and signed meter record support.
 - **Owner:** Backend
 - **Dependencies:** Depends on **1**, **3**, and **7**
 
 #### 9. Billing Event Emission (P1)
-- **Status:** **In progress**
+- **Status:** **Done**
 - **What:** Emit billing-grade events from metering and persistence layers.
-- **Progress:** Added idempotent `billing.usage.recorded` emission linked to persisted usage records, plus persisted billing event log (`billing_usage_event`) and query endpoints.
-- **Implementation:** `server/db.mjs`, `server/index.mjs` (`/v1/billing/sessions/:sessionId/events`), `server/test/metering-billing.test.mjs`
+- **Progress:** Added idempotent `billing.usage.recorded` emission, implemented `billing.adjustment.created`, persisted billing event log with event type metadata, and added dead-letter routing path for publish failures.
+- **Implementation:** `server/db.mjs` (`billing_usage_event`, `billing_dead_letter`), `server/index.mjs` (`/v1/billing/sessions/:sessionId/events`, `/v1/billing/sessions/:sessionId/dead-letters`, `/v1/billing/adjustments`), `server/test/metering-billing.test.mjs`
 - **Verification:**
-  - `node --test server/test/metering-billing.test.mjs` → one billing event per deduped source action/call-end path.
-- **Remaining scope:** implement `billing.adjustment.created` pipeline and dead-letter/failure routing.
+  - `node --test server/test/metering-billing.test.mjs` → usage event idempotency, adjustment emission, and dead-letter routing checks pass.
 - **Owner:** Backend
 - **Dependencies:** Depends on **8** and **7**
 
@@ -228,12 +226,12 @@
 
 ## Next 5 Tasks (Execution Order)
 
-1. **Usage Metering Pipeline (P1 #8)**
-   - Capture billable usage units from call lifecycle + orchestration in normalized records.
-2. **Billing Event Emission (P1 #9)**
-   - Emit replay-safe billing events with idempotency guarantees and failure routing.
-3. **Hourly Charging Reconciliation (P2 #10)**
+1. **Hourly Charging Reconciliation (P2 #10)**
    - Add reconciliation windowing, mismatch reporting, and alert hooks.
+2. **In-call action idempotency hardening (P1 #5 remainder)**
+   - Deterministic behavior for repeated successful retries and richer executor outcomes.
+3. **Safety token workflow (P1 #6 remainder)**
+   - Replace boolean confirmation with explicit tokenized approval lifecycle.
 4. **MVP hardening gates (operational)**
    - Stable origin/tunnel, limits/rate controls, observability, and failure UX baseline.
 5. **Recruitment outcomes closure loop**
@@ -243,4 +241,4 @@
 
 ## Next Action
 
-**Backend:** Continue P1 #8/#9 by adding account-level aggregation, signed metering records, and `billing.adjustment.created` + failure-routing path.
+**Backend:** Start P2 #10 hourly reconciliation scaffolding (windowing + mismatch report schema + alert hook contract).

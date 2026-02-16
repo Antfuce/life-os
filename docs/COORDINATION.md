@@ -43,3 +43,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Added metering + billing persistence foundation: `usage_meter_record` + `billing_usage_event` tables, idempotent billing emission from canonical source events, and billing query APIs (`/v1/billing/sessions/:sessionId/usage-records`, `/v1/billing/sessions/:sessionId/events`).
 - Next: Implement signed meter records, account-level aggregation, and `billing.adjustment.created` + dead-letter/failure routing to finish P1 #8/#9.
 - Risks: Without account-level aggregation/signing, emitted usage remains session-scoped and not yet settlement-grade.
+
+## 2026-02-16T14:33:00Z — OpenClaw run note (P1 #8/#9 complete)
+- Changed: Completed P1 #8/#9 with signed metering records, account-level usage summaries, `billing.adjustment.created` emission, and billing dead-letter routing (`billing_dead_letter`) plus retrieval APIs.
+- Next: Start P2 #10 hourly reconciliation scaffolding (windowing + mismatch report contract + alert hooks).
+- Risks: Reconciliation logic is not yet active; billing correctness still depends on downstream consumers until P2 #10 closes.

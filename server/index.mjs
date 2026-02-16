@@ -16,6 +16,7 @@ const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || null;
 const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL || null;
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || null;
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || null;
+const BILLING_SIGNING_SECRET = process.env.BILLING_SIGNING_SECRET || OPENCLAW_GATEWAY_TOKEN || 'life-os-dev-billing-secret';
 
 const liveKit = createLiveKitTokenIssuer({ apiKey: LIVEKIT_API_KEY, apiSecret: LIVEKIT_API_SECRET });
 
@@ -299,7 +300,7 @@ const DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST = 2000;
 fastify.get('/health', async () => ({ 
   ok: true, 
   contract: 'v1.0',
-  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark']
+  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark', 'usage-metering', 'billing-events', 'dead-letter-routing']
 }));
 
 fastify.get('/', async () => ({
@@ -321,6 +322,9 @@ fastify.get('/', async () => ({
     compactTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots/compact (POST json)',
     listUsageMeterRecords: '/v1/billing/sessions/:sessionId/usage-records (GET)',
     listBillingUsageEvents: '/v1/billing/sessions/:sessionId/events (GET)',
+    listBillingDeadLetters: '/v1/billing/sessions/:sessionId/dead-letters (GET)',
+    summarizeBillingAccountUsage: '/v1/billing/accounts/:accountId/usage-summary (GET)',
+    createBillingAdjustment: '/v1/billing/adjustments (POST json)',
     executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
     actionDecision: '/v1/actions/decision (POST json)',
   },
@@ -642,6 +646,7 @@ function normalizeTranscriptSnapshotRow(row) {
 function normalizeUsageMeterRecordRow(row) {
   return {
     recordId: row.recordId,
+    accountId: row.accountId,
     sessionId: row.sessionId,
     meterId: row.meterId,
     unit: row.unit,
@@ -649,6 +654,8 @@ function normalizeUsageMeterRecordRow(row) {
     sourceEventId: row.sourceEventId,
     sourceSequence: row.sourceSequence,
     sourceTimestamp: row.sourceTimestamp,
+    signature: row.signature || null,
+    signatureVersion: row.signatureVersion || null,
     metadata: parseStoredMetadata(row.metadataJson),
     createdAtMs: row.createdAtMs,
   };
@@ -657,8 +664,10 @@ function normalizeUsageMeterRecordRow(row) {
 function normalizeBillingUsageEventRow(row) {
   return {
     billingEventId: row.billingEventId,
-    usageRecordId: row.usageRecordId,
+    usageRecordId: row.usageRecordId || null,
+    accountId: row.accountId,
     sessionId: row.sessionId,
+    eventType: row.eventType || 'billing.usage.recorded',
     meterId: row.meterId,
     unit: row.unit,
     quantity: Number(row.quantity || 0),
@@ -667,20 +676,98 @@ function normalizeBillingUsageEventRow(row) {
   };
 }
 
-function buildBillingUsagePayload({ usageRecordId, meterId, unit, quantity, sourceEventId }) {
+function normalizeBillingDeadLetterRow(row) {
+  return {
+    deadLetterId: row.deadLetterId,
+    accountId: row.accountId || null,
+    sessionId: row.sessionId || null,
+    eventType: row.eventType,
+    eventId: row.eventId || null,
+    code: row.code || null,
+    message: row.message || null,
+    payload: JSON.parse(row.payloadJson),
+    createdAtMs: row.createdAtMs,
+  };
+}
+
+function buildBillingUsagePayload({ usageRecordId, accountId, meterId, unit, quantity, sourceEventId, signature, signatureVersion }) {
   const payload = {
     usageRecordId,
+    accountId,
     meterId,
     unit,
     quantity,
     sourceEventId,
+    signature,
+    signatureVersion,
   };
 
   if (unit === 'seconds') payload.billableSeconds = quantity;
   return payload;
 }
 
-function recordUsageAndEmitBillingEvent({ sessionId, meterId, unit, quantity, sourceEvent, metadata = {} }) {
+function signMeterRecord({ accountId, sessionId, meterId, unit, quantity, sourceEventId, sourceSequence, sourceTimestamp }) {
+  const canonical = [
+    accountId,
+    sessionId,
+    meterId,
+    unit,
+    Number(quantity || 0),
+    sourceEventId,
+    sourceSequence ?? '',
+    sourceTimestamp || '',
+  ].join('|');
+  return createHmac('sha256', BILLING_SIGNING_SECRET).update(canonical).digest('hex');
+}
+
+function emitBillingEventWithDeadLetter({ sessionId, accountId, eventType, eventId, payload, ts, forcePublishFailure = false }) {
+  try {
+    if (forcePublishFailure) throw new Error('forced_publish_failure_for_dead_letter_path');
+
+    const billingEvent = createRealtimeEvent({
+      sessionId,
+      eventId,
+      type: eventType,
+      payload,
+      ts,
+    });
+
+    const publishResult = publishRealtimeEvent(billingEvent);
+    return {
+      ok: true,
+      published: true,
+      deduped: publishResult.deduped,
+      event: publishResult.event,
+      deadLetterId: null,
+    };
+  } catch (err) {
+    const deadLetterId = `dlq_${stableId(sessionId, eventType, eventId, Date.now()).slice(0, 24)}`;
+    dbCtx.insertBillingDeadLetter.run(
+      deadLetterId,
+      accountId || null,
+      sessionId || null,
+      eventType,
+      eventId || null,
+      String(err?.code || 'BILLING_EVENT_PUBLISH_FAILED'),
+      String(err?.message || 'billing event publish failed'),
+      JSON.stringify(payload || {}),
+      Date.now(),
+    );
+
+    return {
+      ok: false,
+      published: false,
+      deduped: false,
+      event: null,
+      deadLetterId,
+      code: String(err?.code || 'BILLING_EVENT_PUBLISH_FAILED'),
+      message: String(err?.message || 'billing event publish failed'),
+    };
+  }
+}
+
+function recordUsageAndEmitBillingEvent({ accountId, sessionId, meterId, unit, quantity, sourceEvent, metadata = {}, forcePublishFailure = false }) {
+  const normalizedAccountId = String(accountId || 'unknown').trim() || 'unknown';
   const numericQuantity = Number(quantity);
   const normalizedQuantity = Number.isFinite(numericQuantity) ? Math.max(0, Math.trunc(numericQuantity)) : 0;
   if (normalizedQuantity <= 0) {
@@ -699,9 +786,22 @@ function recordUsageAndEmitBillingEvent({ sessionId, meterId, unit, quantity, so
     : (typeof sourceEvent?.timestamp === 'string' ? sourceEvent.timestamp : null);
 
   const createdAtMs = Date.now();
-  const recordId = `mrec_${stableId(sessionId, meterId, unit, sourceEventId).slice(0, 24)}`;
+  const recordId = `mrec_${stableId(normalizedAccountId, sessionId, meterId, unit, sourceEventId).slice(0, 24)}`;
+  const signatureVersion = 'hs256.v1';
+  const signature = signMeterRecord({
+    accountId: normalizedAccountId,
+    sessionId,
+    meterId,
+    unit,
+    quantity: normalizedQuantity,
+    sourceEventId,
+    sourceSequence,
+    sourceTimestamp,
+  });
+
   const usageInsert = dbCtx.insertUsageMeterRecord.run(
     recordId,
+    normalizedAccountId,
     sessionId,
     meterId,
     unit,
@@ -709,23 +809,30 @@ function recordUsageAndEmitBillingEvent({ sessionId, meterId, unit, quantity, so
     sourceEventId,
     sourceSequence,
     sourceTimestamp,
+    signature,
+    signatureVersion,
     JSON.stringify(metadata),
     createdAtMs,
   );
 
   const payload = buildBillingUsagePayload({
     usageRecordId: recordId,
+    accountId: normalizedAccountId,
     meterId,
     unit,
     quantity: normalizedQuantity,
     sourceEventId,
+    signature,
+    signatureVersion,
   });
 
   const billingEventId = `evt_${stableId('billing.usage.recorded', recordId).slice(0, 20)}`;
   dbCtx.insertBillingUsageEvent.run(
     billingEventId,
     recordId,
+    normalizedAccountId,
     sessionId,
+    'billing.usage.recorded',
     meterId,
     unit,
     normalizedQuantity,
@@ -733,19 +840,22 @@ function recordUsageAndEmitBillingEvent({ sessionId, meterId, unit, quantity, so
     createdAtMs,
   );
 
-  const billingEvent = createRealtimeEvent({
+  const emit = emitBillingEventWithDeadLetter({
     sessionId,
+    accountId: normalizedAccountId,
+    eventType: 'billing.usage.recorded',
     eventId: billingEventId,
-    type: 'billing.usage.recorded',
     payload,
     ts: sourceTimestamp || new Date(createdAtMs).toISOString(),
+    forcePublishFailure,
   });
 
-  const publishResult = publishRealtimeEvent(billingEvent);
   return {
     ok: true,
     usageDeduped: !usageInsert?.changes,
-    billingDeduped: publishResult.deduped,
+    billingDeduped: emit.deduped,
+    billingPublished: emit.published,
+    deadLetterId: emit.deadLetterId || null,
     usageRecordId: recordId,
     billingEventId,
   };
@@ -1242,6 +1352,7 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
 
     try {
       recordUsageAndEmitBillingEvent({
+        accountId: auth.userId,
         sessionId,
         meterId: 'call.duration.seconds',
         unit: 'seconds',
@@ -1558,15 +1669,142 @@ fastify.get('/v1/billing/sessions/:sessionId/events', async (req, reply) => {
 
   const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 500;
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 500;
+  const eventTypeFilter = req.query?.eventType ? String(req.query.eventType).trim() : null;
 
   const rows = dbCtx.listBillingUsageEventsBySession.all(sessionId, limit);
-  const events = rows.map(normalizeBillingUsageEventRow);
+  const events = rows
+    .map(normalizeBillingUsageEventRow)
+    .filter((event) => !eventTypeFilter || event.eventType === eventTypeFilter);
 
   return {
     ok: true,
     sessionId,
     count: events.length,
     events,
+  };
+});
+
+fastify.get('/v1/billing/sessions/:sessionId/dead-letters', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 500;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 500;
+
+  const rows = dbCtx.listBillingDeadLettersBySession.all(sessionId, limit);
+  const deadLetters = rows.map(normalizeBillingDeadLetterRow);
+
+  return {
+    ok: true,
+    sessionId,
+    count: deadLetters.length,
+    deadLetters,
+  };
+});
+
+fastify.get('/v1/billing/accounts/:accountId/usage-summary', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 1000;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(10000, Math.trunc(limitRaw))) : 1000;
+
+  const records = dbCtx.listUsageMeterRecordsByAccount.all(accountId, limit).map(normalizeUsageMeterRecordRow);
+  const summaryRows = dbCtx.summarizeUsageByAccount.all(accountId);
+  const summary = summaryRows.map((row) => ({
+    meterId: row.meterId,
+    unit: row.unit,
+    totalQuantity: Number(row.totalQuantity || 0),
+    recordsCount: Number(row.recordsCount || 0),
+  }));
+
+  return {
+    ok: true,
+    accountId,
+    recordsCount: records.length,
+    summary,
+    records,
+  };
+});
+
+fastify.post('/v1/billing/adjustments', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const accountId = String(body.accountId || auth.userId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+  if (accountId !== auth.userId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const sessionId = String(body.sessionId || '').trim();
+  const meterId = String(body.meterId || '').trim();
+  const currency = String(body.currency || '').trim().toUpperCase();
+  const amountRaw = Number(body.amount);
+
+  if (!sessionId || !meterId || !currency || !Number.isFinite(amountRaw)) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId, meterId, amount(number), and currency are required', false);
+  }
+
+  const amount = Number(amountRaw);
+  const quantityMinor = Math.trunc(Math.round(amount * 100));
+  const reason = body.reason ? String(body.reason) : null;
+  const adjustmentId = body.adjustmentId
+    ? String(body.adjustmentId)
+    : `adj_${stableId(accountId, sessionId, meterId, amount, currency, Date.now()).slice(0, 16)}`;
+
+  const payload = {
+    adjustmentId,
+    meterId,
+    amount,
+    currency,
+    reason,
+    accountId,
+    sessionId,
+    metadata: parseRequestMetadata(body.metadata),
+  };
+
+  const createdAtMs = Date.now();
+  const billingEventId = `evt_${stableId('billing.adjustment.created', adjustmentId).slice(0, 20)}`;
+  dbCtx.insertBillingUsageEvent.run(
+    billingEventId,
+    null,
+    accountId,
+    sessionId,
+    'billing.adjustment.created',
+    meterId,
+    'currency_minor',
+    quantityMinor,
+    JSON.stringify(payload),
+    createdAtMs,
+  );
+
+  const emit = emitBillingEventWithDeadLetter({
+    sessionId,
+    accountId,
+    eventType: 'billing.adjustment.created',
+    eventId: billingEventId,
+    payload,
+    ts: new Date(createdAtMs).toISOString(),
+    forcePublishFailure: body.forcePublishFailure === true,
+  });
+
+  return {
+    ok: true,
+    accountId,
+    sessionId,
+    adjustmentId,
+    billingEventId,
+    published: emit.published,
+    deduped: emit.deduped,
+    deadLetterId: emit.deadLetterId,
   };
 });
 
@@ -1785,6 +2023,7 @@ fastify.post('/v1/orchestration/actions/execute', async (req, reply) => {
     let metering = null;
     try {
       metering = recordUsageAndEmitBillingEvent({
+        accountId: auth.userId,
         sessionId,
         meterId: 'orchestration.action.executed.count',
         unit: 'count',
