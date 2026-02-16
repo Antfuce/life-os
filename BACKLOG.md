@@ -22,17 +22,19 @@
 - **Dependencies:** None (foundational)
 
 #### 2. LiveKit Session Bridge (Realtime Transport)
-- **Status:** **Partially implemented**
+- **Status:** **Done**
 - **What:** Wire LiveKit transport through backend token issuance + provider event ingestion/translation.
-- **Current status:** Token issuance, session↔room mapping persistence, canonical event translation, and webhook authenticity/replay protection are in place.
+- **Current status:** Token issuance, session↔room mapping persistence, canonical event translation, webhook authenticity/replay protection, and live-provider operator evidence capture are in place.
 - **Acceptance criteria:**
   - [x] Backend issues short-lived LiveKit access token tied to session/user mapping.
   - [x] Inbound provider events translate into canonical `call.*` / `transcript.*` / `orchestration.*` families.
   - [x] Inbound provider event authenticity/replay protection is enforced and tested (signature verification + replay guard).
-  - [ ] End-to-end provider integration check against live LiveKit environment (room join/publish/subscribe roundtrip) is captured as repeatable evidence.
-- **Implementation:** `server/index.mjs`, `server/livekit-bridge.mjs`, `server/db.mjs` (`livekit_webhook_receipt`), `server/test/call-sessions.test.mjs`
-- **Verification (current):**
+  - [x] End-to-end provider integration check against live LiveKit environment (room join/publish/subscribe roundtrip) is captured as repeatable evidence.
+- **Implementation:** `server/index.mjs`, `server/livekit-bridge.mjs`, `server/db.mjs` (`livekit_webhook_receipt`), `server/test/call-sessions.test.mjs`, `scripts/livekit-e2e-evidence.mjs`, `docs/releases/livekit-e2e-evidence-2026-02-16T17-50-55-000Z.md`
+- **Verification:**
   - `node --test server/test/call-sessions.test.mjs` (token + translation + webhook signature/replay coverage)
+  - `node scripts/livekit-e2e-evidence.mjs --mode=prepare --baseUrl=http://127.0.0.1:3901 --userId=pilot-livekit`
+  - `node scripts/livekit-e2e-evidence.mjs --mode=collect --context=/tmp/livekit-e2e-context.json --report=docs/releases/livekit-e2e-evidence-2026-02-16T17-50-55-000Z.md`
 - **Owner:** Backend
 - **Dependencies:** Depends on **1. Call Session Service**
 
@@ -71,21 +73,21 @@
 
 #### P0 Phase-Gate Checklist (Mandatory before P1 continuation)
 - **Checklist status:** ✅ Completed (governance pass executed)
-- **Gate decision:** 🚧 **HOLD** until remaining P0 acceptance criteria in #2 are closed.
+- **Gate decision:** ✅ **GO** (all P0 acceptance criteria #1/#2/#3/#4 closed with evidence)
 
 - [x] Repo hygiene sweep completed on backend code/tests (`server/**/*.mjs`, `server/test/**/*.mjs`) for merge markers and branch-label debris.
 - [x] Hygiene verification commands executed (`grep` scans for `<<<<<<<`, `=======`, `>>>>>>>`, and stray branch-label lines) with no findings in backend sources/tests.
-- [x] Docs alignment maintained: P0 #2 tracked as partial; P0 #3 and #4 closure reflected with explicit acceptance criteria and evidence links.
+- [x] Docs alignment maintained: P0 #1/#2/#3/#4 closure reflected with explicit acceptance criteria and evidence links.
 - [x] Cross-agent audit log restored: latest production pushes and this stabilization pass documented in `docs/COORDINATION.md` using changed / next / risks format.
 - [x] Stabilization sign-off recorded by execution owner (OpenClaw run note + baseline checks).
 
-**Feature freeze rule:** Until this gate is flipped from **HOLD** to **GO**, only stabilization/closure work for P0 acceptance criteria is allowed; no net-new P1 feature scope.
+**Feature freeze rule:** ✅ Gate is now **GO**; P0-only freeze is lifted and controlled P1 continuation is allowed with evidence discipline intact.
 
 ---
 
 ### P1 — Orchestration, Safety, and Persistence
 
-- **Gate:** 🚧 **HOLD** (2026-02-16 stabilization pass) — P0 #2 remains open for final real-provider evidence closure; no additional P1 feature expansion until the formal P0 phase-gate checklist above stays green and unresolved acceptance criteria are closed.
+- **Gate:** ✅ **GO** (2026-02-16 evidence closure pass) — P0 criteria are closed; continue P1 expansion in priority order with synchronized tests/docs/evidence.
 
 #### 5. In-Call Orchestration Actions
 - **Status:** **In progress**
@@ -269,19 +271,19 @@
 
 ## Next 5 Tasks (Execution Order)
 
-1. **Close P0 #2 remaining acceptance criteria (LiveKit bridge evidence)**
-   - Capture repeatable live-integration evidence against real LiveKit room join/publish/subscribe flow.
-2. **Re-run P0 phase gate and flip HOLD→GO (for further P1 expansion)**
-   - Require hygiene, docs, and evidence checklist to stay green before reopening net-new P1 scope.
+1. **Targeted UI stabilization sprint (bug triage + fixes)**
+   - Resolve top buyer-visible UI defects now that P0 gate is GO.
+2. **P1 #5/#6 continuation (tokenized safety + richer executor semantics)**
+   - Upgrade confirmation workflow from boolean to explicit confirmation-token lifecycle and tighten idempotent executor semantics.
 3. **Pilot launch prep packet finalization**
    - Freeze MVP sellability docs/evidence bundle and operator onboarding checklist for first paid pilot.
-4. **Targeted UI stabilization sprint (bug triage + fixes)**
-   - Resolve top buyer-visible UI defects once P0 gate re-opens.
-5. **P1 remainder re-entry planning**
-   - Resume #5/#6 tokenized safety + richer executor semantics once gate is GO.
+4. **Operational reconciliation policy tuning**
+   - Validate retry/dead-letter trends under pilot traffic and finalize late-arrival backfill SLO policy.
+5. **Release hardening sweep before pilot start**
+   - Re-run full acceptance/tests/docs verification and publish updated evidence summary.
 
 ---
 
 ## Next Action
 
-**Backend:** execute and document repeatable live LiveKit integration evidence (room join/publish/subscribe + webhook signature path) to close final P0 #2 acceptance criterion.
+**Product + Backend:** start UI stabilization triage/fix pass on top buyer-visible defects while preserving P1 safety/orchestration guardrails.

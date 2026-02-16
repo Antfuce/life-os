@@ -33,6 +33,10 @@
 - LiveKit bridge hardening checks:
   - `node --test server/test/call-sessions.test.mjs` (signature validation + replay dedupe coverage)
   - `node scripts/livekit-e2e-evidence.mjs --mode=prepare` / `--mode=collect` (real-provider evidence harness)
+  - Evidence run (2026-02-16 17:50 UTC): `docs/releases/livekit-e2e-evidence-2026-02-16T17-50-55-000Z.md`
+    - Observed replay event families: `call.started`, `call.connected`
+    - Manual room join/publish: **PASS** (operator-confirmed)
+    - Backend canonical event capture for session: **PASS**
 - Realtime schema guard checks:
   - `node --test server/test/realtime-schema-contract.test.mjs`
   - fixture source: `server/test/fixtures/realtime-event-contract.v1.json`

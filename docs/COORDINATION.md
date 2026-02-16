@@ -118,3 +118,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Closed P0 #3 by adding explicit schema fixture matrix (`server/test/fixtures/realtime-event-contract.v1.json`), full contract regression test (`server/test/realtime-schema-contract.test.mjs`), and exported supported event-type set to enforce fixture coverage parity.
 - Next: Finish final P0 #2 real-provider evidence capture, then execute P0 #4 recovery hardening and rerun phase gate.
 - Risks: P0 gate remains HOLD until P0 #2 evidence + P0 #4 hardening are both completed and documented.
+
+## 2026-02-16T17:50:00Z — OpenClaw run note (P0 #2 evidence closure + gate GO)
+- Changed: Executed LiveKit E2E evidence collection using real project credentials, recorded operator-confirmed room join/publish outcome, persisted evidence report (`docs/releases/livekit-e2e-evidence-2026-02-16T17-50-55-000Z.md`), updated release evidence bundle linkage, and advanced backlog phase gate from HOLD to GO.
+- Next: Begin UI stabilization sprint on buyer-visible defects, then continue P1 #5/#6 tokenized safety + executor semantics.
+- Risks: Evidence currently depends on manual operator confirmation for media publish/subscribe; webhook/event capture remains environment-sensitive and should be re-validated in production network topology.
