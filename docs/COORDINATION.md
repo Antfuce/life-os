@@ -33,3 +33,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Started P1 #7 by adding append-only transcript snapshot persistence (`transcript_snapshot` table + indexes), persisted-write path on transcript event ingest, and transcript snapshot query API for replay/debug (`/v1/realtime/sessions/:sessionId/transcript-snapshots`).
 - Next: Add retention/compaction and replay-latency observability for snapshot growth, then move into P1 #8 metering records + idempotent billing event scaffolding.
 - Risks: Snapshot growth can increase replay latency/cost without retention controls; direct-to-prod requires strict evidence updates each increment to avoid doc drift.
+
+## 2026-02-16T13:49:00Z — OpenClaw run note (P1 #7 hardening complete)
+- Changed: Completed P1 #7 hardening with transcript snapshot stats + compaction support (`/v1/realtime/sessions/:sessionId/transcript-snapshots/compact`) and replay diagnostics (`eventsQueryMs`, `snapshotsQueryMs`, row counts).
+- Next: Move to P1 #8 metering records + idempotent billing emission path, then wire reconciliation scaffolding.
+- Risks: Compaction policy must be tuned per traffic profile to avoid losing useful debug history while keeping replay latency bounded.

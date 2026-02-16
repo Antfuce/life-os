@@ -294,6 +294,7 @@ await fastify.register(cors, { origin: true });
 const dbCtx = await initDb(process.env.LIFE_OS_DB);
 
 const DEFAULT_RECONNECT_WINDOW_MS = 2 * 60 * 1000;
+const DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST = 2000;
 
 fastify.get('/health', async () => ({ 
   ok: true, 
@@ -317,6 +318,7 @@ fastify.get('/', async () => ({
     ingestLiveKitEvent: '/v1/call/livekit/events (POST json)',
     reconnectCallSession: '/v1/call/sessions/:sessionId/reconnect (POST json)',
     listTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots (GET)',
+    compactTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots/compact (POST json)',
     executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
     actionDecision: '/v1/actions/decision (POST json)',
   },
@@ -1218,6 +1220,11 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
   const afterEventIdInput = req.query?.afterEventId ? String(req.query.afterEventId) : null;
   const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 100;
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
+  const snapshotLimitRaw = req.query?.snapshotLimit !== undefined ? Number(req.query.snapshotLimit) : DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST;
+  const snapshotLimit = Number.isFinite(snapshotLimitRaw)
+    ? Math.max(1, Math.min(20_000, Math.trunc(snapshotLimitRaw)))
+    : DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST;
+  const includeDiagnostics = String(req.query?.diagnostics || '').toLowerCase() === 'true' || String(req.query?.diagnostics || '') === '1';
 
   let watermarkTs = afterTsInput || '';
 
@@ -1249,6 +1256,9 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
     afterSequence = Math.max(afterSequence || 0, Number(existing.lastAckSequence) || 0);
   }
 
+  const requestStartedAtMs = Date.now();
+
+  const eventsQueryStartedAtMs = Date.now();
   let rows;
   if (afterSequence !== null) {
     rows = dbCtx.listRealtimeEventsAfterSequence.all(sessionId, afterSequence, limit);
@@ -1261,9 +1271,13 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
       limit,
     );
   }
+  const eventsQueryMs = Date.now() - eventsQueryStartedAtMs;
+
+  const snapshotsQueryStartedAtMs = Date.now();
+  const transcriptSnapshotRows = dbCtx.listTranscriptSnapshotsBySession.all(sessionId, snapshotLimit);
+  const snapshotsQueryMs = Date.now() - snapshotsQueryStartedAtMs;
 
   const events = rows.map(normalizeRealtimeEventRow);
-  const transcriptSnapshotRows = dbCtx.listTranscriptSnapshotsBySession.all(sessionId, 5000);
   const transcriptSnapshots = transcriptSnapshotRows.map(normalizeTranscriptSnapshotRow);
   const transcriptState = mergeTranscriptEvents(transcriptSnapshots);
   const latestSequence = Number(dbCtx.getRealtimeSessionMaxSequence.get(sessionId)?.maxSequence || 0);
@@ -1281,6 +1295,18 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
     events,
     transcriptState,
     transcriptSnapshotsCount: transcriptSnapshots.length,
+    ...(includeDiagnostics
+      ? {
+          diagnostics: {
+            eventsQueryMs,
+            snapshotsQueryMs,
+            totalQueryMs: Date.now() - requestStartedAtMs,
+            snapshotLimit,
+            snapshotRowsRead: transcriptSnapshotRows.length,
+            eventsRowsRead: rows.length,
+          },
+        }
+      : {}),
   };
 });
 
@@ -1288,11 +1314,13 @@ fastify.get('/v1/realtime/sessions/:sessionId/transcript-snapshots', async (req,
   const sessionId = String(req.params?.sessionId || '').trim();
   if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
 
+  const startedAtMs = Date.now();
   const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 200;
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.trunc(limitRaw))) : 200;
   const afterSequenceRaw = req.query?.afterSequence !== undefined ? Number(req.query.afterSequence) : null;
   const afterSequence = Number.isFinite(afterSequenceRaw) ? Math.max(0, Math.trunc(afterSequenceRaw)) : null;
   const utteranceIdFilter = req.query?.utteranceId ? String(req.query.utteranceId).trim() : null;
+  const includeStats = String(req.query?.includeStats || '').toLowerCase() === 'true' || String(req.query?.includeStats || '') === '1';
 
   const rows = afterSequence !== null
     ? dbCtx.listTranscriptSnapshotsBySessionAfterSequence.all(sessionId, afterSequence, limit)
@@ -1302,11 +1330,63 @@ fastify.get('/v1/realtime/sessions/:sessionId/transcript-snapshots', async (req,
     .map(normalizeTranscriptSnapshotRow)
     .filter((row) => !utteranceIdFilter || row.utteranceId === utteranceIdFilter);
 
+  const statsRow = includeStats ? dbCtx.getTranscriptSnapshotStatsBySession.get(sessionId) : null;
+
   return {
     ok: true,
     sessionId,
     count: snapshots.length,
     snapshots,
+    retention: {
+      keepLastDefault: DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST,
+    },
+    ...(includeStats
+      ? {
+          stats: {
+            count: Number(statsRow?.count || 0),
+            minSequence: Number(statsRow?.minSequence || 0),
+            maxSequence: Number(statsRow?.maxSequence || 0),
+            minTimestamp: statsRow?.minTimestamp || null,
+            maxTimestamp: statsRow?.maxTimestamp || null,
+            payloadBytes: Number(statsRow?.payloadBytes || 0),
+          },
+          diagnostics: {
+            queryMs: Date.now() - startedAtMs,
+          },
+        }
+      : {}),
+  };
+});
+
+fastify.post('/v1/realtime/sessions/:sessionId/transcript-snapshots/compact', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const body = req.body || {};
+  const keepLastRaw = body.keepLast !== undefined ? Number(body.keepLast) : DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST;
+  const keepLast = Number.isFinite(keepLastRaw)
+    ? Math.max(1, Math.min(20_000, Math.trunc(keepLastRaw)))
+    : DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST;
+
+  const before = dbCtx.getTranscriptSnapshotStatsBySession.get(sessionId);
+  const result = dbCtx.compactTranscriptSnapshotsBySessionKeepLast.run(sessionId, keepLast, sessionId);
+  const after = dbCtx.getTranscriptSnapshotStatsBySession.get(sessionId);
+
+  return {
+    ok: true,
+    sessionId,
+    keepLast,
+    deletedCount: Number(result?.changes || 0),
+    before: {
+      count: Number(before?.count || 0),
+      minSequence: Number(before?.minSequence || 0),
+      maxSequence: Number(before?.maxSequence || 0),
+    },
+    after: {
+      count: Number(after?.count || 0),
+      minSequence: Number(after?.minSequence || 0),
+      maxSequence: Number(after?.maxSequence || 0),
+    },
   };
 });
 

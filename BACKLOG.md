@@ -87,14 +87,13 @@
 - **Dependencies:** Depends on **5** and **3**
 
 #### 7. Transcript + Event Persistence
-- **Status:** **In progress**
+- **Status:** **Done**
 - **What:** Persist transcripts and event stream as source of truth.
-- **Progress:** Added append-only transcript snapshot persistence derived from canonical realtime ingest, plus transcript snapshot query API for replay/debug.
-- **Implementation:** `server/db.mjs` (`transcript_snapshot` table + indexes + query statements), `server/index.mjs` (snapshot write-on-ingest, `/v1/realtime/sessions/:sessionId/transcript-snapshots`, transcript state derived from persisted snapshots), `server/test/realtime-events.test.mjs`
+- **Progress:** Implemented append-only transcript snapshot persistence from canonical realtime ingest, transcript snapshot query API, retention compaction endpoint, and replay/snapshot query diagnostics.
+- **Implementation:** `server/db.mjs` (`transcript_snapshot` table, stats + compaction queries), `server/index.mjs` (snapshot write-on-ingest, `/v1/realtime/sessions/:sessionId/transcript-snapshots`, `/v1/realtime/sessions/:sessionId/transcript-snapshots/compact`, diagnostics in replay APIs), `server/test/realtime-events.test.mjs`
 - **Verification:**
-  - `node --test server/test/realtime-events.test.mjs` → transcript supersession + append-only snapshot persistence checks pass.
+  - `node --test server/test/realtime-events.test.mjs` → transcript supersession, append-only persistence, stats, and compaction behavior pass.
   - `node --test server/test/*.test.mjs` → green backend baseline.
-- **Remaining scope:** add retention/compaction policy + operational observability around snapshot growth and replay latency.
 - **Owner:** Backend
 - **Dependencies:** Depends on **3**; unlocks **4**, **9**, and **10**
 
@@ -226,19 +225,19 @@
 
 ## Next 5 Tasks (Execution Order)
 
-1. **In-Call Orchestration Actions (P1 #5)**
-   - Emit `orchestration.action.requested`, execute backend tool actions, and return deterministic success/failure acknowledgment events.
-2. **Safety Gates for In-Call Execution (P1 #6)**
-   - Enforce explicit approval gates for sensitive actions and audit every decision path.
-3. **Transcript + Event Persistence Hardening (P1 #7)**
-   - Finalize append-only durability, replay/debug query surfaces, and transcript indexing guarantees.
-4. **Usage Metering Pipeline (P1 #8)**
+1. **Usage Metering Pipeline (P1 #8)**
    - Capture billable usage units from call lifecycle + orchestration in normalized records.
-5. **Billing Event Emission (P1 #9)**
+2. **Billing Event Emission (P1 #9)**
    - Emit replay-safe billing events with idempotency guarantees and failure routing.
+3. **Hourly Charging Reconciliation (P2 #10)**
+   - Add reconciliation windowing, mismatch reporting, and alert hooks.
+4. **MVP hardening gates (operational)**
+   - Stable origin/tunnel, limits/rate controls, observability, and failure UX baseline.
+5. **Recruitment outcomes closure loop**
+   - Close CV/interview/outreach outcome loop on top of live orchestration.
 
 ---
 
 ## Next Action
 
-**Backend:** Continue P1 #7 persistence hardening (retention/observability), then begin P1 #8 usage metering records + idempotent billing event emission scaffolding.
+**Backend:** Start P1 #8 metering records and idempotent billing emission scaffolding on top of the now-complete persistence baseline.

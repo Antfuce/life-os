@@ -219,7 +219,7 @@ test('transcript.final deterministically supersedes transcript.partial and persi
     assert.equal(duplicateFinal.status, 200);
     assert.equal(duplicateFinal.json.deduped, true);
 
-    const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events`);
+    const replay = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/events?diagnostics=true&snapshotLimit=10`);
     const replayJson = await replay.json();
     assert.equal(replay.status, 200);
     assert.equal(replayJson.events.length, 3);
@@ -227,8 +227,11 @@ test('transcript.final deterministically supersedes transcript.partial and persi
     assert.equal(replayJson.transcriptState[0].type, 'transcript.final');
     assert.equal(replayJson.transcriptState[0].payload.text, 'hello world');
     assert.equal(replayJson.transcriptSnapshotsCount, 3);
+    assert.equal(typeof replayJson.diagnostics.eventsQueryMs, 'number');
+    assert.equal(typeof replayJson.diagnostics.snapshotsQueryMs, 'number');
+    assert.equal(replayJson.diagnostics.snapshotRowsRead, 3);
 
-    const snapshotsResp = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/transcript-snapshots`);
+    const snapshotsResp = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/transcript-snapshots?includeStats=true`);
     const snapshotsJson = await snapshotsResp.json();
     assert.equal(snapshotsResp.status, 200);
     assert.equal(snapshotsJson.count, 3);
@@ -236,6 +239,25 @@ test('transcript.final deterministically supersedes transcript.partial and persi
     assert.deepEqual(snapshotsJson.snapshots.map((s) => s.type), ['transcript.partial', 'transcript.partial', 'transcript.final']);
     assert.deepEqual(snapshotsJson.snapshots.map((s) => s.sequence), [1, 2, 3]);
     assert.equal(snapshotsJson.snapshots[2].payload.text, 'hello world');
+    assert.equal(snapshotsJson.stats.count, 3);
+    assert.equal(snapshotsJson.stats.minSequence, 1);
+    assert.equal(snapshotsJson.stats.maxSequence, 3);
+
+    const compactResp = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/transcript-snapshots/compact`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keepLast: 2 }),
+    });
+    const compactJson = await compactResp.json();
+    assert.equal(compactResp.status, 200);
+    assert.equal(compactJson.deletedCount, 1);
+    assert.equal(compactJson.after.count, 2);
+
+    const snapshotsAfterCompactResp = await fetch(`${srv.baseUrl}/v1/realtime/sessions/${sessionId}/transcript-snapshots`);
+    const snapshotsAfterCompactJson = await snapshotsAfterCompactResp.json();
+    assert.equal(snapshotsAfterCompactResp.status, 200);
+    assert.equal(snapshotsAfterCompactJson.count, 2);
+    assert.deepEqual(snapshotsAfterCompactJson.snapshots.map((s) => s.sequence), [2, 3]);
   } finally {
     await srv.stop();
   }

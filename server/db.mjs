@@ -222,6 +222,31 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       LIMIT ?`
   );
 
+  const getTranscriptSnapshotStatsBySession = db.prepare(
+    `SELECT
+      COUNT(*) AS count,
+      COALESCE(MIN(sequence), 0) AS minSequence,
+      COALESCE(MAX(sequence), 0) AS maxSequence,
+      MIN(timestamp) AS minTimestamp,
+      MAX(timestamp) AS maxTimestamp,
+      COALESCE(SUM(LENGTH(payloadJson)), 0) AS payloadBytes
+     FROM transcript_snapshot
+     WHERE sessionId = ?`
+  );
+
+  const compactTranscriptSnapshotsBySessionKeepLast = db.prepare(
+    `DELETE FROM transcript_snapshot
+      WHERE sessionId = ?
+        AND sequence <= (
+          SELECT CASE
+            WHEN MAX(sequence) IS NULL THEN -1
+            ELSE MAX(sequence) - ?
+          END
+          FROM transcript_snapshot
+          WHERE sessionId = ?
+        )`
+  );
+
   const listRealtimeEventsAfterSequence = db.prepare(
     `SELECT * FROM realtime_event
       WHERE sessionId = ?
@@ -289,6 +314,8 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     insertTranscriptSnapshot,
     listTranscriptSnapshotsBySession,
     listTranscriptSnapshotsBySessionAfterSequence,
+    getTranscriptSnapshotStatsBySession,
+    compactTranscriptSnapshotsBySessionKeepLast,
     listRealtimeEventsAfterSequence,
     listRealtimeEventsAfterWatermark,
     upsertRealtimeCheckpoint,
