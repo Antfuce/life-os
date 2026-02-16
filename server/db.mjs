@@ -201,6 +201,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_mismatch_run ON billing_reconciliation_mismatch(runId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_run ON billing_reconciliation_alert(runId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_account ON billing_reconciliation_alert(accountId, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_billing_reconciliation_alert_status_created ON billing_reconciliation_alert(status, createdAtMs);
   `);
 
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
@@ -466,6 +467,44 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       LIMIT ?`
   );
 
+  const listBillingReconciliationPendingAlerts = db.prepare(
+    `SELECT * FROM billing_reconciliation_alert
+      WHERE status = 'pending'
+      ORDER BY createdAtMs ASC
+      LIMIT ?`
+  );
+
+  const updateBillingReconciliationAlertStatus = db.prepare(
+    `UPDATE billing_reconciliation_alert
+       SET status = ?
+     WHERE alertId = ?`
+  );
+
+  const listBillingReconciliationAccountsByWindow = db.prepare(
+    `SELECT accountId FROM (
+      SELECT accountId
+      FROM usage_meter_record
+      WHERE createdAtMs >= ?
+        AND createdAtMs < ?
+      UNION
+      SELECT accountId
+      FROM billing_usage_event
+      WHERE createdAtMs >= ?
+        AND createdAtMs < ?
+    )
+    ORDER BY accountId ASC
+    LIMIT ?`
+  );
+
+  const findBillingReconciliationRunByAccountWindow = db.prepare(
+    `SELECT * FROM billing_reconciliation_run
+      WHERE accountId = ?
+        AND windowStartMs = ?
+        AND windowEndMs = ?
+      ORDER BY createdAtMs DESC
+      LIMIT 1`
+  );
+
   const getTranscriptSnapshotStatsBySession = db.prepare(
     `SELECT
       COUNT(*) AS count,
@@ -579,6 +618,10 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     insertBillingReconciliationAlert,
     listBillingReconciliationAlertsByRun,
     listBillingReconciliationAlertsByAccount,
+    listBillingReconciliationPendingAlerts,
+    updateBillingReconciliationAlertStatus,
+    listBillingReconciliationAccountsByWindow,
+    findBillingReconciliationRunByAccountWindow,
     getTranscriptSnapshotStatsBySession,
     compactTranscriptSnapshotsBySessionKeepLast,
     listRealtimeEventsAfterSequence,

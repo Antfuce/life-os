@@ -68,3 +68,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Implemented hourly reconciliation scaffolding with window/lateness controls, persisted reconciliation artifacts (`billing_reconciliation_run`, `billing_reconciliation_mismatch`, `billing_reconciliation_alert`), and new APIs for run/list/detail flows.
 - Next: Wire scheduler-triggered hourly execution and alert-delivery worker; then close remaining P0 acceptance hardening items in parallel governance track.
 - Risks: Reconciliation currently scaffolds persistence/analysis only; without scheduler + real alert transport, unresolved mismatches are tracked but not actively delivered.
+
+## 2026-02-16T15:08:00Z — OpenClaw run note (P2 #10 scheduler + worker wiring)
+- Changed: Added internal hourly trigger endpoint (`/v1/billing/reconciliation/hourly-trigger`) with per-window account discovery + skip-existing behavior, plus alert-delivery worker endpoint (`/v1/billing/reconciliation/alerts/deliver`) that marks delivered alerts and dead-letters delivery failures.
+- Next: Operationalize these endpoints with explicit cron policy/retry behavior and finalize late-arrival backfill handling.
+- Risks: Worker currently uses webhook/stub delivery path; production reliability still requires retry/backoff policy and monitoring SLOs.

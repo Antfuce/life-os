@@ -17,6 +17,7 @@ const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL || null;
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || null;
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || null;
 const BILLING_SIGNING_SECRET = process.env.BILLING_SIGNING_SECRET || OPENCLAW_GATEWAY_TOKEN || 'life-os-dev-billing-secret';
+const BILLING_RECONCILIATION_ALERT_WEBHOOK_URL = process.env.BILLING_RECONCILIATION_ALERT_WEBHOOK_URL || null;
 
 const liveKit = createLiveKitTokenIssuer({ apiKey: LIVEKIT_API_KEY, apiSecret: LIVEKIT_API_SECRET });
 
@@ -325,9 +326,12 @@ fastify.get('/', async () => ({
     listUsageMeterRecords: '/v1/billing/sessions/:sessionId/usage-records (GET)',
     listBillingUsageEvents: '/v1/billing/sessions/:sessionId/events (GET)',
     listBillingDeadLetters: '/v1/billing/sessions/:sessionId/dead-letters (GET)',
+    listBillingAccountDeadLetters: '/v1/billing/accounts/:accountId/dead-letters (GET)',
     summarizeBillingAccountUsage: '/v1/billing/accounts/:accountId/usage-summary (GET)',
     listBillingReconciliationRuns: '/v1/billing/accounts/:accountId/reconciliation/runs (GET)',
     runBillingReconciliation: '/v1/billing/reconciliation/run (POST json)',
+    triggerHourlyReconciliation: '/v1/billing/reconciliation/hourly-trigger (POST internal)',
+    deliverReconciliationAlerts: '/v1/billing/reconciliation/alerts/deliver (POST internal)',
     getBillingReconciliationRun: '/v1/billing/reconciliation/runs/:runId (GET)',
     createBillingAdjustment: '/v1/billing/adjustments (POST json)',
     executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
@@ -392,6 +396,17 @@ function getAuthenticatedUserId(req, body = {}) {
   }
 
   return { userId: headerUserId };
+}
+
+function getInternalGatewayAuth(req) {
+  const token = req.headers['x-gateway-token'] ? String(req.headers['x-gateway-token']).trim() : '';
+  if (!OPENCLAW_GATEWAY_TOKEN) {
+    return { code: 'INTERNAL_AUTH_UNCONFIGURED', message: 'gateway token is not configured on backend' };
+  }
+  if (!token || token !== OPENCLAW_GATEWAY_TOKEN) {
+    return { code: 'AUTH_REQUIRED', message: 'valid x-gateway-token header is required' };
+  }
+  return { ok: true };
 }
 
 function parseRequestMetadata(raw) {
@@ -1127,6 +1142,67 @@ function runBillingReconciliationScaffold({ accountId, windowStartMs, windowEndM
     },
     mismatches,
     alert,
+  };
+}
+
+async function deliverReconciliationAlertRow(alertRow, { dryRun = false, forceFailure = false } = {}) {
+  const alert = normalizeBillingReconciliationAlertRow(alertRow);
+  const payload = {
+    alertId: alert.alertId,
+    runId: alert.runId,
+    accountId: alert.accountId,
+    channel: alert.channel,
+    status: alert.status,
+    createdAtMs: alert.createdAtMs,
+    body: alert.payload,
+  };
+
+  if (dryRun) {
+    dbCtx.updateBillingReconciliationAlertStatus.run('dry_run', alert.alertId);
+    return {
+      alertId: alert.alertId,
+      status: 'dry_run',
+      delivered: false,
+      deadLetterId: null,
+      payload,
+    };
+  }
+
+  if (forceFailure) {
+    throw new Error('forced_reconciliation_alert_delivery_failure');
+  }
+
+  if (!BILLING_RECONCILIATION_ALERT_WEBHOOK_URL) {
+    dbCtx.updateBillingReconciliationAlertStatus.run('delivered_stub', alert.alertId);
+    return {
+      alertId: alert.alertId,
+      status: 'delivered_stub',
+      delivered: true,
+      deadLetterId: null,
+      payload,
+    };
+  }
+
+  const resp = await fetch(BILLING_RECONCILIATION_ALERT_WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    const err = new Error(`alert webhook responded ${resp.status}: ${body.slice(0, 250)}`);
+    err.code = 'ALERT_WEBHOOK_NON_OK';
+    throw err;
+  }
+
+  dbCtx.updateBillingReconciliationAlertStatus.run('delivered', alert.alertId);
+  return {
+    alertId: alert.alertId,
+    status: 'delivered',
+    delivered: true,
+    deadLetterId: null,
+    payload,
   };
 }
 
@@ -1971,6 +2047,30 @@ fastify.get('/v1/billing/sessions/:sessionId/dead-letters', async (req, reply) =
   };
 });
 
+fastify.get('/v1/billing/accounts/:accountId/dead-letters', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 500;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 500;
+
+  const rows = dbCtx.listBillingDeadLettersByAccount.all(accountId, limit);
+  const deadLetters = rows.map(normalizeBillingDeadLetterRow);
+
+  return {
+    ok: true,
+    accountId,
+    count: deadLetters.length,
+    deadLetters,
+  };
+});
+
 fastify.get('/v1/billing/accounts/:accountId/usage-summary', async (req, reply) => {
   const accountId = String(req.params?.accountId || '').trim();
   if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
@@ -2120,6 +2220,152 @@ fastify.post('/v1/billing/reconciliation/run', async (req, reply) => {
     run: reconciliation.run,
     mismatches: reconciliation.mismatches,
     alert: reconciliation.alert,
+  };
+});
+
+fastify.post('/v1/billing/reconciliation/hourly-trigger', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const body = req.body || {};
+  const limitAccountsRaw = Number(body.limitAccounts);
+  const limitAccounts = Number.isFinite(limitAccountsRaw)
+    ? Math.max(1, Math.min(5000, Math.trunc(limitAccountsRaw)))
+    : 500;
+
+  const window = parseReconciliationWindowInput({
+    ...body,
+    lookbackHours: body.lookbackHours !== undefined ? body.lookbackHours : 1,
+  });
+  if (!window.ok) {
+    return sendError(req, reply, 400, window.code || 'INVALID_REQUEST', window.message || 'invalid reconciliation window', false);
+  }
+
+  const accountRows = dbCtx.listBillingReconciliationAccountsByWindow.all(
+    window.windowStartMs,
+    window.windowEndMs,
+    window.windowStartMs,
+    window.windowEndMs,
+    limitAccounts,
+  );
+
+  const allowRerun = body.allowRerun === true;
+  const processed = [];
+  let createdRuns = 0;
+  let skippedExistingRuns = 0;
+
+  for (const row of accountRows) {
+    const accountId = String(row.accountId || '').trim();
+    if (!accountId) continue;
+
+    const existingRun = dbCtx.findBillingReconciliationRunByAccountWindow.get(accountId, window.windowStartMs, window.windowEndMs);
+    if (existingRun && !allowRerun) {
+      skippedExistingRuns += 1;
+      processed.push({ accountId, action: 'skipped_existing', runId: existingRun.runId });
+      continue;
+    }
+
+    const reconciliation = runBillingReconciliationScaffold({
+      accountId,
+      windowStartMs: window.windowStartMs,
+      windowEndMs: window.windowEndMs,
+      initiatedBy: 'scheduler.hourly',
+      reason: body.reason ? String(body.reason) : 'hourly_scheduler_trigger',
+      metadata: {
+        trigger: 'hourly-scheduler',
+        mode: window.mode,
+        lookbackHours: window.lookbackHours,
+        latenessMs: window.latenessMs,
+      },
+    });
+
+    createdRuns += 1;
+    processed.push({
+      accountId,
+      action: 'created',
+      runId: reconciliation.run.runId,
+      status: reconciliation.run.status,
+      mismatchCount: reconciliation.run.mismatchCount,
+      alertDispatched: reconciliation.run.alertDispatched,
+    });
+  }
+
+  return {
+    ok: true,
+    window: {
+      startMs: window.windowStartMs,
+      endMs: window.windowEndMs,
+      mode: window.mode,
+      lookbackHours: window.lookbackHours,
+      latenessMs: window.latenessMs,
+    },
+    accountsConsidered: accountRows.length,
+    createdRuns,
+    skippedExistingRuns,
+    processed,
+  };
+});
+
+fastify.post('/v1/billing/reconciliation/alerts/deliver', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const body = req.body || {};
+  const limitRaw = Number(body.limit);
+  const limit = Number.isFinite(limitRaw)
+    ? Math.max(1, Math.min(5000, Math.trunc(limitRaw)))
+    : 100;
+
+  const dryRun = body.dryRun === true;
+  const forceFailureIds = Array.isArray(body.forceFailureAlertIds)
+    ? new Set(body.forceFailureAlertIds.map((id) => String(id)))
+    : new Set();
+
+  const pendingRows = dbCtx.listBillingReconciliationPendingAlerts.all(limit);
+  const delivered = [];
+  const failed = [];
+
+  for (const row of pendingRows) {
+    const alertId = String(row.alertId || '').trim();
+    try {
+      const result = await deliverReconciliationAlertRow(row, {
+        dryRun,
+        forceFailure: forceFailureIds.has(alertId),
+      });
+      delivered.push(result);
+    } catch (err) {
+      dbCtx.updateBillingReconciliationAlertStatus.run('failed', alertId);
+      const deadLetterId = `dlq_${stableId('reconciliation.alert.delivery', alertId, Date.now()).slice(0, 24)}`;
+      const payload = normalizeBillingReconciliationAlertRow(row);
+      dbCtx.insertBillingDeadLetter.run(
+        deadLetterId,
+        payload.accountId || null,
+        null,
+        'billing.reconciliation.alert.delivery_failed',
+        alertId || null,
+        String(err?.code || 'ALERT_DELIVERY_FAILED'),
+        String(err?.message || 'reconciliation alert delivery failed'),
+        JSON.stringify(payload),
+        Date.now(),
+      );
+
+      failed.push({
+        alertId,
+        code: String(err?.code || 'ALERT_DELIVERY_FAILED'),
+        message: String(err?.message || 'reconciliation alert delivery failed'),
+        deadLetterId,
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    pendingCount: pendingRows.length,
+    deliveredCount: delivered.length,
+    failedCount: failed.length,
+    dryRun,
+    delivered,
+    failed,
   };
 });
 

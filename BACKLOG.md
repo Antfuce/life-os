@@ -148,12 +148,12 @@
 #### 10. Hourly Charging Reconciliation Job (P2)
 - **Status:** **In progress**
 - **What:** Reconcile metered usage vs charged amounts every hour.
-- **Progress:** Added reconciliation scaffolding with windowing + lateness controls, persisted run/mismatch/alert artifacts, and audit/query endpoints (`/v1/billing/reconciliation/run`, `/v1/billing/accounts/:accountId/reconciliation/runs`, `/v1/billing/reconciliation/runs/:runId`).
-- **Implementation:** `server/db.mjs` (`billing_reconciliation_run`, `billing_reconciliation_mismatch`, `billing_reconciliation_alert`, window summary queries), `server/index.mjs` (reconciliation execution + alert hook queue contract), `server/test/reconciliation.test.mjs`
+- **Progress:** Added reconciliation scaffolding with windowing + lateness controls, persisted run/mismatch/alert artifacts, scheduler trigger endpoint (`/v1/billing/reconciliation/hourly-trigger`), and alert-delivery worker endpoint (`/v1/billing/reconciliation/alerts/deliver`) with dead-letter fallback for delivery failures.
+- **Implementation:** `server/db.mjs` (`billing_reconciliation_run`, `billing_reconciliation_mismatch`, `billing_reconciliation_alert`, scheduler/account discovery + pending alert queries), `server/index.mjs` (reconciliation execution + hourly trigger + alert delivery wiring), `server/test/reconciliation.test.mjs`
 - **Verification:**
-  - `node --test server/test/reconciliation.test.mjs` → ok-path, mismatch-path, and account-scoping checks pass.
+  - `node --test server/test/reconciliation.test.mjs` → ok-path, mismatch-path, account scoping, scheduler trigger idempotency-by-window, and alert worker delivery/dead-letter checks pass.
   - `node --test server/test/*.test.mjs` → green backend baseline.
-- **Remaining scope:** wire scheduler/cron trigger, implement real alert delivery transport, and define late-arrival backfill reconciliation policy.
+- **Remaining scope:** wire automatic cron job creation/update policy and finalize late-arrival backfill/retry policy for production operations.
 - **Owner:** Backend
 - **Dependencies:** Depends on **9**
 
@@ -251,8 +251,8 @@
 
 ## Next 5 Tasks (Execution Order)
 
-1. **P2 #10 reconciliation hardening (scheduler + delivery)**
-   - Wire hourly scheduler trigger, deliver queued reconciliation alerts, and finalize late-arrival backfill policy.
+1. **P2 #10 operationalization**
+   - Add automatic cron policy for hourly trigger + worker loop and define retry/backfill controls.
 2. **Close P0 #2 remaining acceptance criteria (LiveKit bridge hardening)**
    - Add provider event authenticity/replay protection and capture repeatable live-integration evidence.
 3. **Close P0 #3 remaining acceptance criteria (schema contract hardening)**
@@ -266,4 +266,4 @@
 
 ## Next Action
 
-**Backend:** continue P2 #10 by wiring hourly reconciliation scheduling + alert-delivery worker against the new reconciliation run/mismatch/alert scaffolding.
+**Backend:** operationalize P2 #10 with concrete cron schedule + worker retry policy and production alert delivery contract.
