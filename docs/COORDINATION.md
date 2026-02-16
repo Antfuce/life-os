@@ -123,3 +123,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Executed LiveKit E2E evidence collection using real project credentials, recorded operator-confirmed room join/publish outcome, persisted evidence report (`docs/releases/livekit-e2e-evidence-2026-02-16T17-50-55-000Z.md`), updated release evidence bundle linkage, and advanced backlog phase gate from HOLD to GO.
 - Next: Begin UI stabilization sprint on buyer-visible defects, then continue P1 #5/#6 tokenized safety + executor semantics.
 - Risks: Evidence currently depends on manual operator confirmation for media publish/subscribe; webhook/event capture remains environment-sensitive and should be re-validated in production network topology.
+
+## 2026-02-16T17:55:00Z — OpenClaw run note (UI stabilization sprint, increment 1)
+- Changed: Hardened chat streaming parser in `src/pages/Home.jsx` to prevent frontend regressions in mixed/legacy SSE streams: fixed delta accumulation semantics (no chunk overwrite), added safer structured event handling, flushes trailing SSE buffer block on stream end, and made TTS/whisper use a deterministic captured assistant transcript instead of stale reducer closure state.
+- Next: Continue UI stabilization with reproducible bug triage on module action/approval UX and realtime render drift, shipping fixes one-by-one.
+- Risks: Frontend behavior still depends on backend event shape consistency; mixed producer sources without strict UI event-contract conformance can still cause degraded UX if not normalized server-side.

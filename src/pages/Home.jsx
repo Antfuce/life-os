@@ -168,6 +168,22 @@ export default function Home() {
   // Stream from backend with UI event parsing
   const streamFromBackend = async (text) => {
     const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
+    let latestAssistantText = '';
+
+    const mergeAssistantText = (incoming) => {
+      const next = String(incoming || '');
+      if (!next) return latestAssistantText;
+      if (!latestAssistantText) {
+        latestAssistantText = next;
+        return latestAssistantText;
+      }
+      if (next.startsWith(latestAssistantText)) {
+        latestAssistantText = next;
+        return latestAssistantText;
+      }
+      latestAssistantText = `${latestAssistantText}${next}`;
+      return latestAssistantText;
+    };
 
     try {
       const r = await fetch(`${API_ORIGIN}/v1/chat/stream`, {
@@ -202,6 +218,62 @@ export default function Home() {
         return { ev, data };
       };
 
+      const processParsedEvent = ({ ev, data }) => {
+        if (!ev) return;
+
+        if (data?.v === '1.0' || data?.type) {
+          const structuredType = data.type || ev;
+          const structuredPayload = data.payload || data;
+
+          if (structuredType === UI_EVENT_TYPES.TEXT_DELTA) {
+            const merged = mergeAssistantText(structuredPayload.fullText || structuredPayload.delta || '');
+            if (merged) setWhisper(merged.slice(-140));
+          } else if (structuredType === UI_EVENT_TYPES.TEXT_DONE) {
+            const merged = mergeAssistantText(structuredPayload.fullText || '');
+            if (merged) setWhisper(merged.slice(-140));
+          }
+
+          processEvent({
+            type: structuredType,
+            payload: structuredPayload,
+          });
+          return;
+        }
+
+        if (ev === 'delta' && data?.text) {
+          const merged = mergeAssistantText(data.text);
+          processEvent({
+            type: UI_EVENT_TYPES.TEXT_DELTA,
+            payload: { delta: data.text },
+          });
+          setWhisper(merged.slice(-140));
+          return;
+        }
+
+        if (ev === 'speaker' && data?.speaker) {
+          processEvent({
+            type: UI_EVENT_TYPES.SPEAKER_CHANGE,
+            payload: { speaker: data.speaker },
+          });
+          return;
+        }
+
+        if (ev === 'done') {
+          processEvent({
+            type: UI_EVENT_TYPES.DONE,
+            payload: data || {},
+          });
+          return;
+        }
+
+        if (ev === 'error') {
+          processEvent({
+            type: UI_EVENT_TYPES.ERROR,
+            payload: { message: data?.error || 'Unknown error' },
+          });
+        }
+      };
+
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -211,42 +283,13 @@ export default function Home() {
         while ((sep = buf.indexOf('\n\n')) !== -1) {
           const block = buf.slice(0, sep);
           buf = buf.slice(sep + 2);
-          const { ev, data } = parseBlock(block);
-
-          if (!ev) continue;
-
-          // Process UI contract events
-          if (data?.v === '1.0' || data?.type) {
-            // Structured UI event
-            processEvent({
-              type: data.type || ev,
-              payload: data.payload || data,
-            });
-          } else if (ev === 'delta' && data?.text) {
-            // Legacy delta event
-            processEvent({
-              type: UI_EVENT_TYPES.TEXT_DELTA,
-              payload: { delta: data.text, fullText: data.text },
-            });
-            setWhisper(data.text.slice(-140));
-          } else if (ev === 'speaker' && data?.speaker) {
-            // Legacy speaker event
-            processEvent({
-              type: UI_EVENT_TYPES.SPEAKER_CHANGE,
-              payload: { speaker: data.speaker },
-            });
-          } else if (ev === 'done') {
-            processEvent({
-              type: UI_EVENT_TYPES.DONE,
-              payload: data || {},
-            });
-          } else if (ev === 'error') {
-            processEvent({
-              type: UI_EVENT_TYPES.ERROR,
-              payload: { message: data?.error || 'Unknown error' },
-            });
-          }
+          processParsedEvent(parseBlock(block));
         }
+      }
+
+      const tail = buf.trim();
+      if (tail) {
+        processParsedEvent(parseBlock(tail));
       }
     } catch (e) {
       console.error('Stream error:', e);
@@ -256,9 +299,8 @@ export default function Home() {
       });
     }
 
-    // Speak final message
-    if (currentMessage) {
-      speak(currentMessage);
+    if (latestAssistantText) {
+      speak(latestAssistantText);
       setTimeout(() => setWhisper(""), 2500);
     }
   };
