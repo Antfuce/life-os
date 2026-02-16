@@ -143,3 +143,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Hardened mic UX loop for QA-reported "animation stops and nothing happens" issue by adding robust speech-recognition auto-restart retries, explicit voice-session state persistence across transient `onend` gaps, buffered final-transcript auto-send with silence debounce (so mic can continuously listen while still triggering actions), reconnect caption state, and fallback flush on unexpected recognition drops.
 - Next: Validate with live QA on target device/browser and tune utterance debounce threshold if needed for natural pacing.
 - Risks: Browser-native Web Speech behavior still varies by platform; absolute deterministic continuous capture may require a backend/media-stream STT path in later hardening.
+
+## 2026-02-16T21:37:00Z — OpenClaw run note (white-screen containment)
+- Changed: Added global React runtime error boundary (`src/components/system/AppErrorBoundary.jsx`, wired in `src/main.jsx`) so production UI crashes no longer fail as blank white screen and instead surface actionable error context + reload control.
+- Next: Re-test live environment to capture concrete runtime error text (if any) and patch root cause immediately.
+- Risks: Error boundary improves observability/containment but does not itself resolve underlying runtime defects.
