@@ -130,4 +130,6 @@ export function mergeTranscriptEvents(events) {
   });
 }
 
-export { EVENT_VERSION };
+const SUPPORTED_EVENT_TYPES = Object.freeze(Object.keys(EVENT_PAYLOAD_VALIDATORS));
+
+export { EVENT_VERSION, SUPPORTED_EVENT_TYPES };

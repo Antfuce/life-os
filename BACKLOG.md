@@ -37,17 +37,18 @@
 - **Dependencies:** Depends on **1. Call Session Service**
 
 #### 3. Realtime Event Schema v1
-- **Status:** **Partially implemented**
+- **Status:** **Done**
 - **What:** Enforce canonical realtime envelope + typed event families.
-- **Current status:** Core envelope validation and canonical replay semantics are enforced at ingest; new billing/event-family expansion is partially covered.
+- **Current status:** Canonical envelope validation, family payload contracts, deterministic replay semantics, and schema-regression fixture guard are implemented.
 - **Acceptance criteria:**
   - [x] Canonical envelope (`eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`) is validated at ingest.
   - [x] Legacy key normalization (`timestamp`/`version`) and unsupported-envelope-key rejection are enforced.
   - [x] Deterministic replay ordering and transcript supersession behavior are covered by tests.
-  - [ ] Full payload-contract coverage across all emitted families (including newly added billing/dead-letter paths) is documented and test-locked with schema fixtures.
-  - [ ] Contract regression guard exists for newly introduced event types before prod push (beyond endpoint-level assertions).
-- **Implementation:** `server/realtime-events.mjs`, `server/index.mjs` (`/v1/realtime/events` + replay/event routes), `server/test/realtime-events.test.mjs`, `.github/workflows/ci.yml`
-- **Verification (current):**
+  - [x] Full payload-contract coverage across all emitted families (including newly added billing/dead-letter paths) is documented and test-locked with schema fixtures.
+  - [x] Contract regression guard exists for newly introduced event types before prod push (beyond endpoint-level assertions).
+- **Implementation:** `server/realtime-events.mjs` (`SUPPORTED_EVENT_TYPES`), `server/test/fixtures/realtime-event-contract.v1.json`, `server/test/realtime-schema-contract.test.mjs`, `server/test/realtime-events.test.mjs`, `.github/workflows/ci.yml`
+- **Verification:**
+  - `node --test server/test/realtime-schema-contract.test.mjs`
   - `node --test server/test/realtime-events.test.mjs`
 - **Owner:** Backend + OpenClaw
 - **Dependencies:** Parallel with **1**, required by **2** and all downstream realtime work
@@ -270,14 +271,14 @@
 
 1. **Close P0 #2 remaining acceptance criteria (LiveKit bridge evidence)**
    - Capture repeatable live-integration evidence against real LiveKit room join/publish/subscribe flow.
-2. **Close P0 #3 remaining acceptance criteria (schema contract hardening)**
-   - Add full event-family payload contract fixtures/regression guards for new billing/dead-letter event paths.
-3. **Close P0 #4 remaining acceptance criteria (recovery hardening)**
+2. **Close P0 #4 remaining acceptance criteria (recovery hardening)**
    - Add reconnect race/chaos tests + operational runbook/alerts for reconnect failure modes.
-4. **Re-run P0 phase gate and flip HOLD→GO (for further P1 expansion)**
+3. **Re-run P0 phase gate and flip HOLD→GO (for further P1 expansion)**
    - Require hygiene, docs, and evidence checklist to stay green before reopening net-new P1 scope.
-5. **Pilot launch prep packet finalization**
+4. **Pilot launch prep packet finalization**
    - Freeze MVP sellability docs/evidence bundle and operator onboarding checklist for first paid pilot.
+5. **Targeted UI stabilization sprint (bug triage + fixes)**
+   - Resolve top buyer-visible UI defects once P0 gate re-opens.
 
 ---
 

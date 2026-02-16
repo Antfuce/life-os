@@ -23,6 +23,7 @@
 - `node --test server/test/*.test.mjs`
 - `node --test server/test/release-acceptance.test.mjs`
 - `node --test server/test/production-readiness.test.mjs`
+- `node --test server/test/realtime-schema-contract.test.mjs`
 - `node scripts/verify-production-readiness.mjs`
 - rollout smoke (automation enabled):
   - `GET /health/ready` → `{ ok:true, ready:true }`
@@ -32,6 +33,9 @@
 - LiveKit bridge hardening checks:
   - `node --test server/test/call-sessions.test.mjs` (signature validation + replay dedupe coverage)
   - `node scripts/livekit-e2e-evidence.mjs --mode=prepare` / `--mode=collect` (real-provider evidence harness)
+- Realtime schema guard checks:
+  - `node --test server/test/realtime-schema-contract.test.mjs`
+  - fixture source: `server/test/fixtures/realtime-event-contract.v1.json`
 
 ## Rollback Plan
 

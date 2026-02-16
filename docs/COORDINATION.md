@@ -103,3 +103,13 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Added repeatable LiveKit E2E evidence harness and runbook (`scripts/livekit-e2e-evidence.mjs`, `docs/runbooks/LIVEKIT_E2E_EVIDENCE_CAPTURE.md`), wired readiness verifier to require the new runbook, and aligned backlog/docs to reflect that P0 #2 now only lacks real provider evidence capture.
 - Next: Run the evidence harness against real LiveKit credentials/environment and commit resulting report into `docs/releases/` to close P0 #2.
 - Risks: Without real-provider execution artifacts, P0 #2 remains technically hardened but not fully evidenced for phase-gate closure.
+
+## 2026-02-16T17:26:00Z — OpenClaw run note (P0 #3 schema hardening closure)
+- Changed: Closed P0 #3 contract hardening by adding explicit schema fixtures (`server/test/fixtures/realtime-event-contract.v1.json`), exporting supported event types from realtime schema module, and adding regression test suite (`server/test/realtime-schema-contract.test.mjs`) that validates fixture coverage + ingest pass/fail behavior.
+- Next: Capture real LiveKit provider evidence to close final P0 #2 criterion, then finish P0 #4 reconnect chaos/runbook hardening.
+- Risks: Event contract drift is now strongly guarded in CI/tests, but real-provider transport evidence remains outstanding for phase-gate GO.
+
+## 2026-02-16T17:26:00Z — OpenClaw run note (P0 #3 closed)
+- Changed: Closed P0 #3 by adding explicit schema fixture matrix (`server/test/fixtures/realtime-event-contract.v1.json`), full contract regression test (`server/test/realtime-schema-contract.test.mjs`), and exported supported event-type set to enforce fixture coverage parity.
+- Next: Finish final P0 #2 real-provider evidence capture, then execute P0 #4 recovery hardening and rerun phase gate.
+- Risks: P0 gate remains HOLD until P0 #2 evidence + P0 #4 hardening are both completed and documented.
