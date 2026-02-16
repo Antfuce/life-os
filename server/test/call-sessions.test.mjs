@@ -29,13 +29,10 @@ async function startServer(extraEnv = {}) {
       PORT: String(port),
       LIFE_OS_DB: dbFile,
       OPENCLAW_GATEWAY_TOKEN: 'test-token',
-codex/map-out-next-5-tasks
       LIVEKIT_API_KEY: 'lk_test_key',
       LIVEKIT_API_SECRET: 'lk_test_secret',
       LIVEKIT_WS_URL: 'wss://livekit.example.test',
-=======
       ...extraEnv,
-prod
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -238,8 +235,6 @@ test('duplicate activate/end updates are replay-safe', async () => {
   }
 });
 
-
- codex/add-livekit-integration-endpoints
 test('livekit token endpoint mints short-lived token and persists mapping metadata', async () => {
   const srv = await startServer({
     LIVEKIT_WS_URL: 'wss://example.livekit.local',
@@ -271,7 +266,11 @@ test('livekit token endpoint mints short-lived token and persists mapping metada
     assert.ok(tokenJson.session.providerParticipantId);
     assert.ok(tokenJson.session.providerCallId);
     assert.equal(tokenJson.session.metadata.livekit.roomName, tokenJson.session.providerRoomId);
-=======
+  } finally {
+    await srv.stop();
+  }
+});
+
 test('reconnect requires valid resume token and replays from acknowledged sequence', async () => {
   const srv = await startServer();
   try {
@@ -331,13 +330,11 @@ test('reconnect requires valid resume token and replays from acknowledged sequen
     const checkpointJson = await checkpoint.json();
     assert.equal(checkpoint.status, 200);
     assert.equal(checkpointJson.sessionAck.sequence, reconnectJson.replay.events[0].sequence);
- prod
   } finally {
     await srv.stop();
   }
 });
 
- codex/add-livekit-integration-endpoints
 test('livekit media events are translated into canonical event families before fanout', async () => {
   const srv = await startServer();
 
@@ -377,7 +374,11 @@ test('livekit media events are translated into canonical event families before f
     assert.ok(types.includes('call.connected'));
     assert.ok(types.includes('transcript.partial'));
     assert.ok(types.includes('orchestration.action.requested'));
-=======
+  } finally {
+    await srv.stop();
+  }
+});
+
 test('failing a session emits terminal failure event', async () => {
   const srv = await startServer();
   try {
@@ -409,7 +410,6 @@ test('failing a session emits terminal failure event', async () => {
     const terminal = replayJson.events.find((evt) => evt.type === 'call.terminal_failure');
     assert.ok(terminal);
     assert.equal(terminal.payload.code, 'CALL_SESSION_IRRECOVERABLE');
-prod
   } finally {
     await srv.stop();
   }
