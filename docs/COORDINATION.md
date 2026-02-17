@@ -190,6 +190,6 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Note: runtime state remains event-driven (`call.started/call.connecting/call.connected/call.reconnecting/call.error/call.ended`) rather than optimistic UI state flips.
 
 ## 2026-02-17T13:28:00Z — Codex run note (Base44 deployment verification)
-- Changed: Added deployment version marker component (`VersionMarker.jsx`) that displays commit SHA, build timestamp, and app version in collapsible UI (bottom-right corner). Updated `vite.config.js` to inject build-time git/version info as environment variables. Integrated VersionMarker into Layout so it appears on all pages.
-- Next: Run code review and security checks, then close this task.
-- Risks: Version marker depends on git being available during build; falls back to 'unknown' if git commands fail. Base44 must re-publish after this merge to pick up the new version marker in preview environment.
+- Changed: Added deployment version marker component (`VersionMarker.jsx`) that displays commit SHA, build timestamp, and app version in collapsible UI (bottom-right corner). Updated `vite.config.js` to inject build-time git/version info as environment variables. Integrated VersionMarker into Layout so it appears on all pages. Optimized build info caching to avoid redundant git command executions. All security checks pass (CodeQL: 0 alerts).
+- Next: Base44 must re-publish after this merge to pick up the new version marker in preview environment.
+- Risks: Version marker depends on git being available during build; falls back to 'unknown' if git commands fail.
