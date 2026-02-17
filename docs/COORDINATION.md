@@ -227,3 +227,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Next: Monitor for any other components that might have similar context access issues. All current pages and components checked - none use useAuth.
 - Risks: None. Build, lint pass. No test infrastructure exists. Change is backward compatible - useAuth() hook still works for other consumers.
  prod
+
+## 2026-02-17T23:20:00Z — Codex run note (Base44 SDK decoupling)
+- Changed: Decoupled UserMemory CRUD operations from Base44 SDK to backend API. Added user_memory table to SQLite database. Created three REST endpoints (GET/POST/DELETE /v1/user/memory) with authentication via x-user-id header. Created frontend apiClient.js wrapping backend endpoints. Updated Memory.jsx to use apiClient instead of Base44 SDK. Kept minimal base44Client.js for auth/logging. Created docs/API_MEMORY.md. All 7 backend tests pass. Frontend builds successfully. CodeQL: 0 alerts.
+- Next: Consider migrating other Base44 entity operations (SocialMatch, Deliverable) to backend API in future PRs to complete architecture alignment.
+- Risks: Pre-existing Fastify 5.2.1 vulnerabilities (CVE related to content-type parsing) should be addressed in a separate PR. Frontend still depends on Base44 SDK for auth/logging functionality.

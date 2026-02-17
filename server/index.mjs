@@ -1816,6 +1816,89 @@ function getLiveKitTokenTtlSeconds(input) {
   return Math.max(30, Math.min(3600, Math.trunc(raw)));
 }
 
+// ===========================
+// User Memory API Endpoints
+// ===========================
+
+fastify.get('/v1/user/memory', async (req, reply) => {
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  try {
+    const stmt = dbCtx.db.prepare('SELECT id, userId, category, key, value, created_date FROM user_memory WHERE userId = ? ORDER BY created_date DESC');
+    const memories = stmt.all(auth.userId);
+    return reply.send({ memories });
+  } catch (err) {
+    log.error({ err, userId: auth.userId }, 'Failed to list user memories');
+    return sendError(req, reply, 500, 'INTERNAL_ERROR', 'Failed to list memories', false);
+  }
+});
+
+fastify.post('/v1/user/memory', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const { category, key, value } = body;
+  
+  if (!category || !key || !value) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'category, key, and value are required', false);
+  }
+
+  try {
+    const id = `mem_${stableId(auth.userId, Date.now(), Math.random()).slice(0, 16)}`;
+    const created_date = Date.now();
+    
+    const stmt = dbCtx.db.prepare('INSERT INTO user_memory (id, userId, category, key, value, created_date) VALUES (?, ?, ?, ?, ?, ?)');
+    stmt.run(id, auth.userId, category, key, value, created_date);
+    
+    return reply.send({ 
+      id, 
+      userId: auth.userId, 
+      category, 
+      key, 
+      value, 
+      created_date 
+    });
+  } catch (err) {
+    log.error({ err, userId: auth.userId }, 'Failed to create user memory');
+    return sendError(req, reply, 500, 'INTERNAL_ERROR', 'Failed to create memory', false);
+  }
+});
+
+fastify.delete('/v1/user/memory/:id', async (req, reply) => {
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const { id } = req.params;
+  
+  if (!id) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'Memory id is required', false);
+  }
+
+  try {
+    // First check if memory exists and belongs to user
+    const checkStmt = dbCtx.db.prepare('SELECT userId FROM user_memory WHERE id = ?');
+    const memory = checkStmt.get(id);
+    
+    if (!memory) {
+      return sendError(req, reply, 404, 'NOT_FOUND', 'Memory not found', false);
+    }
+    
+    if (memory.userId !== auth.userId) {
+      return sendError(req, reply, 403, 'FORBIDDEN', 'Cannot delete another user\'s memory', false);
+    }
+    
+    const deleteStmt = dbCtx.db.prepare('DELETE FROM user_memory WHERE id = ?');
+    deleteStmt.run(id);
+    
+    return reply.send({ success: true, id });
+  } catch (err) {
+    log.error({ err, userId: auth.userId, memoryId: id }, 'Failed to delete user memory');
+    return sendError(req, reply, 500, 'INTERNAL_ERROR', 'Failed to delete memory', false);
+  }
+});
+
 
 fastify.post('/v1/call/sessions', async (req, reply) => {
   const body = req.body || {};

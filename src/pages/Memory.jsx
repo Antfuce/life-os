@@ -1,5 +1,5 @@
 import React from "react";
-import { base44 } from "@/api/base44Client";
+import { api } from "@/api/apiClient";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { ArrowLeft, Brain, Briefcase, MapPin, Target, DollarSign, Wrench, Heart, Plane, Users, Trash2 } from "lucide-react";
@@ -27,11 +27,11 @@ export default function Memory() {
 
   const { data: memories = [], isLoading } = useQuery({
     queryKey: ["memories"],
-    queryFn: () => base44.entities.UserMemory.list("-created_date", 100),
+    queryFn: () => api.memory.list(),
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id) => base44.entities.UserMemory.delete(id),
+    mutationFn: (id) => api.memory.delete(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["memories"] }),
   });
 
