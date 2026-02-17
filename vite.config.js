@@ -20,14 +20,17 @@ function getBuildInfo() {
   }
 }
 
+// Cache build info to avoid redundant git command executions
+const buildInfo = getBuildInfo();
+
 // https://vite.dev/config/
 export default defineConfig({
   logLevel: 'error', // Suppress warnings, only show errors
   define: {
     // Inject build-time environment variables
-    'import.meta.env.VITE_GIT_COMMIT_SHA': JSON.stringify(getBuildInfo().commitSha),
-    'import.meta.env.VITE_GIT_COMMIT_SHORT_SHA': JSON.stringify(getBuildInfo().commitShortSha),
-    'import.meta.env.VITE_BUILD_TIMESTAMP': JSON.stringify(getBuildInfo().buildTimestamp),
+    'import.meta.env.VITE_GIT_COMMIT_SHA': JSON.stringify(buildInfo.commitSha),
+    'import.meta.env.VITE_GIT_COMMIT_SHORT_SHA': JSON.stringify(buildInfo.commitShortSha),
+    'import.meta.env.VITE_BUILD_TIMESTAMP': JSON.stringify(buildInfo.buildTimestamp),
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(process.env.npm_package_version || '0.0.0'),
   },
   plugins: [

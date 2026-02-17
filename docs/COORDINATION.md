@@ -188,3 +188,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Updated `src/pages/Home.jsx` call-session boot sequence to be explicitly call-session-first: create session (`POST /v1/call/sessions`) → immediately store `sessionId` in local state (which attaches realtime polling endpoint) → then activate session state (`/state`) and let canonical realtime events drive runtime UI state transitions.
 - Changed: Added boot-failure handling path (`CALL_BOOT_FAILED`) and activation-failure rollback (`setCallSession(null)` + runtime failed state).
 - Note: runtime state remains event-driven (`call.started/call.connecting/call.connected/call.reconnecting/call.error/call.ended`) rather than optimistic UI state flips.
+
+## 2026-02-17T13:28:00Z — Codex run note (Base44 deployment verification)
+- Changed: Added deployment version marker component (`VersionMarker.jsx`) that displays commit SHA, build timestamp, and app version in collapsible UI (bottom-right corner). Updated `vite.config.js` to inject build-time git/version info as environment variables. Integrated VersionMarker into Layout so it appears on all pages.
+- Next: Run code review and security checks, then close this task.
+- Risks: Version marker depends on git being available during build; falls back to 'unknown' if git commands fail. Base44 must re-publish after this merge to pick up the new version marker in preview environment.
