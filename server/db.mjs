@@ -208,6 +208,15 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
       updatedAtMs INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS user_memory (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      category TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      created_date INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS governance_audit_log (
       auditId TEXT PRIMARY KEY,
       accountId TEXT,
@@ -242,6 +251,7 @@ export async function initDb(dbFile = path.join(__dirname, 'data', 'lifeos.db'))
     CREATE INDEX IF NOT EXISTS idx_tenant_config_status_updated ON tenant_config(status, updatedAtMs);
     CREATE INDEX IF NOT EXISTS idx_governance_audit_account_created ON governance_audit_log(accountId, createdAtMs);
     CREATE INDEX IF NOT EXISTS idx_governance_audit_event_created ON governance_audit_log(eventType, createdAtMs);
+    CREATE INDEX IF NOT EXISTS idx_user_memory_user_created ON user_memory(userId, created_date);
   `);
 
   try { db.exec('ALTER TABLE call_session ADD COLUMN providerRoomId TEXT;'); } catch {}
