@@ -4,8 +4,15 @@ import { motion } from "framer-motion";
 import PersonaAvatar from "./PersonaAvatar";
 import ReactMarkdown from "react-markdown";
 
+const PERSONA_BADGES = {
+  antonio: "Strategy",
+  mariana: "Coaching",
+  both: "Collaborative",
+};
+
 export default function MessageBubble({ message, isLast }) {
   const isUser = message.role === "user";
+  const personaBadge = PERSONA_BADGES[message.persona] || "Assistant";
 
   return (
     <motion.div
@@ -19,7 +26,7 @@ export default function MessageBubble({ message, isLast }) {
       <div className={cn("flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
         {!isUser && message.persona && message.persona !== "executor" && (
           <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 font-medium ml-1">
-            {message.persona === "both" ? "Antonio & Mariana" : message.persona}
+            {personaBadge}
           </span>
         )}
         <div
