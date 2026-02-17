@@ -193,3 +193,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Added deployment version marker component (`VersionMarker.jsx`) that displays commit SHA, build timestamp, and app version in collapsible UI (bottom-right corner). Updated `vite.config.js` to inject build-time git/version info as environment variables. Integrated VersionMarker into Layout so it appears on all pages. Optimized build info caching to avoid redundant git command executions. All security checks pass (CodeQL: 0 alerts).
 - Next: Base44 must re-publish after this merge to pick up the new version marker in preview environment.
 - Risks: Version marker depends on git being available during build; falls back to 'unknown' if git commands fail.
+
+## 2026-02-17T16:36:00Z — Codex run note (AuthContext hook error fix)
+- Changed: Fixed UI crash "useAuth must be used within an AuthProvider" by making NavigationTracker use `useContext(AuthContext)` directly with optional chaining instead of `useAuth()` hook. Exported AuthContext from AuthContext.jsx. Changes are minimal: 2 files, 5 insertions, 4 deletions.
+- Next: Monitor for any other components that might have similar context access issues. All current pages and components checked - none use useAuth.
+- Risks: None. Build, lint pass. No test infrastructure exists. Change is backward compatible - useAuth() hook still works for other consumers.
