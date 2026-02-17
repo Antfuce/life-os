@@ -161,6 +161,18 @@
 - **Owner:** Backend
 - **Dependencies:** Depends on **9**
 
+#### 11. Frontend Talk Flow Migration to Call-Session/Realtim﻿e Authority (P1)
+- **Status:** **In progress**
+- **What:** Move Home talk UX from chat-first to explicit call-session lifecycle + canonical realtime event authority.
+- **Progress:** Home now creates/activates call sessions (`/v1/call/sessions`, `/state`), polls canonical realtime events (`/v1/realtime/sessions/:sessionId/events`), dispatches transcript/action lifecycle from backend events, and dispatches orchestration actions via backend endpoint instead of local-only lifecycle timers.
+- **Implementation:** `src/pages/Home.jsx`, `docs/CALL_UI_EVENT_MAPPING.md`
+- **Remaining scope:**
+  - Replace `/v1/chat/stream` with transport-native realtime voice/text stream.
+  - Complete deprecation of frontend-managed action lifecycle/timeouts.
+  - Finalize canonical mapping coverage for `deliverable.*` publication path.
+- **Owner:** Frontend + Backend
+- **Dependencies:** Depends on **1**, **2**, **3**, **5**, **6**
+
 ### MVP Milestone — Production Readiness Layer
 - **Status:** **Done (baseline shipped)**
 - **Objective:** Cross-cutting hardening layer for sellable paid-pilot readiness without enterprise bloat.

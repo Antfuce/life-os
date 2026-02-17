@@ -148,3 +148,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Added global React runtime error boundary (`src/components/system/AppErrorBoundary.jsx`, wired in `src/main.jsx`) so production UI crashes no longer fail as blank white screen and instead surface actionable error context + reload control.
 - Next: Re-test live environment to capture concrete runtime error text (if any) and patch root cause immediately.
 - Risks: Error boundary improves observability/containment but does not itself resolve underlying runtime defects.
+
+## 2026-02-17T09:22:00Z — OpenClaw run note (talk-path realignment to call-session authority)
+- Changed: Began migration of Home talk path from chat-first flow to explicit call-session lifecycle: frontend now creates/activates call sessions (`/v1/call/sessions`, `/state`), ends sessions on reset, publishes transcript events to canonical realtime ingest (`/v1/realtime/events`), polls canonical realtime stream (`/v1/realtime/sessions/:sessionId/events`) and maps `call.* / transcript.* / orchestration.* / safety.* / action.*` families into UI contract events. Added backend-authoritative orchestration action execution path (`/v1/orchestration/actions/execute`) and removed frontend-managed confirmation timeout ownership from action dispatch path. Published mapping contract doc: `docs/CALL_UI_EVENT_MAPPING.md`.
+- Next: Replace transitional `/v1/chat/stream` text generation bridge with transport-native realtime voice/text stream and complete deprecation of frontend lifecycle simulation paths.
+- Risks: Current phase is hybrid (session/realtime lifecycle authoritative, text generation still bridged through `/v1/chat/stream`), so temporary dual-path complexity remains until transport-native stream cutover is completed.
