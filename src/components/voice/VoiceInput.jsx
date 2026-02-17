@@ -22,6 +22,7 @@ export default function VoiceInput({
   const { supported, listening, start, stop, interimTranscript, error } = useSpeechRecognition({
     lang,
     continuous: true,
+    autoRestart: true,
     interimResults: true,
     onInterim: (t) => onInterim?.(t),
     onFinal: (t) => {

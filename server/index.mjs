@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { readFile } from 'node:fs/promises';
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { initDb, stableId, toTsMs } from './db.mjs';
 import { EVENT_VERSION, validateRealtimeEventEnvelope, mergeTranscriptEvents } from './realtime-events.mjs';
@@ -13,13 +13,12 @@ const HOST = process.env.HOST || '127.0.0.1';
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || null;
 const OPENCLAW_RESPONSES_URL = process.env.OPENCLAW_RESPONSES_URL || 'http://127.0.0.1:18789/v1/responses';
 const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || null;
+const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL || null;
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || null;
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || null;
-const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL || null;
+const BILLING_SIGNING_SECRET = process.env.BILLING_SIGNING_SECRET || OPENCLAW_GATEWAY_TOKEN || 'life-os-dev-billing-secret';
+const BILLING_RECONCILIATION_ALERT_WEBHOOK_URL = process.env.BILLING_RECONCILIATION_ALERT_WEBHOOK_URL || null;
 
-const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL || null;
-const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || null;
-const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || null;
 const liveKit = createLiveKitTokenIssuer({ apiKey: LIVEKIT_API_KEY, apiSecret: LIVEKIT_API_SECRET });
 
 // UI Contract v1.0 Event Types
@@ -48,6 +47,7 @@ const ACTION_RISK_TIERS = {
 
 const SAFETY_POLICY_IDS = {
   EXTERNAL_SEND_CONFIRMATION: 'policy.external-send.confirmation',
+  VOICE_CLONE_CONSENT: 'policy.voice.clone.explicit-consent',
   DEFAULT: 'policy.default.allow',
 };
 
@@ -297,12 +297,274 @@ await fastify.register(cors, { origin: true });
 const dbCtx = await initDb(process.env.LIFE_OS_DB);
 
 const DEFAULT_RECONNECT_WINDOW_MS = 2 * 60 * 1000;
+const DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST = 2000;
+const DEFAULT_RECONCILIATION_LOOKBACK_HOURS = 1;
+const DEFAULT_RECONCILIATION_LATENESS_MS = 5 * 60 * 1000;
+const DEFAULT_RATE_LIMIT_WINDOW_MS = process.env.RATE_LIMIT_WINDOW_MS ? Number(process.env.RATE_LIMIT_WINDOW_MS) : 60_000;
+const DEFAULT_RATE_LIMIT_MAX_REQUESTS = process.env.RATE_LIMIT_MAX_REQUESTS ? Number(process.env.RATE_LIMIT_MAX_REQUESTS) : 300;
+const RATE_LIMIT_EXEMPT_PATHS = new Set(['/health', '/health/ready', '/metrics']);
+const SLO_BASELINE = {
+  availabilityTarget: 0.995,
+  p95ApiLatencyMs: 350,
+  errorRateTarget: 0.01,
+};
 
-fastify.get('/health', async () => ({ 
-  ok: true, 
+const ALERT_DELIVERY_MAX_ATTEMPTS = process.env.ALERT_DELIVERY_MAX_ATTEMPTS ? Number(process.env.ALERT_DELIVERY_MAX_ATTEMPTS) : 5;
+const ALERT_DELIVERY_BASE_BACKOFF_MS = process.env.ALERT_DELIVERY_BASE_BACKOFF_MS ? Number(process.env.ALERT_DELIVERY_BASE_BACKOFF_MS) : 30_000;
+const ALERT_DELIVERY_MAX_BACKOFF_MS = process.env.ALERT_DELIVERY_MAX_BACKOFF_MS ? Number(process.env.ALERT_DELIVERY_MAX_BACKOFF_MS) : 30 * 60 * 1000;
+
+const RECONCILIATION_AUTOMATION_ENABLED = String(process.env.RECONCILIATION_AUTOMATION_ENABLED || '').toLowerCase() === 'true';
+const RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS = process.env.RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS
+  ? Number(process.env.RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS)
+  : 60 * 60 * 1000;
+const RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS = process.env.RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS
+  ? Number(process.env.RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS)
+  : 2 * 60 * 1000;
+const RECONCILIATION_AUTOMATION_WORKER_BATCH = process.env.RECONCILIATION_AUTOMATION_WORKER_BATCH
+  ? Number(process.env.RECONCILIATION_AUTOMATION_WORKER_BATCH)
+  : 100;
+
+const LIVEKIT_WEBHOOK_SIGNATURE_REQUIRED = String(process.env.LIVEKIT_WEBHOOK_SIGNATURE_REQUIRED || 'true').toLowerCase() !== 'false';
+const LIVEKIT_WEBHOOK_MAX_SKEW_MS = process.env.LIVEKIT_WEBHOOK_MAX_SKEW_MS
+  ? Number(process.env.LIVEKIT_WEBHOOK_MAX_SKEW_MS)
+  : 5 * 60 * 1000;
+
+const schedulerState = {
+  automationEnabled: RECONCILIATION_AUTOMATION_ENABLED,
+  hourlyRuns: 0,
+  workerRuns: 0,
+  hourlyFailures: 0,
+  workerFailures: 0,
+  lastHourlyRunAtMs: null,
+  lastWorkerRunAtMs: null,
+  lastHourlyError: null,
+  lastWorkerError: null,
+};
+
+const runtimeObservability = {
+  startedAtMs: Date.now(),
+  requestsTotal: 0,
+  errorsTotal: 0,
+  rateLimitedTotal: 0,
+  latencySamplesMs: [],
+  routeStats: new Map(),
+};
+
+const rateLimitState = new Map();
+
+function p95(values = []) {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1));
+  return sorted[index];
+}
+
+function routePathFromRequest(req) {
+  const raw = req?.routerPath || req?.routeOptions?.url || req?.url || '';
+  const pathOnly = String(raw).split('?')[0] || '/';
+  return pathOnly.startsWith('/') ? pathOnly : `/${pathOnly}`;
+}
+
+function updateRouteStats(route, durationMs, statusCode) {
+  const existing = runtimeObservability.routeStats.get(route) || {
+    requests: 0,
+    errors: 0,
+    totalDurationMs: 0,
+    latencySamplesMs: [],
+  };
+
+  existing.requests += 1;
+  if (Number(statusCode || 0) >= 500) existing.errors += 1;
+  existing.totalDurationMs += durationMs;
+  existing.latencySamplesMs.push(durationMs);
+
+  if (existing.latencySamplesMs.length > 500) existing.latencySamplesMs.shift();
+  runtimeObservability.routeStats.set(route, existing);
+}
+
+function currentSloSnapshot() {
+  const requestsTotal = runtimeObservability.requestsTotal;
+  const errorsTotal = runtimeObservability.errorsTotal;
+  const errorRate = requestsTotal > 0 ? errorsTotal / requestsTotal : 0;
+  const availability = requestsTotal > 0 ? Math.max(0, 1 - errorRate) : 1;
+  const p95ApiLatencyMs = p95(runtimeObservability.latencySamplesMs);
+
+  return {
+    baseline: SLO_BASELINE,
+    measured: {
+      requestsTotal,
+      errorsTotal,
+      errorRate,
+      availability,
+      p95ApiLatencyMs,
+    },
+    gate: {
+      pass:
+        availability >= SLO_BASELINE.availabilityTarget
+        && errorRate <= SLO_BASELINE.errorRateTarget
+        && p95ApiLatencyMs <= SLO_BASELINE.p95ApiLatencyMs,
+    },
+  };
+}
+
+function buildMetricsPayload() {
+  const slo = currentSloSnapshot();
+  const uptimeMs = Date.now() - runtimeObservability.startedAtMs;
+  const routes = [];
+
+  for (const [route, stats] of runtimeObservability.routeStats.entries()) {
+    routes.push({
+      route,
+      requests: stats.requests,
+      errors: stats.errors,
+      avgLatencyMs: stats.requests > 0 ? stats.totalDurationMs / stats.requests : 0,
+      p95LatencyMs: p95(stats.latencySamplesMs),
+    });
+  }
+
+  return {
+    uptimeMs,
+    requestsTotal: runtimeObservability.requestsTotal,
+    errorsTotal: runtimeObservability.errorsTotal,
+    rateLimitedTotal: runtimeObservability.rateLimitedTotal,
+    slo,
+    routes,
+    realtime: realtimeMetrics,
+  };
+}
+
+function formatPrometheusMetrics(metrics) {
+  const lines = [
+    '# HELP lifeos_requests_total Total HTTP requests',
+    '# TYPE lifeos_requests_total counter',
+    `lifeos_requests_total ${metrics.requestsTotal}`,
+    '# HELP lifeos_errors_total Total HTTP errors (5xx)',
+    '# TYPE lifeos_errors_total counter',
+    `lifeos_errors_total ${metrics.errorsTotal}`,
+    '# HELP lifeos_rate_limited_total Total rate-limited requests',
+    '# TYPE lifeos_rate_limited_total counter',
+    `lifeos_rate_limited_total ${metrics.rateLimitedTotal}`,
+    '# HELP lifeos_slo_availability_measured Current measured availability',
+    '# TYPE lifeos_slo_availability_measured gauge',
+    `lifeos_slo_availability_measured ${metrics.slo.measured.availability}`,
+    '# HELP lifeos_slo_error_rate_measured Current measured error rate',
+    '# TYPE lifeos_slo_error_rate_measured gauge',
+    `lifeos_slo_error_rate_measured ${metrics.slo.measured.errorRate}`,
+    '# HELP lifeos_slo_p95_latency_ms_measured Current measured p95 latency in ms',
+    '# TYPE lifeos_slo_p95_latency_ms_measured gauge',
+    `lifeos_slo_p95_latency_ms_measured ${metrics.slo.measured.p95ApiLatencyMs}`,
+  ];
+
+  return `${lines.join('\n')}\n`;
+}
+
+function computeAlertBackoffMs(attempts) {
+  const normalizedAttempts = Math.max(1, Math.trunc(Number(attempts) || 1));
+  const backoff = ALERT_DELIVERY_BASE_BACKOFF_MS * (2 ** Math.max(0, normalizedAttempts - 1));
+  return Math.min(ALERT_DELIVERY_MAX_BACKOFF_MS, Math.max(ALERT_DELIVERY_BASE_BACKOFF_MS, backoff));
+}
+
+fastify.addHook('onRequest', async (req, reply) => {
+  const now = Date.now();
+  const traceIdHeader = req.headers['x-trace-id'] ? String(req.headers['x-trace-id']).trim() : '';
+  const traceId = traceIdHeader || `trace_${stableId(req.id, now, Math.random()).slice(0, 16)}`;
+  req.traceId = traceId;
+  req.requestStartMs = now;
+
+  reply.header('x-trace-id', traceId);
+  reply.header('x-content-type-options', 'nosniff');
+  reply.header('x-frame-options', 'DENY');
+  reply.header('referrer-policy', 'no-referrer');
+
+  const routePath = routePathFromRequest(req);
+  const isInternal = OPENCLAW_GATEWAY_TOKEN && String(req.headers['x-gateway-token'] || '') === OPENCLAW_GATEWAY_TOKEN;
+  if (isInternal || RATE_LIMIT_EXEMPT_PATHS.has(routePath)) return;
+
+  const key = `${req.ip || 'unknown'}:${routePath}`;
+  const state = rateLimitState.get(key);
+  if (!state || now >= state.resetAtMs) {
+    rateLimitState.set(key, {
+      count: 1,
+      resetAtMs: now + DEFAULT_RATE_LIMIT_WINDOW_MS,
+    });
+    return;
+  }
+
+  state.count += 1;
+  if (state.count > DEFAULT_RATE_LIMIT_MAX_REQUESTS) {
+    runtimeObservability.rateLimitedTotal += 1;
+    const retryAfterSec = Math.max(1, Math.ceil((state.resetAtMs - now) / 1000));
+    reply.header('retry-after', String(retryAfterSec));
+    return sendError(req, reply, 429, 'RATE_LIMITED', 'Too many requests; retry later', true);
+  }
+});
+
+fastify.addHook('onResponse', async (req, reply) => {
+  const finishedAtMs = Date.now();
+  const startedAtMs = Number(req.requestStartMs || finishedAtMs);
+  const durationMs = Math.max(0, finishedAtMs - startedAtMs);
+  const route = routePathFromRequest(req);
+  const statusCode = Number(reply.statusCode || 0);
+
+  runtimeObservability.requestsTotal += 1;
+  if (statusCode >= 500) runtimeObservability.errorsTotal += 1;
+  runtimeObservability.latencySamplesMs.push(durationMs);
+  if (runtimeObservability.latencySamplesMs.length > 2000) runtimeObservability.latencySamplesMs.shift();
+  updateRouteStats(route, durationMs, statusCode);
+
+  fastify.log.info({
+    event: 'http.request.completed',
+    traceId: req.traceId,
+    method: req.method,
+    route,
+    statusCode,
+    durationMs,
+  });
+});
+
+fastify.get('/health', async () => ({
+  ok: true,
   contract: 'v1.0',
-  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark']
+  uptimeMs: Date.now() - runtimeObservability.startedAtMs,
+  slo: currentSloSnapshot(),
+  features: ['structured-events', 'legacy-compat', 'action-risk-tiers', 'approval-audit', 'realtime-event-validation', 'realtime-replay', 'session-resume-token', 'session-sequence-watermark', 'usage-metering', 'billing-events', 'dead-letter-routing', 'billing-reconciliation-scaffold', 'billing-reconciliation-automation', 'observability-baseline', 'rate-limit-baseline', 'data-governance-controls', 'tenant-operator-controls']
 }));
+
+fastify.get('/health/ready', async (req, reply) => {
+  try {
+    const ping = dbCtx.db.prepare('SELECT 1 AS ok').get();
+    if (!ping || Number(ping.ok) !== 1) {
+      return sendError(req, reply, 503, 'READINESS_FAILED', 'database readiness probe failed', true);
+    }
+
+    return {
+      ok: true,
+      ready: true,
+      checks: {
+        database: 'ok',
+      },
+      sloGate: currentSloSnapshot().gate,
+    };
+  } catch (err) {
+    req.log.error({ err }, 'health_ready_probe_failed');
+    return sendError(req, reply, 503, 'READINESS_FAILED', 'database readiness probe failed', true);
+  }
+});
+
+fastify.get('/metrics', async (req, reply) => {
+  const format = String(req.query?.format || '').toLowerCase();
+  const metrics = buildMetricsPayload();
+
+  if (format === 'prom' || format === 'prometheus') {
+    reply.type('text/plain; version=0.0.4');
+    return formatPrometheusMetrics(metrics);
+  }
+
+  return {
+    ok: true,
+    metrics,
+  };
+});
 
 fastify.get('/', async () => ({
   ok: true,
@@ -310,27 +572,42 @@ fastify.get('/', async () => ({
   contract: 'v1.0',
   endpoints: {
     health: '/health',
+    healthReady: '/health/ready',
+    metrics: '/metrics?format=json|prom',
     chatTurn: '/v1/chat/turn (POST json)',
     chatStream: '/v1/chat/stream (POST SSE)',
     createCallSession: '/v1/call/sessions (POST json)',
     listCallSessions: '/v1/call/sessions (GET with x-user-id header)',
     getCallSession: '/v1/call/sessions/:sessionId (GET)',
     updateCallSession: '/v1/call/sessions/:sessionId/state (POST json)',
-codex/map-out-next-5-tasks
-=======
- codex/add-livekit-integration-endpoints
     issueLiveKitToken: '/v1/call/sessions/:sessionId/livekit/token (POST json)',
     ingestLiveKitEvent: '/v1/call/livekit/events (POST json)',
-=======
-codex/add-policy-checks-for-sensitive-actions
-prod
-    executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
     reconnectCallSession: '/v1/call/sessions/:sessionId/reconnect (POST json)',
- codex/map-out-next-5-tasks
-=======
-prod
-prod
- prod
+    executeCallTurn: '/v1/call/sessions/:sessionId/turn (POST json)',
+    updateVoiceProfile: '/v1/call/sessions/:sessionId/voice (POST json)',
+    listTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots (GET)',
+    compactTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots/compact (POST json)',
+    listUsageMeterRecords: '/v1/billing/sessions/:sessionId/usage-records (GET)',
+    listBillingUsageEvents: '/v1/billing/sessions/:sessionId/events (GET)',
+    listBillingDeadLetters: '/v1/billing/sessions/:sessionId/dead-letters (GET)',
+    listBillingAccountDeadLetters: '/v1/billing/accounts/:accountId/dead-letters (GET)',
+    summarizeBillingAccountUsage: '/v1/billing/accounts/:accountId/usage-summary (GET)',
+    billingTraceability: '/v1/billing/accounts/:accountId/traceability (GET)',
+    governanceDataMap: '/v1/governance/accounts/:accountId/data-map (GET)',
+    governanceDeleteAccountData: '/v1/governance/accounts/:accountId/delete (POST json)',
+    governanceAudit: '/v1/governance/accounts/:accountId/audit (GET)',
+    listTenantConfigs: '/v1/operator/tenants (GET internal)',
+    getTenantConfig: '/v1/operator/tenants/:accountId/config (GET internal)',
+    upsertTenantConfig: '/v1/operator/tenants/:accountId/config (POST internal)',
+    listBillingReconciliationRuns: '/v1/billing/accounts/:accountId/reconciliation/runs (GET)',
+    runBillingReconciliation: '/v1/billing/reconciliation/run (POST json)',
+    triggerHourlyReconciliation: '/v1/billing/reconciliation/hourly-trigger (POST internal)',
+    deliverReconciliationAlerts: '/v1/billing/reconciliation/alerts/deliver (POST internal)',
+    reconciliationSchedulerStatus: '/v1/billing/reconciliation/scheduler/status (GET internal)',
+    getBillingReconciliationRun: '/v1/billing/reconciliation/runs/:runId (GET)',
+    createBillingAdjustment: '/v1/billing/adjustments (POST json)',
+    executeOrchestrationAction: '/v1/orchestration/actions/execute (POST json)',
+    actionDecision: '/v1/actions/decision (POST json)',
   },
 }));
 
@@ -371,6 +648,16 @@ const CALL_SESSION_TRANSITIONS = {
   [CALL_SESSION_STATUS.FAILED]: new Set(),
 };
 
+const PERSONA_VOICE_MAP = {
+  both: { voiceProfileId: 'voice.default.both', label: 'Balanced Core', clonedVoice: false },
+  antonio: { voiceProfileId: 'voice.clone.antonio', label: 'Antonio Clone', clonedVoice: true },
+  mariana: { voiceProfileId: 'voice.clone.mariana', label: 'Mariana Clone', clonedVoice: true },
+};
+
+const TURN_SLO_THRESHOLD_MS = Number.isFinite(Number(process.env.TURN_SLO_THRESHOLD_MS))
+  ? Math.max(300, Math.trunc(Number(process.env.TURN_SLO_THRESHOLD_MS)))
+  : 2500;
+
 function sendError(req, reply, statusCode, code, message, retryable = false) {
   return reply.code(statusCode).send({
     ok: false,
@@ -378,6 +665,7 @@ function sendError(req, reply, statusCode, code, message, retryable = false) {
     message,
     retryable,
     requestId: req.id,
+    traceId: req.traceId || null,
   });
 }
 
@@ -391,6 +679,127 @@ function getAuthenticatedUserId(req, body = {}) {
   }
 
   return { userId: headerUserId };
+}
+
+function getInternalGatewayAuth(req) {
+  const token = req.headers['x-gateway-token'] ? String(req.headers['x-gateway-token']).trim() : '';
+  if (!OPENCLAW_GATEWAY_TOKEN) {
+    return { code: 'INTERNAL_AUTH_UNCONFIGURED', message: 'gateway token is not configured on backend' };
+  }
+  if (!token || token !== OPENCLAW_GATEWAY_TOKEN) {
+    return { code: 'AUTH_REQUIRED', message: 'valid x-gateway-token header is required' };
+  }
+  return { ok: true };
+}
+
+function normalizeHexSignature(input) {
+  const raw = String(input || '').trim().toLowerCase();
+  const normalized = raw.startsWith('sha256=') ? raw.slice('sha256='.length) : raw;
+  return /^[0-9a-f]{64}$/.test(normalized) ? normalized : '';
+}
+
+function timingSafeEqualsHex(leftHex, rightHex) {
+  if (!leftHex || !rightHex) return false;
+  if (leftHex.length !== rightHex.length) return false;
+
+  try {
+    const left = Buffer.from(leftHex, 'hex');
+    const right = Buffer.from(rightHex, 'hex');
+    if (left.length !== right.length) return false;
+    return timingSafeEqual(left, right);
+  } catch {
+    return false;
+  }
+}
+
+function verifyAndRecordLiveKitWebhook(req) {
+  if (!LIVEKIT_WEBHOOK_SIGNATURE_REQUIRED) {
+    return { ok: true, replayed: false, verified: false };
+  }
+
+  if (!LIVEKIT_API_SECRET) {
+    return {
+      ok: false,
+      statusCode: 503,
+      code: 'LIVEKIT_SIGNATURE_UNAVAILABLE',
+      message: 'LiveKit signature verification is enabled but LIVEKIT_API_SECRET is not configured',
+    };
+  }
+
+  const signatureHeader = req.headers['x-livekit-signature'] || req.headers['x-signature'];
+  const signature = normalizeHexSignature(signatureHeader);
+  if (!signature) {
+    return {
+      ok: false,
+      statusCode: 401,
+      code: 'INVALID_LIVEKIT_SIGNATURE',
+      message: 'Missing or invalid x-livekit-signature header',
+    };
+  }
+
+  const timestampHeader = req.headers['x-livekit-timestamp'] || req.headers['x-signature-timestamp'];
+  const timestampRaw = String(timestampHeader || '').trim();
+  const timestampNumeric = Number(timestampRaw);
+  if (!timestampRaw || !Number.isFinite(timestampNumeric)) {
+    return {
+      ok: false,
+      statusCode: 401,
+      code: 'INVALID_LIVEKIT_SIGNATURE_TIMESTAMP',
+      message: 'Missing or invalid x-livekit-timestamp header',
+    };
+  }
+
+  const timestampMs = timestampNumeric > 1_000_000_000_000
+    ? Math.trunc(timestampNumeric)
+    : Math.trunc(timestampNumeric * 1000);
+  const nowMs = Date.now();
+  const maxSkewMs = Number.isFinite(LIVEKIT_WEBHOOK_MAX_SKEW_MS)
+    ? Math.max(30_000, Math.trunc(LIVEKIT_WEBHOOK_MAX_SKEW_MS))
+    : 5 * 60 * 1000;
+
+  if (Math.abs(nowMs - timestampMs) > maxSkewMs) {
+    return {
+      ok: false,
+      statusCode: 401,
+      code: 'LIVEKIT_SIGNATURE_TIMESTAMP_OUT_OF_RANGE',
+      message: 'LiveKit webhook timestamp is outside allowed verification window',
+    };
+  }
+
+  const bodyCanonical = JSON.stringify(req.body || {});
+  const signedPayload = `${timestampRaw}.${bodyCanonical}`;
+  const expectedSignature = createHmac('sha256', LIVEKIT_API_SECRET).update(signedPayload).digest('hex');
+
+  if (!timingSafeEqualsHex(signature, expectedSignature)) {
+    return {
+      ok: false,
+      statusCode: 401,
+      code: 'INVALID_LIVEKIT_SIGNATURE',
+      message: 'LiveKit webhook signature validation failed',
+    };
+  }
+
+  const bodyHash = stableId(bodyCanonical);
+  const dedupeKey = stableId('livekit-webhook', timestampRaw, signature, bodyHash);
+  const receiptId = `lkwr_${stableId(dedupeKey).slice(0, 20)}`;
+  const providerEventId = req.body?.eventId ? String(req.body.eventId) : (req.body?.id ? String(req.body.id) : null);
+
+  const inserted = dbCtx.insertLiveKitWebhookReceipt.run(
+    receiptId,
+    dedupeKey,
+    providerEventId,
+    signature,
+    timestampMs,
+    bodyHash,
+    nowMs,
+  );
+
+  return {
+    ok: true,
+    replayed: !inserted?.changes,
+    verified: true,
+    receiptId,
+  };
 }
 
 function parseRequestMetadata(raw) {
@@ -449,11 +858,32 @@ function createPolicyDecision({ actionId, actionType, riskTier, userConfirmation
   };
 }
 
-function executeOrchestrationAction({ actionType, payload }) {
-  const resultRef = `result_${stableId(actionType, JSON.stringify(payload || {}), Date.now()).slice(0, 18)}`;
+const SUPPORTED_ORCHESTRATION_ACTIONS = new Set([
+  'cv.generate',
+  'cv.edit',
+  'interview.generate',
+  'interview.practice',
+  'outreach.generate',
+  'outreach.edit',
+  'outreach.requestSend',
+]);
+
+function executeOrchestrationAction({ sessionId, actionId, actionType, payload }) {
+  if (!SUPPORTED_ORCHESTRATION_ACTIONS.has(actionType)) {
+    const err = new Error(`unsupported actionType: ${actionType}`);
+    err.code = 'UNSUPPORTED_ACTION_TYPE';
+    err.retryable = false;
+    err.statusCode = 422;
+    throw err;
+  }
+
+  const payloadFingerprint = stableId(JSON.stringify(payload || {})).slice(0, 12);
+  const resultRef = `result_${stableId(sessionId, actionId, actionType, payloadFingerprint).slice(0, 18)}`;
+
   return {
     ok: true,
     resultRef,
+    actionType,
   };
 }
 
@@ -559,8 +989,38 @@ function publishRealtimeEvent(event) {
     return { ok: true, deduped: true, event };
   }
 
+  const persistedEvent = { ...event, sequence: nextSequence };
+  if (persistedEvent.type.startsWith('transcript.')) {
+    const payload = persistedEvent.payload && typeof persistedEvent.payload === 'object' ? persistedEvent.payload : {};
+    const utteranceId = payload.utteranceId ? String(payload.utteranceId).trim() : '';
+
+    if (utteranceId) {
+      const snapshotId = `snap_${stableId(persistedEvent.sessionId, persistedEvent.eventId, nextSequence).slice(0, 24)}`;
+      const speaker = payload.speaker ? String(payload.speaker) : null;
+      const text = payload.text ? String(payload.text) : null;
+      const startMs = Number.isFinite(Number(payload.startMs)) ? Math.max(0, Math.trunc(Number(payload.startMs))) : null;
+      const endMs = Number.isFinite(Number(payload.endMs)) ? Math.max(0, Math.trunc(Number(payload.endMs))) : null;
+
+      dbCtx.insertTranscriptSnapshot.run(
+        snapshotId,
+        persistedEvent.sessionId,
+        utteranceId,
+        persistedEvent.eventId,
+        nextSequence,
+        persistedEvent.ts,
+        persistedEvent.type,
+        speaker,
+        text,
+        startMs,
+        endMs,
+        JSON.stringify(payload),
+        Date.now(),
+      );
+    }
+  }
+
   realtimeMetrics.emitted += 1;
-  return { ok: true, deduped: false, event: { ...event, sequence: nextSequence } };
+  return { ok: true, deduped: false, event: persistedEvent };
 }
 
 function normalizeRealtimeEventRow(row) {
@@ -576,13 +1036,699 @@ function normalizeRealtimeEventRow(row) {
   };
 }
 
+function normalizeTranscriptSnapshotRow(row) {
+  const payload = JSON.parse(row.payloadJson);
+  return {
+    snapshotId: row.snapshotId,
+    sessionId: row.sessionId,
+    utteranceId: row.utteranceId,
+    eventId: row.eventId,
+    sequence: row.sequence,
+    timestamp: row.timestamp,
+    ts: row.timestamp,
+    type: row.type,
+    speaker: row.speaker,
+    text: row.text,
+    startMs: row.startMs,
+    endMs: row.endMs,
+    payload,
+    createdAtMs: row.createdAtMs,
+  };
+}
+
+function normalizeUsageMeterRecordRow(row) {
+  return {
+    recordId: row.recordId,
+    accountId: row.accountId,
+    sessionId: row.sessionId,
+    meterId: row.meterId,
+    unit: row.unit,
+    quantity: Number(row.quantity || 0),
+    sourceEventId: row.sourceEventId,
+    sourceSequence: row.sourceSequence,
+    sourceTimestamp: row.sourceTimestamp,
+    signature: row.signature || null,
+    signatureVersion: row.signatureVersion || null,
+    metadata: parseStoredMetadata(row.metadataJson),
+    createdAtMs: row.createdAtMs,
+  };
+}
+
+function normalizeBillingUsageEventRow(row) {
+  return {
+    billingEventId: row.billingEventId,
+    usageRecordId: row.usageRecordId || null,
+    accountId: row.accountId,
+    sessionId: row.sessionId,
+    eventType: row.eventType || 'billing.usage.recorded',
+    meterId: row.meterId,
+    unit: row.unit,
+    quantity: Number(row.quantity || 0),
+    payload: JSON.parse(row.payloadJson),
+    createdAtMs: row.createdAtMs,
+  };
+}
+
+function normalizeBillingDeadLetterRow(row) {
+  return {
+    deadLetterId: row.deadLetterId,
+    accountId: row.accountId || null,
+    sessionId: row.sessionId || null,
+    eventType: row.eventType,
+    eventId: row.eventId || null,
+    code: row.code || null,
+    message: row.message || null,
+    payload: JSON.parse(row.payloadJson),
+    createdAtMs: row.createdAtMs,
+  };
+}
+
+function parseStoredJsonArray(rawJson) {
+  if (!rawJson || typeof rawJson !== 'string') return [];
+  try {
+    const parsed = JSON.parse(rawJson);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeBillingReconciliationRunRow(row) {
+  return {
+    runId: row.runId,
+    accountId: row.accountId,
+    windowStartMs: Number(row.windowStartMs || 0),
+    windowEndMs: Number(row.windowEndMs || 0),
+    expectedSummary: parseStoredJsonArray(row.expectedSummaryJson),
+    actualSummary: parseStoredJsonArray(row.actualSummaryJson),
+    mismatchCount: Number(row.mismatchCount || 0),
+    status: row.status,
+    alertDispatched: Number(row.alertDispatched || 0) > 0,
+    metadata: parseStoredMetadata(row.metadataJson),
+    createdAtMs: Number(row.createdAtMs || 0),
+  };
+}
+
+function normalizeBillingReconciliationMismatchRow(row) {
+  return {
+    mismatchId: row.mismatchId,
+    runId: row.runId,
+    accountId: row.accountId,
+    meterId: row.meterId,
+    unit: row.unit,
+    expectedQuantity: Number(row.expectedQuantity || 0),
+    actualQuantity: Number(row.actualQuantity || 0),
+    deltaQuantity: Number(row.deltaQuantity || 0),
+    severity: row.severity,
+    payload: parseStoredMetadata(row.payloadJson),
+    createdAtMs: Number(row.createdAtMs || 0),
+  };
+}
+
+function normalizeBillingReconciliationAlertRow(row) {
+  return {
+    alertId: row.alertId,
+    runId: row.runId,
+    accountId: row.accountId,
+    status: row.status,
+    channel: row.channel,
+    payload: parseStoredMetadata(row.payloadJson),
+    attempts: Number(row.attempts || 0),
+    maxAttempts: Number(row.maxAttempts || ALERT_DELIVERY_MAX_ATTEMPTS),
+    nextAttemptAtMs: row.nextAttemptAtMs !== null && row.nextAttemptAtMs !== undefined
+      ? Number(row.nextAttemptAtMs)
+      : null,
+    deliveredAtMs: row.deliveredAtMs !== null && row.deliveredAtMs !== undefined
+      ? Number(row.deliveredAtMs)
+      : null,
+    lastError: row.lastError || null,
+    createdAtMs: Number(row.createdAtMs || 0),
+  };
+}
+
+function buildBillingUsagePayload({ usageRecordId, accountId, meterId, unit, quantity, sourceEventId, signature, signatureVersion }) {
+  const payload = {
+    usageRecordId,
+    accountId,
+    meterId,
+    unit,
+    quantity,
+    sourceEventId,
+    signature,
+    signatureVersion,
+  };
+
+  if (unit === 'seconds') payload.billableSeconds = quantity;
+  return payload;
+}
+
+function signMeterRecord({ accountId, sessionId, meterId, unit, quantity, sourceEventId, sourceSequence, sourceTimestamp }) {
+  const canonical = [
+    accountId,
+    sessionId,
+    meterId,
+    unit,
+    Number(quantity || 0),
+    sourceEventId,
+    sourceSequence ?? '',
+    sourceTimestamp || '',
+  ].join('|');
+  return createHmac('sha256', BILLING_SIGNING_SECRET).update(canonical).digest('hex');
+}
+
+function emitBillingEventWithDeadLetter({ sessionId, accountId, eventType, eventId, payload, ts, forcePublishFailure = false }) {
+  try {
+    if (forcePublishFailure) throw new Error('forced_publish_failure_for_dead_letter_path');
+
+    const billingEvent = createRealtimeEvent({
+      sessionId,
+      eventId,
+      type: eventType,
+      payload,
+      ts,
+    });
+
+    const publishResult = publishRealtimeEvent(billingEvent);
+    return {
+      ok: true,
+      published: true,
+      deduped: publishResult.deduped,
+      event: publishResult.event,
+      deadLetterId: null,
+    };
+  } catch (err) {
+    const deadLetterId = `dlq_${stableId(sessionId, eventType, eventId, Date.now()).slice(0, 24)}`;
+    dbCtx.insertBillingDeadLetter.run(
+      deadLetterId,
+      accountId || null,
+      sessionId || null,
+      eventType,
+      eventId || null,
+      String(err?.code || 'BILLING_EVENT_PUBLISH_FAILED'),
+      String(err?.message || 'billing event publish failed'),
+      JSON.stringify(payload || {}),
+      Date.now(),
+    );
+
+    return {
+      ok: false,
+      published: false,
+      deduped: false,
+      event: null,
+      deadLetterId,
+      code: String(err?.code || 'BILLING_EVENT_PUBLISH_FAILED'),
+      message: String(err?.message || 'billing event publish failed'),
+    };
+  }
+}
+
+function recordUsageAndEmitBillingEvent({ accountId, sessionId, meterId, unit, quantity, sourceEvent, metadata = {}, forcePublishFailure = false }) {
+  const normalizedAccountId = String(accountId || 'unknown').trim() || 'unknown';
+  const numericQuantity = Number(quantity);
+  const normalizedQuantity = Number.isFinite(numericQuantity) ? Math.max(0, Math.trunc(numericQuantity)) : 0;
+  if (normalizedQuantity <= 0) {
+    return { ok: true, skipped: true, reason: 'non_positive_quantity' };
+  }
+
+  const sourceEventId = sourceEvent?.eventId ? String(sourceEvent.eventId).trim() : '';
+  if (!sourceEventId) {
+    return { ok: false, skipped: true, reason: 'missing_source_event_id' };
+  }
+
+  const sourceSequenceRaw = sourceEvent?.sequence !== undefined ? Number(sourceEvent.sequence) : null;
+  const sourceSequence = Number.isFinite(sourceSequenceRaw) ? Math.max(0, Math.trunc(sourceSequenceRaw)) : null;
+  const sourceTimestamp = typeof sourceEvent?.ts === 'string'
+    ? sourceEvent.ts
+    : (typeof sourceEvent?.timestamp === 'string' ? sourceEvent.timestamp : null);
+
+  const createdAtMs = Date.now();
+  const recordId = `mrec_${stableId(normalizedAccountId, sessionId, meterId, unit, sourceEventId).slice(0, 24)}`;
+  const signatureVersion = 'hs256.v1';
+  const signature = signMeterRecord({
+    accountId: normalizedAccountId,
+    sessionId,
+    meterId,
+    unit,
+    quantity: normalizedQuantity,
+    sourceEventId,
+    sourceSequence,
+    sourceTimestamp,
+  });
+
+  const usageInsert = dbCtx.insertUsageMeterRecord.run(
+    recordId,
+    normalizedAccountId,
+    sessionId,
+    meterId,
+    unit,
+    normalizedQuantity,
+    sourceEventId,
+    sourceSequence,
+    sourceTimestamp,
+    signature,
+    signatureVersion,
+    JSON.stringify(metadata),
+    createdAtMs,
+  );
+
+  const payload = buildBillingUsagePayload({
+    usageRecordId: recordId,
+    accountId: normalizedAccountId,
+    meterId,
+    unit,
+    quantity: normalizedQuantity,
+    sourceEventId,
+    signature,
+    signatureVersion,
+  });
+
+  const billingEventId = `evt_${stableId('billing.usage.recorded', recordId).slice(0, 20)}`;
+  dbCtx.insertBillingUsageEvent.run(
+    billingEventId,
+    recordId,
+    normalizedAccountId,
+    sessionId,
+    'billing.usage.recorded',
+    meterId,
+    unit,
+    normalizedQuantity,
+    JSON.stringify(payload),
+    createdAtMs,
+  );
+
+  const emit = emitBillingEventWithDeadLetter({
+    sessionId,
+    accountId: normalizedAccountId,
+    eventType: 'billing.usage.recorded',
+    eventId: billingEventId,
+    payload,
+    ts: sourceTimestamp || new Date(createdAtMs).toISOString(),
+    forcePublishFailure,
+  });
+
+  return {
+    ok: true,
+    usageDeduped: !usageInsert?.changes,
+    billingDeduped: emit.deduped,
+    billingPublished: emit.published,
+    deadLetterId: emit.deadLetterId || null,
+    usageRecordId: recordId,
+    billingEventId,
+  };
+}
+
+function parseReconciliationWindowInput(body = {}, nowMs = Date.now()) {
+  const explicitStart = Number(body.windowStartMs);
+  const explicitEnd = Number(body.windowEndMs);
+  if (Number.isFinite(explicitStart) && Number.isFinite(explicitEnd)) {
+    const windowStartMs = Math.max(0, Math.trunc(explicitStart));
+    const windowEndMs = Math.max(0, Math.trunc(explicitEnd));
+    if (windowEndMs <= windowStartMs) {
+      return { ok: false, code: 'INVALID_RECONCILIATION_WINDOW', message: 'windowEndMs must be greater than windowStartMs' };
+    }
+    return {
+      ok: true,
+      windowStartMs,
+      windowEndMs,
+      lookbackHours: null,
+      latenessMs: null,
+      mode: 'explicit',
+    };
+  }
+
+  const lookbackHoursRaw = Number(body.lookbackHours);
+  const latenessMsRaw = Number(body.latenessMs);
+  const lookbackHours = Number.isFinite(lookbackHoursRaw)
+    ? Math.max(1, Math.min(168, Math.trunc(lookbackHoursRaw)))
+    : DEFAULT_RECONCILIATION_LOOKBACK_HOURS;
+  const latenessMs = Number.isFinite(latenessMsRaw)
+    ? Math.max(0, Math.min(24 * 60 * 60 * 1000, Math.trunc(latenessMsRaw)))
+    : DEFAULT_RECONCILIATION_LATENESS_MS;
+
+  const windowEndMs = Math.max(0, nowMs - latenessMs);
+  const windowStartMs = Math.max(0, windowEndMs - (lookbackHours * 60 * 60 * 1000));
+  if (windowEndMs <= windowStartMs) {
+    return { ok: false, code: 'INVALID_RECONCILIATION_WINDOW', message: 'computed reconciliation window is empty' };
+  }
+
+  return {
+    ok: true,
+    windowStartMs,
+    windowEndMs,
+    lookbackHours,
+    latenessMs,
+    mode: 'derived',
+  };
+}
+
+function summarizeRowsToMap(rows) {
+  const summary = [];
+  const map = new Map();
+
+  for (const row of rows || []) {
+    const meterId = String(row.meterId || '').trim();
+    const unit = String(row.unit || '').trim();
+    if (!meterId || !unit) continue;
+
+    const totalQuantity = Number.isFinite(Number(row.totalQuantity)) ? Math.trunc(Number(row.totalQuantity)) : 0;
+    const recordsCount = Number.isFinite(Number(row.recordsCount)) ? Math.max(0, Math.trunc(Number(row.recordsCount))) : 0;
+    const key = `${meterId}::${unit}`;
+
+    const normalized = { meterId, unit, totalQuantity, recordsCount };
+    map.set(key, normalized);
+    summary.push(normalized);
+  }
+
+  return { summary, map };
+}
+
+function runBillingReconciliationScaffold({ accountId, windowStartMs, windowEndMs, initiatedBy, reason, metadata = {} }) {
+  const expectedRows = dbCtx.summarizeUsageByAccountWindow.all(accountId, windowStartMs, windowEndMs);
+  const actualRows = dbCtx.summarizeBillingByAccountWindow.all(accountId, windowStartMs, windowEndMs);
+
+  const expected = summarizeRowsToMap(expectedRows);
+  const actual = summarizeRowsToMap(actualRows);
+  const allKeys = new Set([...expected.map.keys(), ...actual.map.keys()]);
+
+  const createdAtMs = Date.now();
+  const runId = `recon_${stableId(accountId, windowStartMs, windowEndMs, createdAtMs).slice(0, 20)}`;
+
+  const mismatches = [];
+  for (const key of allKeys) {
+    const expectedRow = expected.map.get(key) || null;
+    const actualRow = actual.map.get(key) || null;
+    const meterId = expectedRow?.meterId || actualRow?.meterId || 'unknown';
+    const unit = expectedRow?.unit || actualRow?.unit || 'unknown';
+    const expectedQuantity = Number(expectedRow?.totalQuantity || 0);
+    const actualQuantity = Number(actualRow?.totalQuantity || 0);
+    const deltaQuantity = actualQuantity - expectedQuantity;
+
+    if (deltaQuantity === 0) continue;
+
+    const severity = deltaQuantity > 0 ? 'over_charge' : 'under_charge';
+    const mismatchId = `reconmm_${stableId(runId, meterId, unit).slice(0, 20)}`;
+    const payload = {
+      runId,
+      meterId,
+      unit,
+      expectedQuantity,
+      actualQuantity,
+      deltaQuantity,
+      severity,
+      expectedRecordsCount: Number(expectedRow?.recordsCount || 0),
+      actualRecordsCount: Number(actualRow?.recordsCount || 0),
+    };
+
+    dbCtx.insertBillingReconciliationMismatch.run(
+      mismatchId,
+      runId,
+      accountId,
+      meterId,
+      unit,
+      expectedQuantity,
+      actualQuantity,
+      deltaQuantity,
+      severity,
+      JSON.stringify(payload),
+      createdAtMs,
+    );
+
+    mismatches.push({
+      mismatchId,
+      runId,
+      accountId,
+      meterId,
+      unit,
+      expectedQuantity,
+      actualQuantity,
+      deltaQuantity,
+      severity,
+      payload,
+      createdAtMs,
+    });
+  }
+
+  const mismatchCount = mismatches.length;
+  const status = mismatchCount > 0 ? 'mismatch' : 'ok';
+
+  let alert = null;
+  if (mismatchCount > 0) {
+    const alertId = `reconal_${stableId(runId, accountId, mismatchCount).slice(0, 20)}`;
+    const payload = {
+      runId,
+      accountId,
+      mismatchCount,
+      windowStartMs,
+      windowEndMs,
+      reason: reason || null,
+      initiatedBy,
+      channel: 'hook.billing.reconciliation.v1',
+    };
+
+    dbCtx.insertBillingReconciliationAlert.run(
+      alertId,
+      runId,
+      accountId,
+      'pending',
+      'hook.billing.reconciliation.v1',
+      JSON.stringify(payload),
+      0,
+      Math.max(1, Math.trunc(ALERT_DELIVERY_MAX_ATTEMPTS || 5)),
+      null,
+      null,
+      null,
+      createdAtMs,
+    );
+
+    alert = {
+      alertId,
+      runId,
+      accountId,
+      status: 'pending',
+      channel: 'hook.billing.reconciliation.v1',
+      payload,
+      attempts: 0,
+      maxAttempts: Math.max(1, Math.trunc(ALERT_DELIVERY_MAX_ATTEMPTS || 5)),
+      nextAttemptAtMs: null,
+      deliveredAtMs: null,
+      lastError: null,
+      createdAtMs,
+    };
+  }
+
+  const metadataPayload = {
+    initiatedBy,
+    reason: reason || null,
+    ...metadata,
+  };
+
+  dbCtx.insertBillingReconciliationRun.run(
+    runId,
+    accountId,
+    windowStartMs,
+    windowEndMs,
+    JSON.stringify(expected.summary),
+    JSON.stringify(actual.summary),
+    mismatchCount,
+    status,
+    alert ? 1 : 0,
+    JSON.stringify(metadataPayload),
+    createdAtMs,
+  );
+
+  writeGovernanceAuditLog({
+    accountId,
+    actorId: initiatedBy,
+    eventType: 'billing.reconciliation.run',
+    payload: {
+      runId,
+      windowStartMs,
+      windowEndMs,
+      mismatchCount,
+      status,
+      alertDispatched: Boolean(alert),
+      metadata: metadataPayload,
+    },
+  });
+
+  return {
+    run: {
+      runId,
+      accountId,
+      windowStartMs,
+      windowEndMs,
+      expectedSummary: expected.summary,
+      actualSummary: actual.summary,
+      mismatchCount,
+      status,
+      alertDispatched: Boolean(alert),
+      metadata: {
+        initiatedBy,
+        reason: reason || null,
+        ...metadata,
+      },
+      createdAtMs,
+    },
+    mismatches,
+    alert,
+  };
+}
+
+async function deliverReconciliationAlertRow(alertRow, { dryRun = false, forceFailure = false } = {}) {
+  const alert = normalizeBillingReconciliationAlertRow(alertRow);
+  const payload = {
+    alertId: alert.alertId,
+    runId: alert.runId,
+    accountId: alert.accountId,
+    channel: alert.channel,
+    status: alert.status,
+    attempts: alert.attempts,
+    maxAttempts: alert.maxAttempts,
+    createdAtMs: alert.createdAtMs,
+    body: alert.payload,
+  };
+
+  if (dryRun) {
+    return {
+      alertId: alert.alertId,
+      status: 'dry_run',
+      delivered: false,
+      deadLetterId: null,
+      payload,
+    };
+  }
+
+  if (forceFailure) {
+    const err = new Error('forced_reconciliation_alert_delivery_failure');
+    err.code = 'FORCED_ALERT_DELIVERY_FAILURE';
+    throw err;
+  }
+
+  if (!BILLING_RECONCILIATION_ALERT_WEBHOOK_URL) {
+    dbCtx.updateBillingReconciliationAlertDelivery.run('delivered_stub', Date.now(), alert.alertId);
+    return {
+      alertId: alert.alertId,
+      status: 'delivered_stub',
+      delivered: true,
+      deadLetterId: null,
+      payload,
+    };
+  }
+
+  const resp = await fetch(BILLING_RECONCILIATION_ALERT_WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    const err = new Error(`alert webhook responded ${resp.status}: ${body.slice(0, 250)}`);
+    err.code = 'ALERT_WEBHOOK_NON_OK';
+    throw err;
+  }
+
+  dbCtx.updateBillingReconciliationAlertDelivery.run('delivered', Date.now(), alert.alertId);
+  return {
+    alertId: alert.alertId,
+    status: 'delivered',
+    delivered: true,
+    deadLetterId: null,
+    payload,
+  };
+}
+
 function parseStoredMetadata(rawJson) {
   if (!rawJson || typeof rawJson !== 'string') return {};
   try {
-    return parseRequestMetadata(JSON.parse(rawJson));
+    const parsed = JSON.parse(rawJson);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed;
   } catch {
     return {};
   }
+}
+
+function writeGovernanceAuditLog({ accountId = null, actorId = null, eventType, payload = {} }) {
+  const createdAtMs = Date.now();
+  const auditId = `gov_${stableId(accountId || 'global', actorId || 'system', eventType, createdAtMs, Math.random()).slice(0, 20)}`;
+  dbCtx.insertGovernanceAuditLog.run(
+    auditId,
+    accountId,
+    actorId,
+    eventType,
+    JSON.stringify(payload),
+    createdAtMs,
+  );
+  return {
+    auditId,
+    accountId,
+    actorId,
+    eventType,
+    payload,
+    createdAtMs,
+  };
+}
+
+function buildDataGovernanceCounts(accountId) {
+  return {
+    callSessions: Number(dbCtx.countCallSessionsByUser.get(accountId)?.count || 0),
+    realtimeEvents: Number(dbCtx.countRealtimeEventsByUser.get(accountId)?.count || 0),
+    transcriptSnapshots: Number(dbCtx.countTranscriptSnapshotsByUser.get(accountId)?.count || 0),
+    realtimeCheckpoints: Number(dbCtx.countRealtimeCheckpointsByUser.get(accountId)?.count || 0),
+    usageMeterRecords: Number(dbCtx.countUsageMeterRecordsByAccount.get(accountId)?.count || 0),
+    billingUsageEvents: Number(dbCtx.countBillingUsageEventsByAccount.get(accountId)?.count || 0),
+    billingDeadLetters: Number(dbCtx.countBillingDeadLettersByAccount.get(accountId)?.count || 0),
+    reconciliationRuns: Number(dbCtx.countBillingReconciliationRunsByAccount.get(accountId)?.count || 0),
+    reconciliationMismatches: Number(dbCtx.countBillingReconciliationMismatchesByAccount.get(accountId)?.count || 0),
+    reconciliationAlerts: Number(dbCtx.countBillingReconciliationAlertsByAccount.get(accountId)?.count || 0),
+  };
+}
+
+function executeAccountDataDeletion(accountId) {
+  const deletion = {
+    realtimeCheckpoints: Number(dbCtx.deleteRealtimeCheckpointsByUser.run(accountId)?.changes || 0),
+    transcriptSnapshots: Number(dbCtx.deleteTranscriptSnapshotsByUser.run(accountId)?.changes || 0),
+    realtimeEvents: Number(dbCtx.deleteRealtimeEventsByUser.run(accountId)?.changes || 0),
+    callSessions: Number(dbCtx.deleteCallSessionsByUser.run(accountId)?.changes || 0),
+    usageMeterRecords: Number(dbCtx.deleteUsageMeterRecordsByAccount.run(accountId)?.changes || 0),
+    billingUsageEvents: Number(dbCtx.deleteBillingUsageEventsByAccount.run(accountId)?.changes || 0),
+    billingDeadLetters: Number(dbCtx.deleteBillingDeadLettersByAccount.run(accountId)?.changes || 0),
+    reconciliationMismatches: Number(dbCtx.deleteBillingReconciliationMismatchesByAccount.run(accountId)?.changes || 0),
+    reconciliationAlerts: Number(dbCtx.deleteBillingReconciliationAlertsByAccount.run(accountId)?.changes || 0),
+    reconciliationRuns: Number(dbCtx.deleteBillingReconciliationRunsByAccount.run(accountId)?.changes || 0),
+    tenantConfig: Number(dbCtx.deleteTenantConfigByAccountId.run(accountId)?.changes || 0),
+  };
+
+  return {
+    ...deletion,
+    totalDeleted: Object.values(deletion).reduce((sum, n) => sum + Number(n || 0), 0),
+  };
+}
+
+function normalizeTenantConfigRow(row) {
+  if (!row) return null;
+  return {
+    accountId: row.accountId,
+    status: row.status,
+    plan: row.plan,
+    maxConcurrentCalls: Number(row.maxConcurrentCalls || 0),
+    flags: parseStoredMetadata(row.flagsJson),
+    metadata: parseStoredMetadata(row.metadataJson),
+    createdAtMs: Number(row.createdAtMs || 0),
+    updatedAtMs: Number(row.updatedAtMs || 0),
+  };
+}
+
+function normalizeGovernanceAuditRow(row) {
+  return {
+    auditId: row.auditId,
+    accountId: row.accountId || null,
+    actorId: row.actorId || null,
+    eventType: row.eventType,
+    payload: parseStoredMetadata(row.payloadJson),
+    createdAtMs: Number(row.createdAtMs || 0),
+  };
 }
 
 function normalizeCallSessionRow(row) {
@@ -614,6 +1760,36 @@ function normalizeCallSessionRow(row) {
   };
 }
 
+
+function resolveVoiceConfigFromSession(sessionRowOrNormalized) {
+  const metadata = sessionRowOrNormalized?.metadata
+    || parseStoredMetadata(sessionRowOrNormalized?.metadataJson);
+  const requestedPersona = String(metadata?.voicePersona || 'both').toLowerCase();
+  const persona = PERSONA_VOICE_MAP[requestedPersona] ? requestedPersona : 'both';
+  const base = PERSONA_VOICE_MAP[persona];
+
+  const clonedVoiceConsent = metadata?.clonedVoiceConsent === true;
+  const policyApprovalId = metadata?.voicePolicyApprovalId ? String(metadata.voicePolicyApprovalId) : null;
+  const synthesisAllowed = base.clonedVoice ? clonedVoiceConsent : true;
+
+  return {
+    persona,
+    voiceProfileId: base.voiceProfileId,
+    label: base.label,
+    clonedVoice: base.clonedVoice,
+    clonedVoiceConsent,
+    policyApprovalId,
+    synthesisAllowed,
+  };
+}
+
+function getUpdatedMetadataWithVoice(existingMetadata, patch = {}) {
+  const next = { ...(existingMetadata || {}) };
+  if (patch.voicePersona !== undefined) next.voicePersona = patch.voicePersona;
+  if (patch.clonedVoiceConsent !== undefined) next.clonedVoiceConsent = patch.clonedVoiceConsent;
+  if (patch.voicePolicyApprovalId !== undefined) next.voicePolicyApprovalId = patch.voicePolicyApprovalId;
+  return next;
+}
 
 function findCallSessionByProviderCorrelation({ providerCallId, providerRoomId, providerParticipantId }) {
   if (providerCallId) {
@@ -709,6 +1885,29 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
       provider: session.provider || 'livekit',
     },
   }));
+  publishRealtimeEvent(createRealtimeEvent({
+    sessionId: session.sessionId,
+    type: 'call.connecting',
+    payload: {
+      callId: session.sessionId,
+      provider: session.provider || 'livekit',
+    },
+  }));
+
+  const voiceConfig = resolveVoiceConfigFromSession(session);
+  publishRealtimeEvent(createRealtimeEvent({
+    sessionId: session.sessionId,
+    type: 'call.voice.config.updated',
+    payload: {
+      callId: session.sessionId,
+      persona: voiceConfig.persona,
+      voiceProfileId: voiceConfig.voiceProfileId,
+      label: voiceConfig.label,
+      clonedVoice: voiceConfig.clonedVoice,
+      synthesisAllowed: voiceConfig.synthesisAllowed,
+      policyId: voiceConfig.policyApprovalId,
+    },
+  }));
 
   return {
     ok: true,
@@ -776,6 +1975,10 @@ fastify.post('/v1/call/sessions/:sessionId/livekit/token', async (req, reply) =>
 
   dbCtx.updateCallSession.run(
     session.status,
+    session.resumeValidUntilMs || null,
+    session.lastAckSequence || null,
+    session.lastAckTimestamp || null,
+    session.lastAckEventId || null,
     'livekit',
     roomName,
     session.providerParticipantId || participantIdentity,
@@ -808,6 +2011,20 @@ fastify.post('/v1/call/sessions/:sessionId/livekit/token', async (req, reply) =>
 
 fastify.post('/v1/call/livekit/events', async (req, reply) => {
   const body = req.body || {};
+
+  const verification = verifyAndRecordLiveKitWebhook(req);
+  if (!verification.ok) {
+    return sendError(req, reply, verification.statusCode || 401, verification.code || 'INVALID_LIVEKIT_SIGNATURE', verification.message || 'invalid livekit webhook signature', false);
+  }
+  if (verification.replayed) {
+    return {
+      ok: true,
+      replayed: true,
+      ignored: true,
+      reason: 'livekit_webhook_replay_detected',
+    };
+  }
+
   const correlation = extractLiveKitCorrelation(body);
   const requestedSessionId = body.sessionId ? String(body.sessionId) : correlation.sessionIdFromMetadata;
 
@@ -854,6 +2071,10 @@ fastify.post('/v1/call/livekit/events', async (req, reply) => {
     translatedCount: translatedEvents.length,
     published,
     ignored: translatedEvents.length === 0,
+    webhookAuth: {
+      verified: verification.verified === true,
+      receiptId: verification.receiptId || null,
+    },
   };
 });
 
@@ -927,18 +2148,193 @@ fastify.post('/v1/call/sessions/:sessionId/reconnect', async (req, reply) => {
 
   const limitRaw = body.limit !== undefined ? Number(body.limit) : 100;
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
+  publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'call.reconnecting',
+    actor: { role: 'system', id: auth.userId },
+    payload: {
+      callId: sessionId,
+      attempt: 1,
+      at: nowIso(),
+      reason: 'resume_requested',
+    },
+  }));
+
   const rows = dbCtx.listRealtimeEventsAfterSequence.all(sessionId, ackSequence, limit);
   const events = rows.map(normalizeRealtimeEventRow);
   const latestSequence = Number(dbCtx.getRealtimeSessionMaxSequence.get(sessionId)?.maxSequence || 0);
 
+  const normalizedSession = normalizeCallSessionRow(existing);
+  const voiceConfig = resolveVoiceConfigFromSession(normalizedSession);
+
   return {
     ok: true,
-    session: normalizeCallSessionRow(existing),
+    session: normalizedSession,
+    voiceConfig,
     replay: {
       fromSequence: ackSequence,
       latestSequence,
       events,
       transcriptState: mergeTranscriptEvents(events),
+    },
+  };
+});
+
+fastify.post('/v1/call/sessions/:sessionId/voice', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+  if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
+  if (existing.userId !== auth.userId) return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'Session does not belong to authenticated user', false);
+
+  const requestedPersona = String(body.persona || '').trim().toLowerCase();
+  if (!PERSONA_VOICE_MAP[requestedPersona]) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'persona must be one of antonio|mariana|both', false);
+  }
+
+  const requestedProfile = PERSONA_VOICE_MAP[requestedPersona];
+  const userConsent = body.userConsent === true;
+  const policyApprovalId = body.policyApprovalId ? String(body.policyApprovalId).trim() : '';
+  const actionId = body.actionId ? String(body.actionId) : `voice-config-${stableId(sessionId, requestedPersona, Date.now()).slice(0, 16)}`;
+
+  const requiresClonePolicy = requestedProfile.clonedVoice === true;
+  const policyId = SAFETY_POLICY_IDS.VOICE_CLONE_CONSENT;
+
+  if (requiresClonePolicy && (!userConsent || !policyApprovalId)) {
+    const blocked = publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'safety.blocked',
+      actor: { role: 'system', id: auth.userId },
+      payload: {
+        policyId,
+        reason: 'explicit_voice_clone_consent_and_policy_approval_required',
+        decision: 'blocked',
+        actionId,
+        actionType: 'voice.config.update',
+        riskTier: ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND,
+      },
+    })).event;
+
+    dbCtx.insertActionAudit.run(
+      stableId(sessionId, actionId, Date.now(), 'blocked'),
+      actionId,
+      sessionId,
+      Date.now(),
+      Date.now(),
+      'voice.config.update',
+      ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND,
+      'blocked',
+      'blocked',
+      JSON.stringify({
+        sessionId,
+        actorId: auth.userId,
+        policyId,
+        requestedPersona,
+        requestedVoiceProfileId: requestedProfile.voiceProfileId,
+      }),
+    );
+
+    return reply.code(403).send({
+      ok: false,
+      blocked: true,
+      code: 'VOICE_POLICY_BLOCKED',
+      message: 'Explicit consent + policyApprovalId required for cloned voices',
+      event: blocked,
+    });
+  }
+
+  const approved = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'safety.approved',
+    actor: { role: 'system', id: auth.userId },
+    payload: {
+      policyId,
+      decision: 'approved',
+      actionId,
+      actionType: 'voice.config.update',
+      riskTier: requiresClonePolicy ? ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND : ACTION_RISK_TIERS.LOW_RISK_WRITE,
+    },
+  })).event;
+
+  const existingMetadata = parseStoredMetadata(existing.metadataJson);
+  const mergedMetadata = getUpdatedMetadataWithVoice(existingMetadata, {
+    voicePersona: requestedPersona,
+    clonedVoiceConsent: requiresClonePolicy ? true : false,
+    voicePolicyApprovalId: requiresClonePolicy ? policyApprovalId : null,
+  });
+
+  const updatedAtMs = Date.now();
+  dbCtx.updateCallSession.run(
+    existing.status,
+    existing.resumeValidUntilMs,
+    existing.lastAckSequence || null,
+    existing.lastAckTimestamp || null,
+    existing.lastAckEventId || null,
+    existing.provider,
+    existing.providerRoomId,
+    existing.providerParticipantId,
+    existing.providerCallId,
+    JSON.stringify(mergedMetadata),
+    existing.lastError,
+    updatedAtMs,
+    existing.startedAtMs,
+    existing.endedAtMs,
+    existing.failedAtMs,
+    sessionId,
+  );
+
+  const row = dbCtx.getCallSessionById.get(sessionId);
+  const session = normalizeCallSessionRow(row);
+  const voiceConfig = resolveVoiceConfigFromSession(session);
+
+  const configured = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'call.voice.config.updated',
+    actor: { role: 'system', id: auth.userId },
+    payload: {
+      callId: sessionId,
+      persona: voiceConfig.persona,
+      voiceProfileId: voiceConfig.voiceProfileId,
+      label: voiceConfig.label,
+      clonedVoice: voiceConfig.clonedVoice,
+      synthesisAllowed: voiceConfig.synthesisAllowed,
+      policyId: voiceConfig.policyApprovalId,
+    },
+  })).event;
+
+  dbCtx.insertActionAudit.run(
+    stableId(sessionId, actionId, Date.now(), 'approved'),
+    actionId,
+    sessionId,
+    Date.now(),
+    Date.now(),
+    'voice.config.update',
+    requiresClonePolicy ? ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND : ACTION_RISK_TIERS.LOW_RISK_WRITE,
+    'approved',
+    'executed',
+    JSON.stringify({
+      sessionId,
+      actorId: auth.userId,
+      policyId,
+      approvedEventId: approved.eventId,
+      configuredEventId: configured.eventId,
+      requestedPersona,
+      activeVoiceProfileId: voiceConfig.voiceProfileId,
+    }),
+  );
+
+  return {
+    ok: true,
+    session,
+    voiceConfig,
+    events: {
+      safetyApproved: approved,
+      voiceConfigured: configured,
     },
   };
 });
@@ -1035,6 +2431,7 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
   if (nextStatus === CALL_SESSION_STATUS.ACTIVE) {
     publishRealtimeEvent(createRealtimeEvent({
       sessionId,
+      eventId: `evt_${stableId(sessionId, 'call.connected').slice(0, 20)}`,
       type: 'call.connected',
       payload: {
         callId: sessionId,
@@ -1042,27 +2439,61 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
         providerSessionId: session.providerCallId || undefined,
       },
     }));
+
+    const voiceConfig = resolveVoiceConfigFromSession(session);
+    publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.voice.config.updated',
+      payload: {
+        callId: sessionId,
+        persona: voiceConfig.persona,
+        voiceProfileId: voiceConfig.voiceProfileId,
+        label: voiceConfig.label,
+        clonedVoice: voiceConfig.clonedVoice,
+        synthesisAllowed: voiceConfig.synthesisAllowed,
+        policyId: voiceConfig.policyApprovalId,
+      },
+    }));
   }
 
   if (nextStatus === CALL_SESSION_STATUS.ENDED) {
     const durationSeconds = session.startedAtMs ? Math.max(0, Math.floor((session.endedAtMs - session.startedAtMs) / 1000)) : 0;
-    publishRealtimeEvent(createRealtimeEvent({
+    const endedResult = publishRealtimeEvent(createRealtimeEvent({
       sessionId,
+      eventId: `evt_${stableId(sessionId, 'call.ended').slice(0, 20)}`,
       type: 'call.ended',
-        payload: {
+      payload: {
         callId: sessionId,
         endedAt: new Date(endedAtMs).toISOString(),
         durationSeconds,
         endReason: 'completed',
       },
     }));
+
+    try {
+      recordUsageAndEmitBillingEvent({
+        accountId: auth.userId,
+        sessionId,
+        meterId: 'call.duration.seconds',
+        unit: 'seconds',
+        quantity: durationSeconds,
+        sourceEvent: endedResult.event,
+        metadata: {
+          source: 'call.ended',
+          idempotentReplay: isIdempotentReplay,
+        },
+      });
+    } catch (err) {
+      req.log.error({ err, sessionId }, 'metering_call_duration_record_failed');
+    }
   }
 
   if (nextStatus === CALL_SESSION_STATUS.FAILED) {
     publishRealtimeEvent(createRealtimeEvent({
       sessionId,
+      eventId: `evt_${stableId(sessionId, 'call.error').slice(0, 20)}`,
       type: 'call.error',
-        payload: {
+      payload: {
         callId: sessionId,
         code: 'CALL_SESSION_FAILED',
         message: session.lastError || 'call session failed',
@@ -1071,6 +2502,7 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
     }));
     publishRealtimeEvent(createRealtimeEvent({
       sessionId,
+      eventId: `evt_${stableId(sessionId, 'call.terminal_failure').slice(0, 20)}`,
       type: 'call.terminal_failure',
       actor: { role: 'system', id: 'backend' },
       payload: {
@@ -1092,7 +2524,35 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
 
 
 fastify.post('/v1/realtime/events', async (req, reply) => {
-  const body = normalizeIncomingRealtimeEvent(req.body || {});
+  const rawBody = req.body || {};
+  const allowedIncomingKeys = new Set([
+    'eventId',
+    'sessionId',
+    'ts',
+    'timestamp',
+    'type',
+    'payload',
+    'schemaVersion',
+    'version',
+    'actor',
+  ]);
+
+  const unsupportedIncomingKeys = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody)
+    ? Object.keys(rawBody).filter((key) => !allowedIncomingKeys.has(key))
+    : [];
+
+  if (unsupportedIncomingKeys.length > 0) {
+    return sendError(
+      req,
+      reply,
+      400,
+      'INVALID_REALTIME_EVENT',
+      `REALTIME_EVENT_VALIDATION_FAILED:unsupported envelope key(s): ${unsupportedIncomingKeys.join(',')}`,
+      false,
+    );
+  }
+
+  const body = normalizeIncomingRealtimeEvent(rawBody);
   const event = createRealtimeEvent({
     sessionId: body?.sessionId !== undefined ? String(body.sessionId) : '',
     type: body?.type !== undefined ? String(body.type) : '',
@@ -1125,6 +2585,11 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
   const afterEventIdInput = req.query?.afterEventId ? String(req.query.afterEventId) : null;
   const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 100;
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
+  const snapshotLimitRaw = req.query?.snapshotLimit !== undefined ? Number(req.query.snapshotLimit) : DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST;
+  const snapshotLimit = Number.isFinite(snapshotLimitRaw)
+    ? Math.max(1, Math.min(20_000, Math.trunc(snapshotLimitRaw)))
+    : DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST;
+  const includeDiagnostics = String(req.query?.diagnostics || '').toLowerCase() === 'true' || String(req.query?.diagnostics || '') === '1';
 
   let watermarkTs = afterTsInput || '';
 
@@ -1156,6 +2621,9 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
     afterSequence = Math.max(afterSequence || 0, Number(existing.lastAckSequence) || 0);
   }
 
+  const requestStartedAtMs = Date.now();
+
+  const eventsQueryStartedAtMs = Date.now();
   let rows;
   if (afterSequence !== null) {
     rows = dbCtx.listRealtimeEventsAfterSequence.all(sessionId, afterSequence, limit);
@@ -1168,15 +2636,20 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
       limit,
     );
   }
+  const eventsQueryMs = Date.now() - eventsQueryStartedAtMs;
+
+  const snapshotsQueryStartedAtMs = Date.now();
+  const transcriptSnapshotRows = dbCtx.listTranscriptSnapshotsBySession.all(sessionId, snapshotLimit);
+  const snapshotsQueryMs = Date.now() - snapshotsQueryStartedAtMs;
 
   const events = rows.map(normalizeRealtimeEventRow);
-  const transcriptState = mergeTranscriptEvents(events);
+  const transcriptSnapshots = transcriptSnapshotRows.map(normalizeTranscriptSnapshotRow);
+  const transcriptState = mergeTranscriptEvents(transcriptSnapshots);
   const latestSequence = Number(dbCtx.getRealtimeSessionMaxSequence.get(sessionId)?.maxSequence || 0);
 
   return {
     ok: true,
     sessionId,
-    watermark: { ts: watermarkTs || null, eventId: watermarkEventId || null },
     resume: {
       reconnectWindowMs: existing?.reconnectWindowMs || null,
       resumeValidUntilMs: existing?.resumeValidUntilMs || null,
@@ -1186,6 +2659,888 @@ fastify.get('/v1/realtime/sessions/:sessionId/events', async (req, reply) => {
     watermark: { timestamp: watermarkTimestamp || null, eventId: watermarkEventId || null, sequence: afterSequence },
     events,
     transcriptState,
+    transcriptSnapshotsCount: transcriptSnapshots.length,
+    ...(includeDiagnostics
+      ? {
+          diagnostics: {
+            eventsQueryMs,
+            snapshotsQueryMs,
+            totalQueryMs: Date.now() - requestStartedAtMs,
+            snapshotLimit,
+            snapshotRowsRead: transcriptSnapshotRows.length,
+            eventsRowsRead: rows.length,
+          },
+        }
+      : {}),
+  };
+});
+
+fastify.get('/v1/realtime/sessions/:sessionId/transcript-snapshots', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const startedAtMs = Date.now();
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 200;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.trunc(limitRaw))) : 200;
+  const afterSequenceRaw = req.query?.afterSequence !== undefined ? Number(req.query.afterSequence) : null;
+  const afterSequence = Number.isFinite(afterSequenceRaw) ? Math.max(0, Math.trunc(afterSequenceRaw)) : null;
+  const utteranceIdFilter = req.query?.utteranceId ? String(req.query.utteranceId).trim() : null;
+  const includeStats = String(req.query?.includeStats || '').toLowerCase() === 'true' || String(req.query?.includeStats || '') === '1';
+
+  const rows = afterSequence !== null
+    ? dbCtx.listTranscriptSnapshotsBySessionAfterSequence.all(sessionId, afterSequence, limit)
+    : dbCtx.listTranscriptSnapshotsBySession.all(sessionId, limit);
+
+  const snapshots = rows
+    .map(normalizeTranscriptSnapshotRow)
+    .filter((row) => !utteranceIdFilter || row.utteranceId === utteranceIdFilter);
+
+  const statsRow = includeStats ? dbCtx.getTranscriptSnapshotStatsBySession.get(sessionId) : null;
+
+  return {
+    ok: true,
+    sessionId,
+    count: snapshots.length,
+    snapshots,
+    retention: {
+      keepLastDefault: DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST,
+    },
+    ...(includeStats
+      ? {
+          stats: {
+            count: Number(statsRow?.count || 0),
+            minSequence: Number(statsRow?.minSequence || 0),
+            maxSequence: Number(statsRow?.maxSequence || 0),
+            minTimestamp: statsRow?.minTimestamp || null,
+            maxTimestamp: statsRow?.maxTimestamp || null,
+            payloadBytes: Number(statsRow?.payloadBytes || 0),
+          },
+          diagnostics: {
+            queryMs: Date.now() - startedAtMs,
+          },
+        }
+      : {}),
+  };
+});
+
+fastify.post('/v1/realtime/sessions/:sessionId/transcript-snapshots/compact', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const body = req.body || {};
+  const keepLastRaw = body.keepLast !== undefined ? Number(body.keepLast) : DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST;
+  const keepLast = Number.isFinite(keepLastRaw)
+    ? Math.max(1, Math.min(20_000, Math.trunc(keepLastRaw)))
+    : DEFAULT_TRANSCRIPT_SNAPSHOT_KEEP_LAST;
+
+  const before = dbCtx.getTranscriptSnapshotStatsBySession.get(sessionId);
+  const result = dbCtx.compactTranscriptSnapshotsBySessionKeepLast.run(sessionId, keepLast, sessionId);
+  const after = dbCtx.getTranscriptSnapshotStatsBySession.get(sessionId);
+
+  return {
+    ok: true,
+    sessionId,
+    keepLast,
+    deletedCount: Number(result?.changes || 0),
+    before: {
+      count: Number(before?.count || 0),
+      minSequence: Number(before?.minSequence || 0),
+      maxSequence: Number(before?.maxSequence || 0),
+    },
+    after: {
+      count: Number(after?.count || 0),
+      minSequence: Number(after?.minSequence || 0),
+      maxSequence: Number(after?.maxSequence || 0),
+    },
+  };
+});
+
+fastify.get('/v1/billing/sessions/:sessionId/usage-records', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 500;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 500;
+  const meterIdFilter = req.query?.meterId ? String(req.query.meterId).trim() : null;
+
+  const rows = meterIdFilter
+    ? dbCtx.listUsageMeterRecordsBySessionAndMeter.all(sessionId, meterIdFilter, limit)
+    : dbCtx.listUsageMeterRecordsBySession.all(sessionId, limit);
+
+  const records = rows.map(normalizeUsageMeterRecordRow);
+  const totalsByMeter = records.reduce((acc, row) => {
+    const current = acc[row.meterId] || 0;
+    acc[row.meterId] = current + Number(row.quantity || 0);
+    return acc;
+  }, {});
+
+  return {
+    ok: true,
+    sessionId,
+    count: records.length,
+    records,
+    totalsByMeter,
+  };
+});
+
+fastify.get('/v1/billing/sessions/:sessionId/events', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 500;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 500;
+  const eventTypeFilter = req.query?.eventType ? String(req.query.eventType).trim() : null;
+
+  const rows = dbCtx.listBillingUsageEventsBySession.all(sessionId, limit);
+  const events = rows
+    .map(normalizeBillingUsageEventRow)
+    .filter((event) => !eventTypeFilter || event.eventType === eventTypeFilter);
+
+  return {
+    ok: true,
+    sessionId,
+    count: events.length,
+    events,
+  };
+});
+
+fastify.get('/v1/billing/sessions/:sessionId/dead-letters', async (req, reply) => {
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 500;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 500;
+
+  const rows = dbCtx.listBillingDeadLettersBySession.all(sessionId, limit);
+  const deadLetters = rows.map(normalizeBillingDeadLetterRow);
+
+  return {
+    ok: true,
+    sessionId,
+    count: deadLetters.length,
+    deadLetters,
+  };
+});
+
+fastify.get('/v1/billing/accounts/:accountId/dead-letters', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 500;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 500;
+
+  const rows = dbCtx.listBillingDeadLettersByAccount.all(accountId, limit);
+  const deadLetters = rows.map(normalizeBillingDeadLetterRow);
+
+  return {
+    ok: true,
+    accountId,
+    count: deadLetters.length,
+    deadLetters,
+  };
+});
+
+fastify.get('/v1/billing/accounts/:accountId/usage-summary', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 1000;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(10000, Math.trunc(limitRaw))) : 1000;
+
+  const records = dbCtx.listUsageMeterRecordsByAccount.all(accountId, limit).map(normalizeUsageMeterRecordRow);
+  const summaryRows = dbCtx.summarizeUsageByAccount.all(accountId);
+  const summary = summaryRows.map((row) => ({
+    meterId: row.meterId,
+    unit: row.unit,
+    totalQuantity: Number(row.totalQuantity || 0),
+    recordsCount: Number(row.recordsCount || 0),
+  }));
+
+  return {
+    ok: true,
+    accountId,
+    recordsCount: records.length,
+    summary,
+    records,
+  };
+});
+
+fastify.get('/v1/billing/accounts/:accountId/traceability', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 100;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, Math.trunc(limitRaw))) : 100;
+
+  const usageRecords = dbCtx.listUsageMeterRecordsByAccount.all(accountId, limit).map(normalizeUsageMeterRecordRow);
+  const billingEvents = dbCtx.listBillingUsageEventsByAccount.all(accountId, limit).map(normalizeBillingUsageEventRow);
+  const reconciliationRuns = dbCtx.listBillingReconciliationRunsByAccount.all(accountId, limit).map(normalizeBillingReconciliationRunRow);
+
+  const usageByRecordId = new Map();
+  for (const usage of usageRecords) usageByRecordId.set(usage.recordId, usage);
+
+  const traceLinks = billingEvents
+    .filter((evt) => evt.usageRecordId)
+    .map((evt) => ({
+      billingEventId: evt.billingEventId,
+      usageRecordId: evt.usageRecordId,
+      meterId: evt.meterId,
+      unit: evt.unit,
+      quantity: evt.quantity,
+      usageRecordFound: usageByRecordId.has(evt.usageRecordId),
+    }));
+
+  return {
+    ok: true,
+    accountId,
+    usageRecords,
+    billingEvents,
+    reconciliationRuns,
+    traceLinks,
+  };
+});
+
+fastify.post('/v1/billing/adjustments', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const accountId = String(body.accountId || auth.userId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+  if (accountId !== auth.userId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const sessionId = String(body.sessionId || '').trim();
+  const meterId = String(body.meterId || '').trim();
+  const currency = String(body.currency || '').trim().toUpperCase();
+  const amountRaw = Number(body.amount);
+
+  if (!sessionId || !meterId || !currency || !Number.isFinite(amountRaw)) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId, meterId, amount(number), and currency are required', false);
+  }
+
+  const amount = Number(amountRaw);
+  const quantityMinor = Math.trunc(Math.round(amount * 100));
+  const reason = body.reason ? String(body.reason) : null;
+  const adjustmentId = body.adjustmentId
+    ? String(body.adjustmentId)
+    : `adj_${stableId(accountId, sessionId, meterId, amount, currency, Date.now()).slice(0, 16)}`;
+
+  const payload = {
+    adjustmentId,
+    meterId,
+    amount,
+    currency,
+    reason,
+    accountId,
+    sessionId,
+    metadata: parseRequestMetadata(body.metadata),
+  };
+
+  const createdAtMs = Date.now();
+  const billingEventId = `evt_${stableId('billing.adjustment.created', adjustmentId).slice(0, 20)}`;
+  dbCtx.insertBillingUsageEvent.run(
+    billingEventId,
+    null,
+    accountId,
+    sessionId,
+    'billing.adjustment.created',
+    meterId,
+    'currency_minor',
+    quantityMinor,
+    JSON.stringify(payload),
+    createdAtMs,
+  );
+
+  const emit = emitBillingEventWithDeadLetter({
+    sessionId,
+    accountId,
+    eventType: 'billing.adjustment.created',
+    eventId: billingEventId,
+    payload,
+    ts: new Date(createdAtMs).toISOString(),
+    forcePublishFailure: body.forcePublishFailure === true,
+  });
+
+  return {
+    ok: true,
+    accountId,
+    sessionId,
+    adjustmentId,
+    billingEventId,
+    published: emit.published,
+    deduped: emit.deduped,
+    deadLetterId: emit.deadLetterId,
+  };
+});
+
+fastify.post('/v1/billing/reconciliation/run', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const accountId = String(body.accountId || auth.userId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+  if (accountId !== auth.userId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const window = parseReconciliationWindowInput(body);
+  if (!window.ok) {
+    return sendError(req, reply, 400, window.code || 'INVALID_REQUEST', window.message || 'invalid reconciliation window', false);
+  }
+
+  const reason = body.reason ? String(body.reason) : null;
+  const reconciliation = runBillingReconciliationScaffold({
+    accountId,
+    windowStartMs: window.windowStartMs,
+    windowEndMs: window.windowEndMs,
+    initiatedBy: auth.userId,
+    reason,
+    metadata: {
+      mode: window.mode,
+      lookbackHours: window.lookbackHours,
+      latenessMs: window.latenessMs,
+    },
+  });
+
+  return {
+    ok: true,
+    accountId,
+    window: {
+      startMs: window.windowStartMs,
+      endMs: window.windowEndMs,
+      mode: window.mode,
+      lookbackHours: window.lookbackHours,
+      latenessMs: window.latenessMs,
+    },
+    run: reconciliation.run,
+    mismatches: reconciliation.mismatches,
+    alert: reconciliation.alert,
+  };
+});
+
+function executeHourlyReconciliationTrigger(body = {}) {
+  const limitAccountsRaw = Number(body.limitAccounts);
+  const limitAccounts = Number.isFinite(limitAccountsRaw)
+    ? Math.max(1, Math.min(5000, Math.trunc(limitAccountsRaw)))
+    : 500;
+
+  const window = parseReconciliationWindowInput({
+    ...body,
+    lookbackHours: body.lookbackHours !== undefined ? body.lookbackHours : 1,
+  });
+  if (!window.ok) {
+    return {
+      ok: false,
+      code: window.code || 'INVALID_REQUEST',
+      message: window.message || 'invalid reconciliation window',
+    };
+  }
+
+  const accountRows = dbCtx.listBillingReconciliationAccountsByWindow.all(
+    window.windowStartMs,
+    window.windowEndMs,
+    window.windowStartMs,
+    window.windowEndMs,
+    limitAccounts,
+  );
+
+  const allowRerun = body.allowRerun === true;
+  const processed = [];
+  let createdRuns = 0;
+  let skippedExistingRuns = 0;
+
+  for (const row of accountRows) {
+    const accountId = String(row.accountId || '').trim();
+    if (!accountId) continue;
+
+    const existingRun = dbCtx.findBillingReconciliationRunByAccountWindow.get(accountId, window.windowStartMs, window.windowEndMs);
+    if (existingRun && !allowRerun) {
+      skippedExistingRuns += 1;
+      processed.push({ accountId, action: 'skipped_existing', runId: existingRun.runId });
+      continue;
+    }
+
+    const reconciliation = runBillingReconciliationScaffold({
+      accountId,
+      windowStartMs: window.windowStartMs,
+      windowEndMs: window.windowEndMs,
+      initiatedBy: 'scheduler.hourly',
+      reason: body.reason ? String(body.reason) : 'hourly_scheduler_trigger',
+      metadata: {
+        trigger: 'hourly-scheduler',
+        mode: window.mode,
+        lookbackHours: window.lookbackHours,
+        latenessMs: window.latenessMs,
+      },
+    });
+
+    createdRuns += 1;
+    processed.push({
+      accountId,
+      action: 'created',
+      runId: reconciliation.run.runId,
+      status: reconciliation.run.status,
+      mismatchCount: reconciliation.run.mismatchCount,
+      alertDispatched: reconciliation.run.alertDispatched,
+    });
+  }
+
+  return {
+    ok: true,
+    window: {
+      startMs: window.windowStartMs,
+      endMs: window.windowEndMs,
+      mode: window.mode,
+      lookbackHours: window.lookbackHours,
+      latenessMs: window.latenessMs,
+    },
+    accountsConsidered: accountRows.length,
+    createdRuns,
+    skippedExistingRuns,
+    processed,
+  };
+}
+
+async function executeAlertDeliveryWorker(body = {}) {
+  const limitRaw = Number(body.limit);
+  const limit = Number.isFinite(limitRaw)
+    ? Math.max(1, Math.min(5000, Math.trunc(limitRaw)))
+    : Math.max(1, Math.min(5000, Math.trunc(RECONCILIATION_AUTOMATION_WORKER_BATCH || 100)));
+
+  const dryRun = body.dryRun === true;
+  const forceFailureIds = Array.isArray(body.forceFailureAlertIds)
+    ? new Set(body.forceFailureAlertIds.map((id) => String(id)))
+    : new Set();
+
+  const nowMs = Date.now();
+  const pendingRows = dbCtx.listBillingReconciliationPendingAlerts.all(nowMs, limit);
+  const delivered = [];
+  const failed = [];
+  const retriesScheduled = [];
+
+  for (const row of pendingRows) {
+    const alert = normalizeBillingReconciliationAlertRow(row);
+    const alertId = String(alert.alertId || '').trim();
+    const isForcedFailure = forceFailureIds.has(alertId);
+
+    try {
+      const result = await deliverReconciliationAlertRow(row, {
+        dryRun,
+        forceFailure: isForcedFailure,
+      });
+      delivered.push(result);
+    } catch (err) {
+      const attempts = Number(alert.attempts || 0) + 1;
+      const maxAttempts = Math.max(1, Number(alert.maxAttempts || ALERT_DELIVERY_MAX_ATTEMPTS || 5));
+      const terminalFailure = isForcedFailure || attempts >= maxAttempts;
+
+      if (terminalFailure) {
+        dbCtx.updateBillingReconciliationAlertRetry.run(
+          'dead_lettered',
+          attempts,
+          null,
+          String(err?.message || 'reconciliation alert delivery failed'),
+          alertId,
+        );
+
+        const deadLetterId = `dlq_${stableId('reconciliation.alert.delivery', alertId, Date.now()).slice(0, 24)}`;
+        dbCtx.insertBillingDeadLetter.run(
+          deadLetterId,
+          alert.accountId || null,
+          null,
+          'billing.reconciliation.alert.delivery_failed',
+          alertId || null,
+          String(err?.code || 'ALERT_DELIVERY_FAILED'),
+          String(err?.message || 'reconciliation alert delivery failed'),
+          JSON.stringify(alert),
+          Date.now(),
+        );
+
+        failed.push({
+          alertId,
+          code: String(err?.code || 'ALERT_DELIVERY_FAILED'),
+          message: String(err?.message || 'reconciliation alert delivery failed'),
+          deadLetterId,
+          attempts,
+          maxAttempts,
+          terminal: true,
+        });
+      } else {
+        const retryInMs = computeAlertBackoffMs(attempts);
+        const nextAttemptAtMs = Date.now() + retryInMs;
+        dbCtx.updateBillingReconciliationAlertRetry.run(
+          'pending',
+          attempts,
+          nextAttemptAtMs,
+          String(err?.message || 'reconciliation alert delivery failed'),
+          alertId,
+        );
+
+        retriesScheduled.push({
+          alertId,
+          attempts,
+          maxAttempts,
+          retryInMs,
+          nextAttemptAtMs,
+          code: String(err?.code || 'ALERT_DELIVERY_FAILED'),
+          message: String(err?.message || 'reconciliation alert delivery failed'),
+        });
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    pendingCount: pendingRows.length,
+    deliveredCount: delivered.length,
+    failedCount: failed.length,
+    retriesScheduledCount: retriesScheduled.length,
+    dryRun,
+    delivered,
+    failed,
+    retriesScheduled,
+  };
+}
+
+fastify.post('/v1/billing/reconciliation/hourly-trigger', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const result = executeHourlyReconciliationTrigger(req.body || {});
+  if (!result.ok) {
+    return sendError(req, reply, 400, result.code || 'INVALID_REQUEST', result.message || 'invalid reconciliation window', false);
+  }
+
+  schedulerState.hourlyRuns += 1;
+  schedulerState.lastHourlyRunAtMs = Date.now();
+  schedulerState.lastHourlyError = null;
+  return result;
+});
+
+fastify.post('/v1/billing/reconciliation/alerts/deliver', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const result = await executeAlertDeliveryWorker(req.body || {});
+  schedulerState.workerRuns += 1;
+  schedulerState.lastWorkerRunAtMs = Date.now();
+  schedulerState.lastWorkerError = null;
+  return result;
+});
+
+fastify.get('/v1/billing/reconciliation/scheduler/status', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  return {
+    ok: true,
+    scheduler: {
+      ...schedulerState,
+      config: {
+        automationEnabled: RECONCILIATION_AUTOMATION_ENABLED,
+        hourlyIntervalMs: RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS,
+        workerIntervalMs: RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS,
+        workerBatch: RECONCILIATION_AUTOMATION_WORKER_BATCH,
+        alertDeliveryMaxAttempts: ALERT_DELIVERY_MAX_ATTEMPTS,
+        alertDeliveryBaseBackoffMs: ALERT_DELIVERY_BASE_BACKOFF_MS,
+        alertDeliveryMaxBackoffMs: ALERT_DELIVERY_MAX_BACKOFF_MS,
+      },
+    },
+  };
+});
+
+fastify.get('/v1/billing/accounts/:accountId/reconciliation/runs', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 100;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.trunc(limitRaw))) : 100;
+
+  const runs = dbCtx.listBillingReconciliationRunsByAccount
+    .all(accountId, limit)
+    .map(normalizeBillingReconciliationRunRow);
+
+  const alerts = dbCtx.listBillingReconciliationAlertsByAccount
+    .all(accountId, limit)
+    .map(normalizeBillingReconciliationAlertRow);
+
+  return {
+    ok: true,
+    accountId,
+    count: runs.length,
+    runs,
+    alerts,
+  };
+});
+
+fastify.get('/v1/billing/reconciliation/runs/:runId', async (req, reply) => {
+  const runId = String(req.params?.runId || '').trim();
+  if (!runId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'runId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const runRow = dbCtx.getBillingReconciliationRunById.get(runId);
+  if (!runRow) return sendError(req, reply, 404, 'RECONCILIATION_RUN_NOT_FOUND', 'Reconciliation run not found', false);
+  if (runRow.accountId !== auth.userId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'Run does not belong to authenticated account', false);
+  }
+
+  const mismatchLimitRaw = req.query?.mismatchLimit !== undefined ? Number(req.query.mismatchLimit) : 1000;
+  const mismatchLimit = Number.isFinite(mismatchLimitRaw)
+    ? Math.max(1, Math.min(10_000, Math.trunc(mismatchLimitRaw)))
+    : 1000;
+
+  const run = normalizeBillingReconciliationRunRow(runRow);
+  const mismatches = dbCtx.listBillingReconciliationMismatchesByRun
+    .all(runId, mismatchLimit)
+    .map(normalizeBillingReconciliationMismatchRow);
+  const alerts = dbCtx.listBillingReconciliationAlertsByRun
+    .all(runId, mismatchLimit)
+    .map(normalizeBillingReconciliationAlertRow);
+
+  return {
+    ok: true,
+    run,
+    mismatchCount: mismatches.length,
+    mismatches,
+    alerts,
+  };
+});
+
+fastify.get('/v1/governance/accounts/:accountId/data-map', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const retentionDays = {
+    callSessions: 30,
+    realtimeEvents: 30,
+    transcriptSnapshots: 14,
+    usageMeterRecords: 365,
+    billingUsageEvents: 365,
+    reconciliationArtifacts: 365,
+    governanceAuditLogs: 365,
+  };
+
+  const dataMap = {
+    ingress: ['realtime call events', 'orchestration actions', 'billing adjustments', 'reconciliation triggers'],
+    storage: [
+      'call_session',
+      'realtime_event',
+      'transcript_snapshot',
+      'usage_meter_record',
+      'billing_usage_event',
+      'billing_dead_letter',
+      'billing_reconciliation_run',
+      'billing_reconciliation_mismatch',
+      'billing_reconciliation_alert',
+      'tenant_config',
+      'governance_audit_log',
+    ],
+    egress: ['reconciliation alert webhook (optional)', 'billing traceability exports'],
+    retentionDays,
+  };
+
+  return {
+    ok: true,
+    accountId,
+    dataMap,
+    currentCounts: buildDataGovernanceCounts(accountId),
+  };
+});
+
+fastify.get('/v1/governance/accounts/:accountId/audit', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const auth = getAuthenticatedUserId(req);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 200;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 200;
+  const rows = dbCtx.listGovernanceAuditByAccount.all(accountId, limit);
+
+  return {
+    ok: true,
+    accountId,
+    count: rows.length,
+    entries: rows.map(normalizeGovernanceAuditRow),
+  };
+});
+
+fastify.post('/v1/governance/accounts/:accountId/delete', async (req, reply) => {
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+  if (auth.userId !== accountId) {
+    return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'accountId must match authenticated x-user-id', false);
+  }
+
+  const mode = String(body.mode || 'dry-run').toLowerCase();
+  const dryRun = mode !== 'execute';
+
+  const before = buildDataGovernanceCounts(accountId);
+  if (dryRun) {
+    const audit = writeGovernanceAuditLog({
+      accountId,
+      actorId: auth.userId,
+      eventType: 'governance.delete.dry_run',
+      payload: { mode, before },
+    });
+
+    return {
+      ok: true,
+      accountId,
+      dryRun: true,
+      before,
+      deleted: null,
+      audit,
+      note: 'Set mode=execute and confirm=true to perform deletion',
+    };
+  }
+
+  if (body.confirm !== true) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'mode=execute requires confirm=true', false);
+  }
+
+  const deleted = executeAccountDataDeletion(accountId);
+  const after = buildDataGovernanceCounts(accountId);
+  const audit = writeGovernanceAuditLog({
+    accountId,
+    actorId: auth.userId,
+    eventType: 'governance.delete.execute',
+    payload: { before, deleted, after },
+  });
+
+  return {
+    ok: true,
+    accountId,
+    dryRun: false,
+    before,
+    deleted,
+    after,
+    audit,
+  };
+});
+
+fastify.get('/v1/operator/tenants', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const limitRaw = req.query?.limit !== undefined ? Number(req.query.limit) : 200;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.trunc(limitRaw))) : 200;
+
+  const tenants = dbCtx.listTenantConfigs.all(limit).map(normalizeTenantConfigRow);
+  return {
+    ok: true,
+    count: tenants.length,
+    tenants,
+  };
+});
+
+fastify.get('/v1/operator/tenants/:accountId/config', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const row = dbCtx.getTenantConfigByAccountId.get(accountId);
+  return {
+    ok: true,
+    tenant: normalizeTenantConfigRow(row),
+  };
+});
+
+fastify.post('/v1/operator/tenants/:accountId/config', async (req, reply) => {
+  const internal = getInternalGatewayAuth(req);
+  if (internal.code) return sendError(req, reply, 401, internal.code, internal.message, false);
+
+  const accountId = String(req.params?.accountId || '').trim();
+  if (!accountId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'accountId is required', false);
+
+  const body = req.body || {};
+  const nowMs = Date.now();
+  const existing = dbCtx.getTenantConfigByAccountId.get(accountId);
+
+  const status = body.status ? String(body.status) : (existing?.status || 'active');
+  const plan = body.plan ? String(body.plan) : (existing?.plan || 'mvp');
+  const maxConcurrentCallsRaw = Number(body.maxConcurrentCalls);
+  const maxConcurrentCalls = Number.isFinite(maxConcurrentCallsRaw)
+    ? Math.max(1, Math.min(1000, Math.trunc(maxConcurrentCallsRaw)))
+    : Number(existing?.maxConcurrentCalls || 3);
+
+  const flags = {
+    ...(existing ? parseStoredMetadata(existing.flagsJson) : {}),
+    ...parseRequestMetadata(body.flags),
+  };
+
+  const metadata = {
+    ...(existing ? parseStoredMetadata(existing.metadataJson) : {}),
+    ...parseRequestMetadata(body.metadata),
+  };
+
+  dbCtx.upsertTenantConfig.run(
+    accountId,
+    status,
+    plan,
+    maxConcurrentCalls,
+    JSON.stringify(flags),
+    JSON.stringify(metadata),
+    Number(existing?.createdAtMs || nowMs),
+    nowMs,
+  );
+
+  const tenant = normalizeTenantConfigRow(dbCtx.getTenantConfigByAccountId.get(accountId));
+  writeGovernanceAuditLog({
+    accountId,
+    actorId: 'operator.internal',
+    eventType: 'tenant.config.upsert',
+    payload: { status: tenant.status, plan: tenant.plan, maxConcurrentCalls: tenant.maxConcurrentCalls },
+  });
+
+  return {
+    ok: true,
+    tenant,
   };
 });
 
@@ -1205,9 +3560,38 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
 
   const updatedAtMs = Date.now();
   dbCtx.upsertRealtimeCheckpoint.run(sessionId, consumerId, watermarkTs, watermarkEventId, updatedAtMs);
-  if (watermarkSequence !== null && dbCtx.getCallSessionById.get(sessionId)) {
-    dbCtx.updateCallSessionAck.run(watermarkSequence, watermarkTs, watermarkEventId, updatedAtMs, sessionId);
+
+  const sessionBeforeAck = dbCtx.getCallSessionById.get(sessionId);
+  let ackUpdate = {
+    attempted: watermarkSequence !== null,
+    applied: false,
+    ignored: false,
+    reason: null,
+  };
+
+  if (watermarkSequence !== null && sessionBeforeAck) {
+    const currentAckSequence = Number.isFinite(Number(sessionBeforeAck.lastAckSequence))
+      ? Math.max(0, Math.trunc(Number(sessionBeforeAck.lastAckSequence)))
+      : 0;
+
+    if (watermarkSequence >= currentAckSequence) {
+      dbCtx.updateCallSessionAck.run(watermarkSequence, watermarkTs, watermarkEventId, updatedAtMs, sessionId);
+      ackUpdate = {
+        attempted: true,
+        applied: true,
+        ignored: false,
+        reason: watermarkSequence === currentAckSequence ? 'equal_sequence_idempotent' : 'advanced_sequence',
+      };
+    } else {
+      ackUpdate = {
+        attempted: true,
+        applied: false,
+        ignored: true,
+        reason: 'stale_sequence_ignored',
+      };
+    }
   }
+
   const checkpoint = dbCtx.getRealtimeCheckpoint.get(sessionId, consumerId);
   const session = normalizeCallSessionRow(dbCtx.getCallSessionById.get(sessionId));
   return {
@@ -1222,6 +3606,7 @@ fastify.post('/v1/realtime/sessions/:sessionId/checkpoint', async (req, reply) =
           updatedAtMs: checkpoint.updatedAtMs,
         }
       : null,
+    ackUpdate,
     sessionAck: { sequence: session?.lastAckSequence || null, timestamp: session?.lastAckTimestamp || null, eventId: session?.lastAckEventId || null },
   };
 });
@@ -1377,38 +3762,407 @@ fastify.post('/v1/orchestration/actions/execute', async (req, reply) => {
   }
 
   const startedAtMs = Date.now();
-  const execution = executeOrchestrationAction({ actionType, payload: body.payload });
-  const durationMs = Math.max(0, Date.now() - startedAtMs);
 
-  const executedEvent = createRealtimeEvent({
-    sessionId,
-    type: 'action.executed',
-    actor,
-    payload: {
+  try {
+    const execution = executeOrchestrationAction({
+      sessionId,
       actionId,
-      durationMs,
-      resultRef: execution.resultRef,
+      actionType,
+      payload: body.payload,
+    });
+    const durationMs = Math.max(0, Date.now() - startedAtMs);
+
+    const executedEvent = createRealtimeEvent({
+      sessionId,
+      eventId: `evt_${stableId(sessionId, actionId, 'executed').slice(0, 20)}`,
+      type: 'action.executed',
+      actor,
+      payload: {
+        actionId,
+        durationMs,
+        resultRef: execution.resultRef,
+      },
+      ts: nowIso(),
+    });
+    const executedResult = publishRealtimeEvent(executedEvent);
+
+    let metering = null;
+    try {
+      metering = recordUsageAndEmitBillingEvent({
+        accountId: auth.userId,
+        sessionId,
+        meterId: 'orchestration.action.executed.count',
+        unit: 'count',
+        quantity: 1,
+        sourceEvent: executedResult.event,
+        metadata: {
+          actionId,
+          actionType,
+          riskTier,
+        },
+      });
+    } catch (err) {
+      req.log.error({ err, sessionId, actionId }, 'metering_action_execution_record_failed');
+    }
+
+    return {
+      ok: true,
+      blocked: false,
+      actionId,
+      actionType,
+      result: execution,
+      metering,
+      ack: {
+        status: 'executed',
+        outcomeRef: execution.resultRef,
+      },
+      decision: {
+        policyId: decision.policyId,
+        decision: decision.decision,
+        reason: decision.reason,
+      },
+      events: {
+        requested: requestedEvent,
+        safety: safetyEvent,
+        executed: executedResult.event,
+      },
+    };
+  } catch (err) {
+    const failedAtMs = Date.now();
+    const failureCode = String(err?.code || 'ACTION_EXECUTION_FAILED');
+    const failureMessage = String(err?.message || 'action execution failed');
+    const retryable = err?.retryable === true;
+    const statusCodeRaw = Number(err?.statusCode);
+    const statusCode = Number.isFinite(statusCodeRaw) ? Math.max(400, Math.min(599, Math.trunc(statusCodeRaw))) : 500;
+
+    const failedEvent = createRealtimeEvent({
+      sessionId,
+      eventId: `evt_${stableId(sessionId, actionId, 'failed', failureCode).slice(0, 20)}`,
+      type: 'action.failed',
+      actor,
+      payload: {
+        actionId,
+        code: failureCode,
+        message: failureMessage,
+        retryable,
+      },
+      ts: new Date(failedAtMs).toISOString(),
+    });
+    publishRealtimeEvent(failedEvent);
+
+    return reply.code(statusCode).send({
+      ok: false,
+      blocked: false,
+      code: failureCode,
+      message: failureMessage,
+      retryable,
+      actionId,
+      actionType,
+      ack: {
+        status: 'failed',
+        outcomeRef: failedEvent.eventId,
+      },
+      decision: {
+        policyId: decision.policyId,
+        decision: decision.decision,
+        reason: decision.reason,
+      },
+      events: {
+        requested: requestedEvent,
+        safety: safetyEvent,
+        failed: failedEvent,
+      },
+    });
+  }
+});
+
+// Call-session authoritative assistant turn (transport-native lifecycle path)
+fastify.post('/v1/call/sessions/:sessionId/turn', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+  if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
+  if (existing.userId !== auth.userId) return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'Session does not belong to authenticated user', false);
+
+  if (![CALL_SESSION_STATUS.CREATED, CALL_SESSION_STATUS.ACTIVE].includes(existing.status)) {
+    return sendError(req, reply, 409, 'INVALID_TRANSITION', 'call session must be created or active for turn execution', false);
+  }
+
+  const text = String(body.text || '').trim();
+  if (!text) return sendError(req, reply, 400, 'INVALID_REQUEST', 'text is required', false);
+
+  const turnId = body.turnId ? String(body.turnId) : `turn_${stableId(sessionId, Date.now(), text).slice(0, 16)}`;
+  const captureAtMs = Number.isFinite(Number(body.captureAtMs)) ? Math.max(0, Math.trunc(Number(body.captureAtMs))) : Date.now();
+
+  const conversationId = sessionId;
+  const requestedPersona = body.persona && PERSONAS[body.persona] && body.persona !== 'executor' ? body.persona : 'both';
+  const persona = 'executor';
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+
+  const userUtteranceId = `utt_user_${stableId(sessionId, Date.now(), text).slice(0, 16)}`;
+  const turnOwnerUserEvent = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'call.turn.owner_changed',
+    actor: { role: 'user', id: auth.userId },
+    payload: {
+      callId: sessionId,
+      turnId,
+      owner: 'user',
+      reason: 'user_turn_started',
     },
-    timestamp: nowIso(),
+    ts: nowIso(),
+  })).event;
+
+  const userTranscriptEvent = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'transcript.final',
+    actor: { role: 'user', id: auth.userId },
+    payload: {
+      utteranceId: userUtteranceId,
+      speaker: 'user',
+      text,
+      startMs: 0,
+      endMs: 0,
+    },
+    ts: nowIso(),
+  })).event;
+
+  const tsMs = Date.now();
+  const userMid = stableId(conversationId, 'user', tsMs, text);
+  dbCtx.upsertConv.run(conversationId, tsMs, tsMs, requestedPersona);
+  dbCtx.insertMsg.run(userMid, conversationId, tsMs, 'user', null, text);
+
+  const system = PERSONAS[persona];
+  const chat = messages
+    .slice(-30)
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content || ''}`)
+    .join('\n\n');
+  const input = `CONVERSATION:\n${chat || `User: ${text}`}`;
+
+  const token = await getGatewayToken();
+  if (!token) {
+    publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.error',
+      actor: { role: 'system', id: 'backend' },
+      payload: {
+        code: 'PROVIDER_UNAVAILABLE',
+        message: 'Realtime provider unavailable: missing gateway token',
+        retryable: true,
+      },
+      ts: nowIso(),
+    }));
+    return reply.code(500).send({ ok: false, code: 'MISSING_GATEWAY_TOKEN', message: 'Missing OpenClaw gateway token on server' });
+  }
+
+  const backendReceiveAtMs = Date.now();
+  const turnOwnerAgentEvent = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'call.turn.owner_changed',
+    actor: { role: 'system', id: 'backend' },
+    payload: {
+      callId: sessionId,
+      turnId,
+      owner: 'agent',
+      reason: 'assistant_processing',
+    },
+    ts: nowIso(),
+  })).event;
+
+  const upstream = await fetch(OPENCLAW_RESPONSES_URL, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      model: process.env.LIFE_OS_MODEL || 'openai-codex/gpt-5.2',
+      instructions: system,
+      input,
+      max_output_tokens: process.env.LIFE_OS_MAX_TOKENS ? Number(process.env.LIFE_OS_MAX_TOKENS) : 1200,
+      user: `life-os:${auth.userId}`,
+    }),
   });
-  publishRealtimeEvent(executedEvent);
+
+  const rawText = await upstream.text();
+  let json;
+  try { json = JSON.parse(rawText); } catch { json = null; }
+
+  if (!upstream.ok) {
+    const detail = json || rawText.slice(0, 1200);
+    publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.error',
+      actor: { role: 'system', id: 'backend' },
+      payload: {
+        code: 'ASSISTANT_TURN_FAILED',
+        message: typeof detail === 'string' ? detail : 'assistant turn failed',
+        retryable: true,
+      },
+      ts: nowIso(),
+    }));
+    return reply.code(500).send({ ok: false, code: 'TURN_FAILED', detail });
+  }
+
+  const orchestratorDoneAtMs = Date.now();
+  const rawTextOut = extractOutputText(json) || '';
+  const { events, remainingText } = parseUIEvents(rawTextOut);
+
+  let speaker = null;
+  let cleanedText = remainingText;
+  const legacyParsed = parseLegacySpeakerTag(rawTextOut);
+  if (legacyParsed.speaker) {
+    speaker = legacyParsed.speaker;
+    cleanedText = legacyParsed.cleaned;
+  }
+  const effectiveSpeaker = speaker && speaker !== 'executor' ? speaker : requestedPersona;
+
+  const assistantUtteranceId = `utt_agent_${stableId(sessionId, Date.now(), cleanedText).slice(0, 16)}`;
+  const assistantTranscriptEvent = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'transcript.final',
+    actor: { role: 'agent', id: 'assistant' },
+    payload: {
+      utteranceId: assistantUtteranceId,
+      speaker: 'agent',
+      text: cleanedText,
+      startMs: 0,
+      endMs: 0,
+    },
+    ts: nowIso(),
+  })).event;
+
+  const eventBridge = [];
+
+  for (const uiEvent of events) {
+    if (!uiEvent?.type) continue;
+
+    if (uiEvent.type === UI_EVENTS.MODE_ACTIVATE || uiEvent.type === UI_EVENTS.MODE_DEACTIVATE) {
+      const mode = String(uiEvent.payload?.mode || 'unknown');
+      eventBridge.push(
+        publishRealtimeEvent(createRealtimeEvent({
+          sessionId,
+          type: 'orchestration.action.requested',
+          actor: { role: 'agent', id: 'assistant' },
+          payload: {
+            actionId: `act_${stableId(sessionId, uiEvent.type, mode, Date.now()).slice(0, 16)}`,
+            actionType: uiEvent.type === UI_EVENTS.MODE_ACTIVATE ? `mode.activate.${mode}` : `mode.deactivate.${mode}`,
+            summary: `${uiEvent.type} requested by assistant`,
+            uiEvent: uiEvent.payload,
+          },
+          ts: nowIso(),
+        })).event,
+      );
+      continue;
+    }
+
+    if (uiEvent.type === UI_EVENTS.DELIVERABLE_CV || uiEvent.type === UI_EVENTS.DELIVERABLE_INTERVIEW || uiEvent.type === UI_EVENTS.DELIVERABLE_OUTREACH) {
+      eventBridge.push(
+        publishRealtimeEvent(createRealtimeEvent({
+          sessionId,
+          type: 'action.proposed',
+          actor: { role: 'agent', id: 'assistant' },
+          payload: {
+            actionId: `act_${stableId(sessionId, uiEvent.type, Date.now()).slice(0, 16)}`,
+            actionType: `${uiEvent.type}.generated`,
+            summary: `${uiEvent.type} produced`,
+            deliverable: uiEvent.payload,
+          },
+          ts: nowIso(),
+        })).event,
+      );
+      continue;
+    }
+
+    if (uiEvent.type === UI_EVENTS.CONFIRM_REQUIRED) {
+      const actionId = String(uiEvent.payload?.actionId || `act_${stableId(sessionId, 'confirm', Date.now()).slice(0, 16)}`);
+      eventBridge.push(
+        publishRealtimeEvent(createRealtimeEvent({
+          sessionId,
+          type: 'action.requires_confirmation',
+          actor: { role: 'agent', id: 'assistant' },
+          payload: {
+            actionId,
+            reason: String(uiEvent.payload?.message || 'explicit user confirmation required'),
+            confirmationToken: `confirm_${stableId(sessionId, actionId, Date.now()).slice(0, 18)}`,
+            uiEvent: uiEvent.payload,
+          },
+          ts: nowIso(),
+        })).event,
+      );
+      continue;
+    }
+  }
+
+  let turnTimingEvent = null;
+  let voiceSafetyEvent = null;
+
+  {
+    const ats = Date.now();
+    const assistantMid = stableId(conversationId, 'assistant', ats, effectiveSpeaker, cleanedText);
+    dbCtx.upsertConv.run(conversationId, ats, ats, effectiveSpeaker);
+    dbCtx.insertMsg.run(assistantMid, conversationId, ats, 'assistant', effectiveSpeaker, cleanedText);
+
+    const timing = {
+      callId: sessionId,
+      turnId,
+      captureToBackendMs: Math.max(0, backendReceiveAtMs - captureAtMs),
+      orchestratorMs: Math.max(0, orchestratorDoneAtMs - backendReceiveAtMs),
+      playbackStartMs: Math.max(0, ats - orchestratorDoneAtMs),
+      totalMs: Math.max(0, ats - captureAtMs),
+    };
+    timing.sloBreached = timing.totalMs > TURN_SLO_THRESHOLD_MS;
+    timing.thresholdMs = TURN_SLO_THRESHOLD_MS;
+
+    turnTimingEvent = publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.turn.timing',
+      actor: { role: 'system', id: 'backend' },
+      payload: timing,
+      ts: nowIso(),
+    })).event;
+
+    const voiceConfig = resolveVoiceConfigFromSession(existing);
+    if (voiceConfig.clonedVoice && !voiceConfig.synthesisAllowed) {
+      voiceSafetyEvent = publishRealtimeEvent(createRealtimeEvent({
+        sessionId,
+        type: 'safety.blocked',
+        actor: { role: 'system', id: 'backend' },
+        payload: {
+          policyId: SAFETY_POLICY_IDS.VOICE_CLONE_CONSENT,
+          reason: 'cloned_voice_synthesis_blocked_until_approved',
+          decision: 'blocked',
+          actionId: turnId,
+          actionType: 'voice.synthesis',
+          riskTier: ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND,
+        },
+      })).event;
+    }
+  }
 
   return {
     ok: true,
-    blocked: false,
-    actionId,
-    actionType,
-    result: execution,
-    decision: {
-      policyId: decision.policyId,
-      decision: decision.decision,
-      reason: decision.reason,
+    sessionId,
+    conversationId,
+    speaker: effectiveSpeaker,
+    text: {
+      content: cleanedText,
+      speaker: effectiveSpeaker,
     },
-    events: {
-      requested: requestedEvent,
-      safety: safetyEvent,
-      executed: executedEvent,
-    },
+    events: [
+      turnOwnerUserEvent,
+      userTranscriptEvent,
+      turnOwnerAgentEvent,
+      assistantTranscriptEvent,
+      turnTimingEvent,
+      ...(voiceSafetyEvent ? [voiceSafetyEvent] : []),
+      ...eventBridge,
+    ].filter(Boolean),
   };
 });
 
@@ -1713,6 +4467,49 @@ fastify.post('/v1/chat/turn', async (req, reply) => {
 
   return response;
 });
+
+if (RECONCILIATION_AUTOMATION_ENABLED) {
+  const safeHourlyIntervalMs = Number.isFinite(RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS)
+    ? Math.max(5 * 60 * 1000, Math.trunc(RECONCILIATION_AUTOMATION_HOURLY_INTERVAL_MS))
+    : 60 * 60 * 1000;
+  const safeWorkerIntervalMs = Number.isFinite(RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS)
+    ? Math.max(30 * 1000, Math.trunc(RECONCILIATION_AUTOMATION_WORKER_INTERVAL_MS))
+    : 2 * 60 * 1000;
+
+  setInterval(() => {
+    try {
+      const result = executeHourlyReconciliationTrigger({
+        lookbackHours: 1,
+        latenessMs: DEFAULT_RECONCILIATION_LATENESS_MS,
+        reason: 'automation.hourly.interval',
+      });
+
+      if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+      schedulerState.hourlyRuns += 1;
+      schedulerState.lastHourlyRunAtMs = Date.now();
+      schedulerState.lastHourlyError = null;
+    } catch (err) {
+      schedulerState.hourlyFailures += 1;
+      schedulerState.lastHourlyError = String(err?.message || err);
+      fastify.log.error({ err }, 'reconciliation_automation_hourly_failed');
+    }
+  }, safeHourlyIntervalMs);
+
+  setInterval(async () => {
+    try {
+      await executeAlertDeliveryWorker({
+        limit: RECONCILIATION_AUTOMATION_WORKER_BATCH,
+      });
+      schedulerState.workerRuns += 1;
+      schedulerState.lastWorkerRunAtMs = Date.now();
+      schedulerState.lastWorkerError = null;
+    } catch (err) {
+      schedulerState.workerFailures += 1;
+      schedulerState.lastWorkerError = String(err?.message || err);
+      fastify.log.error({ err }, 'reconciliation_automation_worker_failed');
+    }
+  }, safeWorkerIntervalMs);
+}
 
 fastify.listen({ port: PORT, host: HOST });
 console.log(`Life OS API v2.0 (UI Contract v1.0) running on http://${HOST}:${PORT}`);

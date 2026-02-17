@@ -1,4 +1,5 @@
 import React from "react";
+import VersionMarker from "@/components/system/VersionMarker.jsx";
 
 export default function Layout({ children, currentPageName }) {
   // No chrome layout — conversational-first, the interface IS the content
@@ -20,6 +21,7 @@ export default function Layout({ children, currentPageName }) {
         ::-webkit-scrollbar-thumb:hover { background: #a3a3a3; }
       `}</style>
       {children}
+      <VersionMarker />
     </div>
   );
 }

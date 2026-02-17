@@ -19,6 +19,7 @@ export default function useSpeechRecognition(options = {}) {
     lang = "en-US",
     interimResults = true,
     continuous = false,
+    autoRestart = false,
     onInterim,
     onFinal,
     onStart,
@@ -27,6 +28,9 @@ export default function useSpeechRecognition(options = {}) {
   } = options;
 
   const recognitionRef = useRef(null);
+  const restartTimerRef = useRef(null);
+  const restartAttemptsRef = useRef(0);
+  const shouldKeepListeningRef = useRef(false);
   const cbRef = useRef({ onInterim, onFinal, onStart, onEnd, onError });
 
   const [supported, setSupported] = useState(false);
@@ -54,9 +58,29 @@ export default function useSpeechRecognition(options = {}) {
     rec.continuous = continuous;
     rec.maxAlternatives = 1;
 
+    const scheduleRestart = () => {
+      if (!continuous || !autoRestart || !shouldKeepListeningRef.current) return;
+      if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+
+      const attempts = restartAttemptsRef.current;
+      const delayMs = Math.min(2000, 180 + (attempts * 120));
+
+      restartTimerRef.current = setTimeout(() => {
+        if (!shouldKeepListeningRef.current) return;
+        try {
+          rec.start();
+          restartAttemptsRef.current = 0;
+        } catch {
+          restartAttemptsRef.current = Math.min(20, restartAttemptsRef.current + 1);
+          scheduleRestart();
+        }
+      }, delayMs);
+    };
+
     rec.onstart = () => {
       setError(null);
       setListening(true);
+      restartAttemptsRef.current = 0;
       cbRef.current.onStart?.();
     };
 
@@ -87,6 +111,10 @@ export default function useSpeechRecognition(options = {}) {
 
     rec.onerror = (e) => {
       setError(e);
+      const code = String(e?.error || '');
+      if (code === 'not-allowed' || code === 'service-not-allowed' || code === 'audio-capture') {
+        shouldKeepListeningRef.current = false;
+      }
       cbRef.current.onError?.(e);
     };
 
@@ -94,11 +122,18 @@ export default function useSpeechRecognition(options = {}) {
       setListening(false);
       setInterimTranscript("");
       cbRef.current.onEnd?.();
+      scheduleRestart();
     };
 
     recognitionRef.current = rec;
 
     return () => {
+      shouldKeepListeningRef.current = false;
+      restartAttemptsRef.current = 0;
+      if (restartTimerRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
       try {
         rec.onresult = null;
         rec.onstart = null;
@@ -110,13 +145,19 @@ export default function useSpeechRecognition(options = {}) {
       }
       if (recognitionRef.current === rec) recognitionRef.current = null;
     };
-  }, [lang, interimResults, continuous]);
+  }, [lang, interimResults, continuous, autoRestart]);
 
   const start = useCallback(() => {
     const rec = recognitionRef.current;
     if (!rec) return false;
 
     try {
+      shouldKeepListeningRef.current = true;
+      restartAttemptsRef.current = 0;
+      if (restartTimerRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
       setFinalTranscript("");
       setInterimTranscript("");
       rec.start();
@@ -124,13 +165,30 @@ export default function useSpeechRecognition(options = {}) {
     } catch (e) {
       // start() throws if called twice quickly
       setError(e);
+      if (continuous && autoRestart && shouldKeepListeningRef.current) {
+        if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = setTimeout(() => {
+          if (!shouldKeepListeningRef.current) return;
+          try {
+            rec.start();
+          } catch {
+            // noop, retried on next onend/error cycle
+          }
+        }, 220);
+      }
       return false;
     }
-  }, []);
+  }, [continuous, autoRestart]);
 
   const stop = useCallback(() => {
     const rec = recognitionRef.current;
     if (!rec) return;
+    shouldKeepListeningRef.current = false;
+    restartAttemptsRef.current = 0;
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
     try {
       rec.stop();
     } catch {
@@ -141,6 +199,12 @@ export default function useSpeechRecognition(options = {}) {
   const abort = useCallback(() => {
     const rec = recognitionRef.current;
     if (!rec) return;
+    shouldKeepListeningRef.current = false;
+    restartAttemptsRef.current = 0;
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
     try {
       rec.abort();
     } catch {

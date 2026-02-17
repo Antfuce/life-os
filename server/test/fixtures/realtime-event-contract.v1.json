@@ -1,0 +1,239 @@
+{
+  "schemaVersion": "1.0",
+  "valid": [
+    {
+      "type": "call.started",
+      "payload": {
+        "callId": "sess_fixture",
+        "channel": "voice",
+        "direction": "outbound",
+        "provider": "livekit"
+      }
+    },
+    {
+      "type": "call.connected",
+      "payload": {
+        "callId": "sess_fixture",
+        "connectedAt": "2026-02-16T00:00:00.000Z"
+      }
+    },
+    {
+      "type": "call.ended",
+      "payload": {
+        "callId": "sess_fixture",
+        "endedAt": "2026-02-16T00:01:00.000Z",
+        "durationSeconds": 60,
+        "endReason": "completed"
+      }
+    },
+    {
+      "type": "call.error",
+      "payload": {
+        "code": "CALL_TIMEOUT",
+        "message": "timeout",
+        "retryable": true
+      }
+    },
+    {
+      "type": "call.terminal_failure",
+      "payload": {
+        "callId": "sess_fixture",
+        "failedAt": "2026-02-16T00:02:00.000Z",
+        "code": "CALL_FATAL",
+        "message": "fatal"
+      }
+    },
+    {
+      "type": "transcript.partial",
+      "payload": {
+        "utteranceId": "utt-1",
+        "speaker": "user",
+        "text": "hello",
+        "startMs": 0,
+        "endMs": 200
+      }
+    },
+    {
+      "type": "transcript.final",
+      "payload": {
+        "utteranceId": "utt-1",
+        "speaker": "agent",
+        "text": "hello there",
+        "startMs": 0,
+        "endMs": 400
+      }
+    },
+    {
+      "type": "orchestration.action.requested",
+      "payload": {
+        "actionId": "act-1",
+        "actionType": "cv.generate",
+        "summary": "generate cv"
+      }
+    },
+    {
+      "type": "action.proposed",
+      "payload": {
+        "actionId": "act-2",
+        "actionType": "cv.edit",
+        "summary": "edit cv"
+      }
+    },
+    {
+      "type": "action.requires_confirmation",
+      "payload": {
+        "actionId": "act-3",
+        "reason": "sensitive",
+        "confirmationToken": "tok-1"
+      }
+    },
+    {
+      "type": "action.executed",
+      "payload": {
+        "actionId": "act-4",
+        "durationMs": 123
+      }
+    },
+    {
+      "type": "action.failed",
+      "payload": {
+        "actionId": "act-5",
+        "code": "ACTION_FAIL",
+        "message": "failed",
+        "retryable": false
+      }
+    },
+    {
+      "type": "safety.blocked",
+      "payload": {
+        "policyId": "policy-1",
+        "reason": "needs_confirmation",
+        "decision": "blocked"
+      }
+    },
+    {
+      "type": "safety.approved",
+      "payload": {
+        "policyId": "policy-1",
+        "decision": "approved"
+      }
+    },
+    {
+      "type": "billing.usage.recorded",
+      "payload": {
+        "meterId": "call.duration.seconds",
+        "billableSeconds": 42
+      }
+    },
+    {
+      "type": "billing.adjustment.created",
+      "payload": {
+        "adjustmentId": "adj-1",
+        "meterId": "call.duration.seconds",
+        "amount": -1.25,
+        "currency": "EUR"
+      }
+    },
+    {
+      "type": "usage.tick",
+      "payload": {
+        "meterId": "orchestration.action.executed.count",
+        "unit": "count",
+        "quantity": 1
+      }
+    },
+    {
+      "type": "usage.warning",
+      "payload": {
+        "meterId": "call.duration.seconds",
+        "thresholdType": "seconds",
+        "thresholdValue": 300,
+        "currentValue": 280,
+        "message": "approaching quota"
+      }
+    },
+    {
+      "type": "usage.stopped",
+      "payload": {
+        "meterId": "call.duration.seconds",
+        "finalBillableSeconds": 320,
+        "reason": "policy_limit"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "type": "call.started",
+      "payload": {
+        "callId": "sess_fixture",
+        "channel": "audio",
+        "direction": "outbound",
+        "provider": "livekit"
+      }
+    },
+    {
+      "type": "call.connected",
+      "payload": {
+        "callId": "sess_fixture",
+        "connectedAt": "not-a-date"
+      }
+    },
+    {
+      "type": "transcript.final",
+      "payload": {
+        "utteranceId": "utt-1",
+        "speaker": "unknown",
+        "text": "bad",
+        "startMs": 0,
+        "endMs": 100
+      }
+    },
+    {
+      "type": "action.executed",
+      "payload": {
+        "actionId": "act-4",
+        "durationMs": -3
+      }
+    },
+    {
+      "type": "billing.usage.recorded",
+      "payload": {
+        "meterId": "m1",
+        "unit": "hours",
+        "quantity": 1
+      }
+    },
+    {
+      "type": "billing.adjustment.created",
+      "payload": {
+        "adjustmentId": "adj-1",
+        "meterId": "call.duration.seconds",
+        "currency": "EUR"
+      }
+    },
+    {
+      "type": "usage.warning",
+      "payload": {
+        "meterId": "m1",
+        "thresholdType": "units",
+        "thresholdValue": 1,
+        "currentValue": 2,
+        "message": "bad"
+      }
+    },
+    {
+      "type": "usage.stopped",
+      "payload": {
+        "meterId": "m1",
+        "finalBillableSeconds": 10,
+        "reason": "limit"
+      }
+    },
+    {
+      "type": "billing.dead_lettered",
+      "payload": {
+        "deadLetterId": "dlq-1"
+      }
+    }
+  ]
+}
