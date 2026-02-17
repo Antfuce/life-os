@@ -17,6 +17,8 @@ Frontend acts as:
   - `POST /v1/call/sessions/:sessionId/state` (`active`)
 - UI should end session on reset:
   - `POST /v1/call/sessions/:sessionId/state` (`ended`)
+- UI executes assistant turns through call session:
+  - `POST /v1/call/sessions/:sessionId/turn`
 
 ## Canonical → UI mapping
 

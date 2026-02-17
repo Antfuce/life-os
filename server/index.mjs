@@ -582,6 +582,7 @@ fastify.get('/', async () => ({
     issueLiveKitToken: '/v1/call/sessions/:sessionId/livekit/token (POST json)',
     ingestLiveKitEvent: '/v1/call/livekit/events (POST json)',
     reconnectCallSession: '/v1/call/sessions/:sessionId/reconnect (POST json)',
+    executeCallTurn: '/v1/call/sessions/:sessionId/turn (POST json)',
     listTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots (GET)',
     compactTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots/compact (POST json)',
     listUsageMeterRecords: '/v1/billing/sessions/:sessionId/usage-records (GET)',
@@ -3618,6 +3619,207 @@ fastify.post('/v1/orchestration/actions/execute', async (req, reply) => {
       },
     });
   }
+});
+
+// Call-session authoritative assistant turn (transport-native lifecycle path)
+fastify.post('/v1/call/sessions/:sessionId/turn', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+  if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
+  if (existing.userId !== auth.userId) return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'Session does not belong to authenticated user', false);
+
+  if (![CALL_SESSION_STATUS.CREATED, CALL_SESSION_STATUS.ACTIVE].includes(existing.status)) {
+    return sendError(req, reply, 409, 'INVALID_TRANSITION', 'call session must be created or active for turn execution', false);
+  }
+
+  const text = String(body.text || '').trim();
+  if (!text) return sendError(req, reply, 400, 'INVALID_REQUEST', 'text is required', false);
+
+  const conversationId = sessionId;
+  const requestedPersona = body.persona && PERSONAS[body.persona] && body.persona !== 'executor' ? body.persona : 'both';
+  const persona = 'executor';
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+
+  const userUtteranceId = `utt_user_${stableId(sessionId, Date.now(), text).slice(0, 16)}`;
+  const userTranscriptEvent = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'transcript.final',
+    actor: { role: 'user', id: auth.userId },
+    payload: {
+      utteranceId: userUtteranceId,
+      speaker: 'user',
+      text,
+      startMs: 0,
+      endMs: 0,
+    },
+    ts: nowIso(),
+  })).event;
+
+  const tsMs = Date.now();
+  const userMid = stableId(conversationId, 'user', tsMs, text);
+  dbCtx.upsertConv.run(conversationId, tsMs, tsMs, requestedPersona);
+  dbCtx.insertMsg.run(userMid, conversationId, tsMs, 'user', null, text);
+
+  const system = PERSONAS[persona];
+  const chat = messages
+    .slice(-30)
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content || ''}`)
+    .join('\n\n');
+  const input = `CONVERSATION:\n${chat || `User: ${text}`}`;
+
+  const token = await getGatewayToken();
+  if (!token) {
+    return reply.code(500).send({ ok: false, code: 'MISSING_GATEWAY_TOKEN', message: 'Missing OpenClaw gateway token on server' });
+  }
+
+  const upstream = await fetch(OPENCLAW_RESPONSES_URL, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      model: process.env.LIFE_OS_MODEL || 'openai-codex/gpt-5.2',
+      instructions: system,
+      input,
+      max_output_tokens: process.env.LIFE_OS_MAX_TOKENS ? Number(process.env.LIFE_OS_MAX_TOKENS) : 1200,
+      user: `life-os:${auth.userId}`,
+    }),
+  });
+
+  const rawText = await upstream.text();
+  let json;
+  try { json = JSON.parse(rawText); } catch { json = null; }
+
+  if (!upstream.ok) {
+    const detail = json || rawText.slice(0, 1200);
+    publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.error',
+      actor: { role: 'system', id: 'backend' },
+      payload: {
+        code: 'ASSISTANT_TURN_FAILED',
+        message: typeof detail === 'string' ? detail : 'assistant turn failed',
+        retryable: true,
+      },
+      ts: nowIso(),
+    }));
+    return reply.code(500).send({ ok: false, code: 'TURN_FAILED', detail });
+  }
+
+  const rawTextOut = extractOutputText(json) || '';
+  const { events, remainingText } = parseUIEvents(rawTextOut);
+
+  let speaker = null;
+  let cleanedText = remainingText;
+  const legacyParsed = parseLegacySpeakerTag(rawTextOut);
+  if (legacyParsed.speaker) {
+    speaker = legacyParsed.speaker;
+    cleanedText = legacyParsed.cleaned;
+  }
+  const effectiveSpeaker = speaker && speaker !== 'executor' ? speaker : requestedPersona;
+
+  const assistantUtteranceId = `utt_agent_${stableId(sessionId, Date.now(), cleanedText).slice(0, 16)}`;
+  const assistantTranscriptEvent = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'transcript.final',
+    actor: { role: 'agent', id: 'assistant' },
+    payload: {
+      utteranceId: assistantUtteranceId,
+      speaker: 'agent',
+      text: cleanedText,
+      startMs: 0,
+      endMs: 0,
+    },
+    ts: nowIso(),
+  })).event;
+
+  const eventBridge = [];
+
+  for (const uiEvent of events) {
+    if (!uiEvent?.type) continue;
+
+    if (uiEvent.type === UI_EVENTS.MODE_ACTIVATE || uiEvent.type === UI_EVENTS.MODE_DEACTIVATE) {
+      const mode = String(uiEvent.payload?.mode || 'unknown');
+      eventBridge.push(
+        publishRealtimeEvent(createRealtimeEvent({
+          sessionId,
+          type: 'orchestration.action.requested',
+          actor: { role: 'agent', id: 'assistant' },
+          payload: {
+            actionId: `act_${stableId(sessionId, uiEvent.type, mode, Date.now()).slice(0, 16)}`,
+            actionType: uiEvent.type === UI_EVENTS.MODE_ACTIVATE ? `mode.activate.${mode}` : `mode.deactivate.${mode}`,
+            summary: `${uiEvent.type} requested by assistant`,
+            uiEvent: uiEvent.payload,
+          },
+          ts: nowIso(),
+        })).event,
+      );
+      continue;
+    }
+
+    if (uiEvent.type === UI_EVENTS.DELIVERABLE_CV || uiEvent.type === UI_EVENTS.DELIVERABLE_INTERVIEW || uiEvent.type === UI_EVENTS.DELIVERABLE_OUTREACH) {
+      eventBridge.push(
+        publishRealtimeEvent(createRealtimeEvent({
+          sessionId,
+          type: 'action.proposed',
+          actor: { role: 'agent', id: 'assistant' },
+          payload: {
+            actionId: `act_${stableId(sessionId, uiEvent.type, Date.now()).slice(0, 16)}`,
+            actionType: `${uiEvent.type}.generated`,
+            summary: `${uiEvent.type} produced`,
+            deliverable: uiEvent.payload,
+          },
+          ts: nowIso(),
+        })).event,
+      );
+      continue;
+    }
+
+    if (uiEvent.type === UI_EVENTS.CONFIRM_REQUIRED) {
+      const actionId = String(uiEvent.payload?.actionId || `act_${stableId(sessionId, 'confirm', Date.now()).slice(0, 16)}`);
+      eventBridge.push(
+        publishRealtimeEvent(createRealtimeEvent({
+          sessionId,
+          type: 'action.requires_confirmation',
+          actor: { role: 'agent', id: 'assistant' },
+          payload: {
+            actionId,
+            reason: String(uiEvent.payload?.message || 'explicit user confirmation required'),
+            confirmationToken: `confirm_${stableId(sessionId, actionId, Date.now()).slice(0, 18)}`,
+            uiEvent: uiEvent.payload,
+          },
+          ts: nowIso(),
+        })).event,
+      );
+      continue;
+    }
+  }
+
+  {
+    const ats = Date.now();
+    const assistantMid = stableId(conversationId, 'assistant', ats, effectiveSpeaker, cleanedText);
+    dbCtx.upsertConv.run(conversationId, ats, ats, effectiveSpeaker);
+    dbCtx.insertMsg.run(assistantMid, conversationId, ats, 'assistant', effectiveSpeaker, cleanedText);
+  }
+
+  return {
+    ok: true,
+    sessionId,
+    conversationId,
+    speaker: effectiveSpeaker,
+    text: {
+      content: cleanedText,
+      speaker: effectiveSpeaker,
+    },
+    events: [userTranscriptEvent, assistantTranscriptEvent, ...eventBridge],
+  };
 });
 
 // v2: Structured UI event streaming

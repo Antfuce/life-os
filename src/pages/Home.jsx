@@ -177,23 +177,6 @@ export default function Home() {
     return next;
   }, [API_ORIGIN]);
 
-  const publishRealtimeEvent = useCallback(async (type, payload = {}) => {
-    if (!callSession?.sessionId) return;
-
-    await fetch(`${API_ORIGIN}/v1/realtime/events`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-user-id': callSession.userId,
-      },
-      body: JSON.stringify({
-        sessionId: callSession.sessionId,
-        type,
-        payload,
-      }),
-    }).catch(() => {});
-  }, [API_ORIGIN, callSession]);
-
   const mapCanonicalRealtimeEvent = useCallback((event) => {
     if (!event?.type) return;
 
@@ -243,6 +226,9 @@ export default function Home() {
             speaker: currentSpeaker,
           },
         });
+        setWhisper(text.slice(-140));
+        speak(text);
+        setTimeout(() => setWhisper(''), 2500);
       }
       return;
     }
@@ -257,6 +243,40 @@ export default function Home() {
           result: 'requested',
           riskTier: payload.riskTier,
           callTimestamp: Date.now(),
+        },
+      });
+      return;
+    }
+
+    if (type === 'action.proposed') {
+      const actionType = String(payload.actionType || '');
+      const deliverable = payload.deliverable;
+      if (deliverable && actionType.includes('deliverable.cv')) {
+        processEvent({ type: UI_EVENT_TYPES.DELIVERABLE_CV, payload: deliverable });
+      } else if (deliverable && actionType.includes('deliverable.interview')) {
+        processEvent({ type: UI_EVENT_TYPES.DELIVERABLE_INTERVIEW, payload: deliverable });
+      } else if (deliverable && actionType.includes('deliverable.outreach')) {
+        processEvent({ type: UI_EVENT_TYPES.DELIVERABLE_OUTREACH, payload: deliverable });
+      }
+      return;
+    }
+
+    if (type === 'action.requires_confirmation') {
+      processEvent({
+        type: UI_EVENT_TYPES.CONFIRM_REQUIRED,
+        payload: {
+          actionId: payload.actionId,
+          message: payload.reason || 'Confirm external send. This cannot be undone.',
+          details: {
+            action: payload.uiEvent?.details?.action || payload.actionType,
+            callTimestamp: Date.now(),
+            deliverableId: payload.uiEvent?.details?.deliverableId,
+          },
+          riskTier: 'high-risk-external-send',
+          timeout: 30_000,
+          expiresAt: Date.now() + 30_000,
+          onConfirm: 'outreach.send.execute',
+          onCancel: 'outreach.send.cancel',
         },
       });
       return;
@@ -308,7 +328,7 @@ export default function Home() {
       });
       return;
     }
-  }, [currentSpeaker, processEvent]);
+  }, [currentSpeaker, processEvent, speak]);
 
   // Poll canonical realtime events so backend stays source of truth.
   useEffect(() => {
@@ -447,178 +467,58 @@ export default function Home() {
       payload: { speaker: personaHint },
     });
 
-    // Canonical transcript event (backend source of truth)
-    await publishRealtimeEvent('transcript.final', {
-      utteranceId: `utt_user_${Date.now()}`,
-      speaker: 'user',
-      text: t,
-      startMs: 0,
-      endMs: 0,
-    });
-
-    // Send to backend assistant generation path (transition stage)
+    // Send to backend assistant turn path (backend emits canonical transcript/action events)
     await streamFromBackend(t, personaHint);
   };
 
-  // Stream from backend with UI event parsing
+  // Call-session authoritative turn path (no /v1/chat/stream bridge)
   const streamFromBackend = async (text, personaHint = 'both') => {
-    let latestAssistantText = '';
-
-    const mergeAssistantText = (incoming) => {
-      const next = String(incoming || '');
-      if (!next) return latestAssistantText;
-      if (!latestAssistantText) {
-        latestAssistantText = next;
-        return latestAssistantText;
-      }
-      if (next.startsWith(latestAssistantText)) {
-        latestAssistantText = next;
-        return latestAssistantText;
-      }
-      latestAssistantText = `${latestAssistantText}${next}`;
-      return latestAssistantText;
-    };
-
     try {
       const activeConversationId = callSession?.sessionId || conversationId || `${Date.now()}`;
       const userId = callSession?.userId || getOrCreateUserId();
 
-      const r = await fetch(`${API_ORIGIN}/v1/chat/stream`, {
+      const r = await fetch(`${API_ORIGIN}/v1/call/sessions/${activeConversationId}/turn`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'x-user-id': userId,
         },
         body: JSON.stringify({
+          userId,
           conversationId: activeConversationId,
           sessionId: activeConversationId,
-          userId,
           persona: personaHint,
+          text,
           messages: [...messages, { role: 'user', content: text }],
         }),
       });
 
-      if (!r.ok || !r.body) {
-        throw new Error('Stream failed');
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(data?.message || `Turn failed (${r.status})`);
       }
 
-      const reader = r.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-
-      const parseBlock = (block) => {
-        const lines = String(block || '').split('\n');
-        let ev = null;
-        const dataLines = [];
-        for (const line of lines) {
-          if (line.startsWith('event:')) ev = line.slice('event:'.length).trim();
-          if (line.startsWith('data:')) dataLines.push(line.slice('data:'.length).trim());
+      const canonicalEvents = Array.isArray(data?.events) ? data.events : [];
+      for (const ev of canonicalEvents) {
+        if (typeof ev?.sequence === 'number') {
+          realtimeSequenceRef.current = Math.max(realtimeSequenceRef.current || 0, ev.sequence);
         }
-        const dataRaw = dataLines.join('\n');
-        let data = null;
-        try { data = JSON.parse(dataRaw); } catch {}
-        return { ev, data };
-      };
-
-      const processParsedEvent = ({ ev, data }) => {
-        if (!ev) return;
-
-        if (data?.v === '1.0' || data?.type) {
-          const structuredType = data.type || ev;
-          const structuredPayload = data.payload || data;
-
-          if (structuredType === UI_EVENT_TYPES.TEXT_DELTA) {
-            const merged = mergeAssistantText(structuredPayload.fullText || structuredPayload.delta || '');
-            if (merged) setWhisper(merged.slice(-140));
-          } else if (structuredType === UI_EVENT_TYPES.TEXT_DONE) {
-            const merged = mergeAssistantText(structuredPayload.fullText || '');
-            if (merged) setWhisper(merged.slice(-140));
-          }
-
-          processEvent({
-            type: structuredType,
-            payload: structuredPayload,
-          });
-          return;
-        }
-
-        if (ev === 'delta' && data?.text) {
-          const merged = mergeAssistantText(data.text);
-          processEvent({
-            type: UI_EVENT_TYPES.TEXT_DELTA,
-            payload: { delta: data.text },
-          });
-          setWhisper(merged.slice(-140));
-          return;
-        }
-
-        if (ev === 'speaker' && data?.speaker) {
-          processEvent({
-            type: UI_EVENT_TYPES.SPEAKER_CHANGE,
-            payload: { speaker: data.speaker },
-          });
-          return;
-        }
-
-        if (ev === 'done') {
-          processEvent({
-            type: UI_EVENT_TYPES.DONE,
-            payload: data || {},
-          });
-          return;
-        }
-
-        if (ev === 'error') {
-          processEvent({
-            type: UI_EVENT_TYPES.ERROR,
-            payload: { message: data?.error || 'Unknown error' },
-          });
-        }
-      };
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-
-        let sep;
-        while ((sep = buf.indexOf('\n\n')) !== -1) {
-          const block = buf.slice(0, sep);
-          buf = buf.slice(sep + 2);
-          processParsedEvent(parseBlock(block));
-        }
-      }
-
-      const tail = buf.trim();
-      if (tail) {
-        processParsedEvent(parseBlock(tail));
+        mapCanonicalRealtimeEvent(ev);
       }
     } catch (e) {
-      console.error('Stream error:', e);
+      console.error('Turn error:', e);
       processEvent({
         type: UI_EVENT_TYPES.ERROR,
         payload: { message: e.message, recoverable: true },
       });
     }
-
-    if (latestAssistantText) {
-      await publishRealtimeEvent('transcript.final', {
-        utteranceId: `utt_agent_${Date.now()}`,
-        speaker: 'agent',
-        text: latestAssistantText,
-        startMs: 0,
-        endMs: 0,
-      });
-      speak(latestAssistantText);
-      setTimeout(() => setWhisper(""), 2500);
-    }
   };
 
   // Handle module action (backend-authoritative lifecycle)
-  const handleModuleAction = async (actionName, deliverable, userConfirmation = false) => {
+  const handleModuleAction = async (actionName, deliverable, userConfirmation = false, forcedActionId = null) => {
     const actionMeta = getActionMetadata(actionName);
     const callTs = Date.now();
-    const actionId = `${actionName}-${callTs}`;
+    const actionId = forcedActionId || `${actionName}-${callTs}`;
 
     if (!callSession?.sessionId || !callSession?.userId) {
       processEvent({
@@ -922,7 +822,7 @@ export default function Home() {
                         const deliverableId = pendingConfirmation.details?.deliverableId;
                         clearConfirmationTimer(actionId);
                         confirmAction(actionId);
-                        await handleModuleAction(action, { id: deliverableId, type: 'outreach' }, true);
+                        await handleModuleAction(action, { id: deliverableId, type: 'outreach' }, true, actionId);
                       }}
                       className="flex-1 bg-slate-900 text-white py-2 rounded-lg"
                     >
