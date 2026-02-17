@@ -8,6 +8,34 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Prefer small, reviewable increments aligned to `BACKLOG.md` priority.
 
 ---
+ codex/assess-current-mvp-tasks-and-completion-status-zdz8sf
+
+## 2026-02-16T09:09:34Z — Codex run note
+- Changed: Completed a 360° MVP readiness/red-team audit based on current backlog, architecture, status docs, and executable checks.
+- Next: Resolve merge-conflict artifacts in backend/test files, then finish P0 LiveKit bridge + event schema/recovery tasks in canonical order.
+- Risks: Current repo state includes syntax-breaking conflict markers that block lint/tests and hide real reliability/security regressions.
+
+## 2026-02-16T11:46:00Z — Codex run note (review-mode alignment)
+- Changed: Updated coordination guidance to support the new operating mode where OpenClaw executes Phase 0 coding and Codex performs architecture/quality review before production pushes.
+- Next: OpenClaw should submit Phase 0 increments in strict dependency order (P0 #1 → #2 → #3 → #4), with per-PR evidence for schema validation, reconnect semantics, and replay idempotency.
+- Risks: If review gates are skipped, unresolved merge artifacts and regression risk can propagate directly to production.
+
+## 2026-02-17T00:00:00Z — Codex run note (status-sync patch)
+- Changed: Synced `BACKLOG.md` status tracking to implementation reality by moving P0 #2/#3/#4 from "Not started" to "In progress" and adding concrete progress + remaining work notes, including architecture migration gaps.
+- Next: Finish talk-experience migration to call-session-first runtime (Home path), remove remaining direct Base44 entity usage in production user flows, and keep phase status/docs aligned per push.
+- Risks: If hybrid frontend/backend paths remain undocumented or unsynced, teams may ship features that appear complete in code but fail MVP architecture and sellability gates.
+
+## 2026-02-17T10:45:00Z — Codex run note (voice MVP execution docs)
+- Changed: Added `docs/VOICE_MVP_DECISION_FORM.md` and `docs/VOICE_MVP_UAT_RUNSHEET.md` so product can lock Antonio/Mariana voice decisions and run a consistent realtime voice UAT gate before rollout.
+- Next: Product owner completes decision form, OpenClaw implements against those selections, then run UAT runsheet gates A-E before broader testing.
+- Risks: If voice policy/consent and switching rules are not decided up front, implementation can drift and produce unsafe or inconsistent user-facing behavior.
+
+## 2026-02-17T11:05:00Z — Codex run note (auth provider crash fix)
+- Changed: Fixed runtime crash `useAuth must be used within an AuthProvider` by wrapping root app render in `AuthProvider` in `src/main.jsx`.
+- Next: Re-run Base44 UI flow to verify app boot + navigation logging works without auth-context errors, then continue voice MVP UAT gates.
+- Risks: If app-level auth bootstrap fails upstream, users may still see auth-required states, but the provider wiring crash is resolved.
+
+=======
 
 ## 2026-02-16T09:09:34Z — Codex run note
 - Changed: Completed a 360° MVP readiness/red-team audit based on current backlog, architecture, status docs, and executable checks.
@@ -198,3 +226,4 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Fixed UI crash "useAuth must be used within an AuthProvider" by making NavigationTracker use `useContext(AuthContext)` directly with optional chaining instead of `useAuth()` hook. Exported AuthContext from AuthContext.jsx. Changes are minimal: 2 files, 5 insertions, 4 deletions.
 - Next: Monitor for any other components that might have similar context access issues. All current pages and components checked - none use useAuth.
 - Risks: None. Build, lint pass. No test infrastructure exists. Change is backward compatible - useAuth() hook still works for other consumers.
+ prod
