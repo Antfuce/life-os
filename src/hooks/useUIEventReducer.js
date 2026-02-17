@@ -282,6 +282,44 @@ function uiEventReducer(state, action) {
       };
     }
 
+    case 'OUTREACH_SEND_REQUESTED': {
+      const ts = Date.now();
+      const deliverableId = payload?.deliverableId || 'unknown';
+      const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+      const count = messages.length;
+      const actionId = payload?.actionId || `outreach-send-${deliverableId}-${ts}`;
+      const riskTier = payload?.riskTier || 'high-risk-external-send';
+
+      const confirmationState = {
+        actionId,
+        state: 'pending_approval',
+        riskTier,
+        message: `Send ${count || 'these'} outreach ${count === 1 ? 'message' : 'messages'}? This action requires your confirmation.`,
+        details: {
+          action: 'outreach.send',
+          callTimestamp: ts,
+          deliverableId,
+          messages,
+        },
+        timeout: payload?.timeout,
+        startedAt: ts,
+      };
+
+      return {
+        ...state,
+        pendingConfirmation: {
+          actionId,
+          message: confirmationState.message,
+          details: confirmationState.details,
+          timeout: confirmationState.timeout,
+        },
+        actionApprovals: {
+          ...state.actionApprovals,
+          [actionId]: confirmationState,
+        },
+      };
+    }
+
     case 'UPDATE_MODULE_POSITION': {
       return {
         ...state,

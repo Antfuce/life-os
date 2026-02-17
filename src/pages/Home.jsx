@@ -3,10 +3,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Brain, Volume2, VolumeX } from "lucide-react";
 
 import { useUIEventReducer, UI_EVENT_TYPES } from "../hooks/useUIEventReducer";
-import { renderModule, renderInlineModule, executeModuleAction, getActionMetadata } from "../lib/moduleRegistry";
+import { renderModule, renderInlineModule, getActionMetadata } from "../lib/moduleRegistry";
 import MessageBubble from "../components/chat/MessageBubble";
 import UnifiedInput from "../components/chat/UnifiedInput";
-import PersonaSelector from "../components/chat/PersonaSelector";
 import WhisperCaption from "../components/chat/WhisperCaption";
 import FloatingHints from "../components/chat/FloatingHints";
 import WhisperResponse from "../components/voice/WhisperResponse";
@@ -14,10 +13,45 @@ import AvatarWithWaves from "../components/voice/AvatarWithWaves";
 import FloatingModule from "../components/voice/FloatingModule";
 
 const WELCOME_MESSAGES = {
-  antonio: "What's the move? Give me your situation and target — I'll map the fastest route.",
-  mariana: "Welcome. Tell me what's going on — we'll slow it down and get clarity.",
-  both: "Hey — we're Antonio & Mariana. Tell us what's going on, and we'll make the next move.",
+  antonio: "Let’s go tactical. Tell me your target and constraints, and I’ll map the fastest route.",
+  mariana: "Tell me what’s heavy right now — we’ll slow it down and make a clear next step.",
+  both: "Tell me what you’re trying to do, and I’ll adapt as we go.",
 };
+
+const STRATEGY_KEYWORDS = [
+  'cv', 'resume', 'interview', 'job', 'role', 'hiring', 'application', 'linkedin', 'cover letter',
+];
+
+const COACHING_KEYWORDS = [
+  'coach', 'coaching', 'confidence', 'anxious', 'anxiety', 'stress', 'overwhelmed', 'burnout', 'motivation', 'stuck',
+];
+
+const USER_ID_STORAGE_KEY = 'lifeos.user.id';
+
+function getOrCreateUserId() {
+  if (typeof window === 'undefined') return 'lifeos-web-anon';
+  try {
+    const existing = window.localStorage.getItem(USER_ID_STORAGE_KEY);
+    if (existing) return existing;
+    const created = `lifeos-web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    window.localStorage.setItem(USER_ID_STORAGE_KEY, created);
+    return created;
+  } catch {
+    return 'lifeos-web-anon';
+  }
+}
+
+function inferPersonaHint({ text = '', activeModes = {}, currentSpeaker = 'both' } = {}) {
+  if (currentSpeaker === 'antonio' || currentSpeaker === 'mariana') return currentSpeaker;
+  if (activeModes?.cv?.active || activeModes?.interview?.active) return 'antonio';
+
+  const normalized = String(text || '').toLowerCase();
+  if (!normalized) return 'both';
+
+  if (STRATEGY_KEYWORDS.some((k) => normalized.includes(k))) return 'antonio';
+  if (COACHING_KEYWORDS.some((k) => normalized.includes(k))) return 'mariana';
+  return 'both';
+}
 
 export default function Home() {
   const {
@@ -55,7 +89,9 @@ export default function Home() {
   const [whisper, setWhisper] = React.useState("");
   const [ttsEnabled, setTtsEnabled] = React.useState(false);
   const [showMemory, setShowMemory] = React.useState(false);
-  const [selectedPersona, setSelectedPersona] = React.useState("both");
+  const [callSession, setCallSession] = React.useState(null); // { sessionId, resumeToken, userId }
+  const realtimeSequenceRef = useRef(0);
+  const realtimePollRef = useRef(null);
   const confirmationTimersRef = useRef({});
 
   const clearConfirmationTimer = useCallback((actionId) => {
@@ -67,7 +103,7 @@ export default function Home() {
   }, []);
 
   const postActionDecision = useCallback(async (payload) => {
-    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
+    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || import.meta.env.VITE_BASE44_APP_BASE_URL || "";
     try {
       await fetch(`${API_ORIGIN}/v1/actions/decision`, {
         method: 'POST',
@@ -78,6 +114,239 @@ export default function Home() {
       console.error('Failed to persist action decision', e);
     }
   }, []);
+
+  const resolvePersonaHint = useCallback((text = '') => {
+    return inferPersonaHint({ text, activeModes, currentSpeaker });
+  }, [activeModes, currentSpeaker]);
+
+  const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || import.meta.env.VITE_BASE44_APP_BASE_URL || "";
+
+  const createCallSession = useCallback(async () => {
+    const userId = getOrCreateUserId();
+
+    const created = await fetch(`${API_ORIGIN}/v1/call/sessions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': userId,
+      },
+      body: JSON.stringify({ userId, provider: 'web-realtime' }),
+    });
+
+    if (!created.ok) {
+      const detail = await created.text().catch(() => '');
+      throw new Error(`call session create failed: ${created.status} ${detail}`);
+    }
+
+    const createdJson = await created.json();
+    const session = createdJson?.session;
+    if (!session?.sessionId) throw new Error('missing call session id');
+
+    const activateResp = await fetch(`${API_ORIGIN}/v1/call/sessions/${session.sessionId}/state`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': userId,
+      },
+      body: JSON.stringify({
+        userId,
+        status: 'active',
+        provider: 'web-realtime',
+        providerRoomId: `web_room_${session.sessionId}`,
+        providerParticipantId: `web_part_${userId}`,
+        providerCallId: `web_call_${session.sessionId}`,
+      }),
+    });
+
+    if (!activateResp.ok) {
+      const detail = await activateResp.text().catch(() => '');
+      throw new Error(`call session activate failed: ${activateResp.status} ${detail}`);
+    }
+
+    const activatedJson = await activateResp.json();
+    const activeSession = activatedJson?.session || session;
+
+    const next = {
+      sessionId: activeSession.sessionId,
+      resumeToken: activeSession.resumeToken,
+      userId,
+    };
+
+    setCallSession(next);
+    realtimeSequenceRef.current = 0;
+    return next;
+  }, [API_ORIGIN]);
+
+  const publishRealtimeEvent = useCallback(async (type, payload = {}) => {
+    if (!callSession?.sessionId) return;
+
+    await fetch(`${API_ORIGIN}/v1/realtime/events`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': callSession.userId,
+      },
+      body: JSON.stringify({
+        sessionId: callSession.sessionId,
+        type,
+        payload,
+      }),
+    }).catch(() => {});
+  }, [API_ORIGIN, callSession]);
+
+  const mapCanonicalRealtimeEvent = useCallback((event) => {
+    if (!event?.type) return;
+
+    const type = String(event.type);
+    const payload = event.payload || {};
+
+    if (type === 'call.started' || type === 'call.connected') {
+      processEvent({
+        type: UI_EVENT_TYPES.STATUS,
+        payload: {
+          type: 'call',
+          message: type === 'call.started' ? 'Call session started' : 'Call connected',
+        },
+      });
+      return;
+    }
+
+    if (type === 'call.error' || type === 'call.terminal_failure') {
+      processEvent({
+        type: UI_EVENT_TYPES.ERROR,
+        payload: {
+          code: payload.code || type,
+          message: payload.message || 'Call transport error',
+          recoverable: false,
+        },
+      });
+      return;
+    }
+
+    if (type === 'transcript.partial') {
+      if (payload.speaker === 'user') {
+        setVoiceCaption(String(payload.text || ''));
+      }
+      return;
+    }
+
+    if (type === 'transcript.final') {
+      const text = String(payload.text || '').trim();
+      if (!text) return;
+
+      if (payload.speaker === 'agent') {
+        processEvent({
+          type: UI_EVENT_TYPES.TEXT_DONE,
+          payload: {
+            fullText: text,
+            messageId: event.eventId || Date.now(),
+            speaker: currentSpeaker,
+          },
+        });
+      }
+      return;
+    }
+
+    if (type === 'orchestration.action.requested') {
+      processEvent({
+        type: UI_EVENT_TYPES.ACTION_AUDIT,
+        payload: {
+          actionId: payload.actionId,
+          action: payload.actionType,
+          decision: 'pending',
+          result: 'requested',
+          riskTier: payload.riskTier,
+          callTimestamp: Date.now(),
+        },
+      });
+      return;
+    }
+
+    if (type === 'safety.blocked' && payload.reason === 'explicit_user_confirmation_required') {
+      processEvent({
+        type: UI_EVENT_TYPES.CONFIRM_REQUIRED,
+        payload: {
+          actionId: payload.actionId,
+          message: 'Confirm external send. This cannot be undone.',
+          details: {
+            action: payload.actionType,
+            callTimestamp: Date.now(),
+          },
+          riskTier: payload.riskTier || 'high-risk-external-send',
+          timeout: 30_000,
+          expiresAt: Date.now() + 30_000,
+          onConfirm: 'outreach.send.execute',
+          onCancel: 'outreach.send.cancel',
+        },
+      });
+      return;
+    }
+
+    if (type === 'safety.approved') {
+      processEvent({
+        type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
+        payload: {
+          actionId: payload.actionId,
+          state: 'approved',
+          decision: 'confirmed',
+          resolvedAt: Date.now(),
+        },
+      });
+      return;
+    }
+
+    if (type === 'action.executed' || type === 'action.failed') {
+      processEvent({
+        type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
+        payload: {
+          actionId: payload.actionId,
+          state: type === 'action.executed' ? 'executed' : 'failed',
+          decision: type === 'action.executed' ? 'confirmed' : 'failed',
+          result: type === 'action.executed' ? 'executed' : (payload.code || 'failed'),
+          resolvedAt: Date.now(),
+        },
+      });
+      return;
+    }
+  }, [currentSpeaker, processEvent]);
+
+  // Poll canonical realtime events so backend stays source of truth.
+  useEffect(() => {
+    if (!callSession?.sessionId || !callSession?.userId) return;
+
+    const poll = async () => {
+      const afterSequence = realtimeSequenceRef.current || 0;
+      const url = `${API_ORIGIN}/v1/realtime/sessions/${callSession.sessionId}/events?afterSequence=${afterSequence}&limit=200`;
+      try {
+        const resp = await fetch(url, {
+          headers: {
+            'x-user-id': callSession.userId,
+          },
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const events = Array.isArray(data?.events) ? data.events : [];
+        for (const ev of events) {
+          if (typeof ev?.sequence === 'number') {
+            realtimeSequenceRef.current = Math.max(realtimeSequenceRef.current || 0, ev.sequence);
+          }
+          mapCanonicalRealtimeEvent(ev);
+        }
+      } catch {
+        // noop
+      }
+    };
+
+    poll();
+    realtimePollRef.current = setInterval(poll, 1200);
+
+    return () => {
+      if (realtimePollRef.current) {
+        clearInterval(realtimePollRef.current);
+        realtimePollRef.current = null;
+      }
+    };
+  }, [API_ORIGIN, callSession, mapCanonicalRealtimeEvent]);
 
 
   // Auto-scroll to bottom
@@ -118,13 +387,16 @@ export default function Home() {
   // Start conversation
   const startConversation = async (initialText) => {
     const id = `${Date.now()}`;
+    const initialPersona = resolvePersonaHint(initialText || '');
 
     const welcomeMsg = {
       role: "assistant",
-      content: WELCOME_MESSAGES[selectedPersona],
-      persona: selectedPersona,
+      content: WELCOME_MESSAGES[initialPersona] || WELCOME_MESSAGES.both,
+      persona: initialPersona,
       timestamp: new Date().toISOString(),
     };
+
+    const activeCall = await createCallSession();
 
     // Add welcome message via reducer
     processEvent({
@@ -132,7 +404,15 @@ export default function Home() {
       payload: {
         fullText: welcomeMsg.content,
         messageId: id,
-        speaker: selectedPersona,
+        speaker: initialPersona,
+      },
+    });
+
+    // Set explicit conversation/call session authority
+    processEvent({
+      type: UI_EVENT_TYPES.DONE,
+      payload: {
+        conversationId: activeCall?.sessionId || id,
       },
     });
 
@@ -157,25 +437,63 @@ export default function Home() {
 
     if (!t) return;
 
+    const personaHint = resolvePersonaHint(t);
+
     // Add user message
     sendMessage(t);
     setVoiceCaption("");
+    processEvent({
+      type: UI_EVENT_TYPES.SPEAKER_CHANGE,
+      payload: { speaker: personaHint },
+    });
 
-    // Send to backend
-    await streamFromBackend(t);
+    // Canonical transcript event (backend source of truth)
+    await publishRealtimeEvent('transcript.final', {
+      utteranceId: `utt_user_${Date.now()}`,
+      speaker: 'user',
+      text: t,
+      startMs: 0,
+      endMs: 0,
+    });
+
+    // Send to backend assistant generation path (transition stage)
+    await streamFromBackend(t, personaHint);
   };
 
   // Stream from backend with UI event parsing
-  const streamFromBackend = async (text) => {
-    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || "";
+  const streamFromBackend = async (text, personaHint = 'both') => {
+    let latestAssistantText = '';
+
+    const mergeAssistantText = (incoming) => {
+      const next = String(incoming || '');
+      if (!next) return latestAssistantText;
+      if (!latestAssistantText) {
+        latestAssistantText = next;
+        return latestAssistantText;
+      }
+      if (next.startsWith(latestAssistantText)) {
+        latestAssistantText = next;
+        return latestAssistantText;
+      }
+      latestAssistantText = `${latestAssistantText}${next}`;
+      return latestAssistantText;
+    };
 
     try {
+      const activeConversationId = callSession?.sessionId || conversationId || `${Date.now()}`;
+      const userId = callSession?.userId || getOrCreateUserId();
+
       const r = await fetch(`${API_ORIGIN}/v1/chat/stream`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          'x-user-id': userId,
+        },
         body: JSON.stringify({
-          conversationId,
-          persona: selectedPersona,
+          conversationId: activeConversationId,
+          sessionId: activeConversationId,
+          userId,
+          persona: personaHint,
           messages: [...messages, { role: 'user', content: text }],
         }),
       });
@@ -202,6 +520,62 @@ export default function Home() {
         return { ev, data };
       };
 
+      const processParsedEvent = ({ ev, data }) => {
+        if (!ev) return;
+
+        if (data?.v === '1.0' || data?.type) {
+          const structuredType = data.type || ev;
+          const structuredPayload = data.payload || data;
+
+          if (structuredType === UI_EVENT_TYPES.TEXT_DELTA) {
+            const merged = mergeAssistantText(structuredPayload.fullText || structuredPayload.delta || '');
+            if (merged) setWhisper(merged.slice(-140));
+          } else if (structuredType === UI_EVENT_TYPES.TEXT_DONE) {
+            const merged = mergeAssistantText(structuredPayload.fullText || '');
+            if (merged) setWhisper(merged.slice(-140));
+          }
+
+          processEvent({
+            type: structuredType,
+            payload: structuredPayload,
+          });
+          return;
+        }
+
+        if (ev === 'delta' && data?.text) {
+          const merged = mergeAssistantText(data.text);
+          processEvent({
+            type: UI_EVENT_TYPES.TEXT_DELTA,
+            payload: { delta: data.text },
+          });
+          setWhisper(merged.slice(-140));
+          return;
+        }
+
+        if (ev === 'speaker' && data?.speaker) {
+          processEvent({
+            type: UI_EVENT_TYPES.SPEAKER_CHANGE,
+            payload: { speaker: data.speaker },
+          });
+          return;
+        }
+
+        if (ev === 'done') {
+          processEvent({
+            type: UI_EVENT_TYPES.DONE,
+            payload: data || {},
+          });
+          return;
+        }
+
+        if (ev === 'error') {
+          processEvent({
+            type: UI_EVENT_TYPES.ERROR,
+            payload: { message: data?.error || 'Unknown error' },
+          });
+        }
+      };
+
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -211,42 +585,13 @@ export default function Home() {
         while ((sep = buf.indexOf('\n\n')) !== -1) {
           const block = buf.slice(0, sep);
           buf = buf.slice(sep + 2);
-          const { ev, data } = parseBlock(block);
-
-          if (!ev) continue;
-
-          // Process UI contract events
-          if (data?.v === '1.0' || data?.type) {
-            // Structured UI event
-            processEvent({
-              type: data.type || ev,
-              payload: data.payload || data,
-            });
-          } else if (ev === 'delta' && data?.text) {
-            // Legacy delta event
-            processEvent({
-              type: UI_EVENT_TYPES.TEXT_DELTA,
-              payload: { delta: data.text, fullText: data.text },
-            });
-            setWhisper(data.text.slice(-140));
-          } else if (ev === 'speaker' && data?.speaker) {
-            // Legacy speaker event
-            processEvent({
-              type: UI_EVENT_TYPES.SPEAKER_CHANGE,
-              payload: { speaker: data.speaker },
-            });
-          } else if (ev === 'done') {
-            processEvent({
-              type: UI_EVENT_TYPES.DONE,
-              payload: data || {},
-            });
-          } else if (ev === 'error') {
-            processEvent({
-              type: UI_EVENT_TYPES.ERROR,
-              payload: { message: data?.error || 'Unknown error' },
-            });
-          }
+          processParsedEvent(parseBlock(block));
         }
+      }
+
+      const tail = buf.trim();
+      if (tail) {
+        processParsedEvent(parseBlock(tail));
       }
     } catch (e) {
       console.error('Stream error:', e);
@@ -256,95 +601,122 @@ export default function Home() {
       });
     }
 
-    // Speak final message
-    if (currentMessage) {
-      speak(currentMessage);
+    if (latestAssistantText) {
+      await publishRealtimeEvent('transcript.final', {
+        utteranceId: `utt_agent_${Date.now()}`,
+        speaker: 'agent',
+        text: latestAssistantText,
+        startMs: 0,
+        endMs: 0,
+      });
+      speak(latestAssistantText);
       setTimeout(() => setWhisper(""), 2500);
     }
   };
 
-  // Handle module action
-  const handleModuleAction = (actionName, deliverable) => {
+  // Handle module action (backend-authoritative lifecycle)
+  const handleModuleAction = async (actionName, deliverable, userConfirmation = false) => {
     const actionMeta = getActionMetadata(actionName);
     const callTs = Date.now();
+    const actionId = `${actionName}-${callTs}`;
 
-    if (actionMeta.requiresConfirmation) {
-      const actionId = `${actionName}-${callTs}`;
-      const timeoutMs = 30_000;
-      const expiresAt = callTs + timeoutMs;
-
+    if (!callSession?.sessionId || !callSession?.userId) {
       processEvent({
-        type: UI_EVENT_TYPES.CONFIRM_REQUIRED,
-        payload: {
-          actionId,
-          message: 'Confirm external send. This cannot be undone.',
-          details: {
-            action: actionName,
-            callTimestamp: callTs,
-            deliverableId: deliverable?.id,
-          },
-          riskTier: actionMeta.riskTier,
-          timeout: timeoutMs,
-          expiresAt,
-          onConfirm: 'outreach.send.execute',
-          onCancel: 'outreach.send.cancel',
-        },
+        type: UI_EVENT_TYPES.ERROR,
+        payload: { message: 'Call session not ready for action execution', recoverable: true },
       });
-
-      processEvent({
-        type: UI_EVENT_TYPES.ACTION_AUDIT,
-        payload: {
-          actionId,
-          callTimestamp: callTs,
-          action: actionName,
-          decision: 'pending',
-          result: 'awaiting-user-confirmation',
-          riskTier: actionMeta.riskTier,
-        },
-      });
-
-      clearConfirmationTimer(actionId);
-      confirmationTimersRef.current[actionId] = setTimeout(() => {
-        processEvent({
-          type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
-          payload: {
-            actionId,
-            state: 'failed',
-            decision: 'timed_out',
-            result: 'cancelled-on-timeout',
-            resolvedAt: Date.now(),
-          },
-        });
-        processEvent({
-          type: UI_EVENT_TYPES.ACTION_AUDIT,
-          payload: {
-            actionId,
-            callTimestamp: callTs,
-            action: actionName,
-            decision: 'timed_out',
-            result: 'cancelled-on-timeout',
-            riskTier: actionMeta.riskTier,
-          },
-        });
-        postActionDecision({
-          actionId,
-          action: actionName,
-          callTimestamp: callTs,
-          riskTier: actionMeta.riskTier,
-          decision: 'timed_out',
-          result: 'cancelled-on-timeout',
-        });
-      }, timeoutMs);
       return;
     }
 
-    executeModuleAction(actionName, deliverable, processEvent);
+    try {
+      const resp = await fetch(`${API_ORIGIN}/v1/orchestration/actions/execute`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-user-id': callSession.userId,
+        },
+        body: JSON.stringify({
+          userId: callSession.userId,
+          sessionId: callSession.sessionId,
+          conversationId: callSession.sessionId,
+          actionId,
+          actionType: actionName,
+          summary: `${actionName} requested from UI module`,
+          riskTier: actionMeta.riskTier,
+          userConfirmation,
+          payload: {
+            deliverableId: deliverable?.id,
+            deliverableType: deliverable?.type,
+            data: deliverable?.data,
+          },
+          metadata: {
+            source: 'ui.module.action',
+            callTimestamp: callTs,
+          },
+        }),
+      });
+
+      const body = await resp.json().catch(() => ({}));
+
+      if (Array.isArray(body?.events)) {
+        body.events.forEach((ev) => mapCanonicalRealtimeEvent(ev));
+      } else if (body?.events && typeof body.events === 'object') {
+        Object.values(body.events).forEach((ev) => mapCanonicalRealtimeEvent(ev));
+      }
+
+      if (!resp.ok) {
+        if (!body?.blocked) {
+          processEvent({
+            type: UI_EVENT_TYPES.ERROR,
+            payload: {
+              code: body?.code || 'ACTION_EXECUTION_FAILED',
+              message: body?.message || `Action failed (${resp.status})`,
+              recoverable: true,
+            },
+          });
+        }
+        return;
+      }
+
+      processEvent({
+        type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
+        payload: {
+          actionId,
+          state: body?.ack?.status === 'executed' ? 'executed' : 'approved',
+          decision: body?.decision?.decision || 'approved',
+          result: body?.ack?.outcomeRef || 'executed',
+          resolvedAt: Date.now(),
+        },
+      });
+    } catch (e) {
+      processEvent({
+        type: UI_EVENT_TYPES.ERROR,
+        payload: {
+          code: 'ACTION_EXECUTION_NETWORK_ERROR',
+          message: String(e?.message || e),
+          recoverable: true,
+        },
+      });
+    }
   };
 
 
   // Reset conversation
   const handleReset = () => {
+    if (callSession?.sessionId && callSession?.userId) {
+      fetch(`${API_ORIGIN}/v1/call/sessions/${callSession.sessionId}/state`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-user-id': callSession.userId,
+        },
+        body: JSON.stringify({ userId: callSession.userId, status: 'ended' }),
+      }).catch(() => {});
+    }
+
     clearConversation();
+    setCallSession(null);
+    realtimeSequenceRef.current = 0;
     setHasStarted(false);
     setIsVoiceActive(false);
     setVoiceCaption("");
@@ -393,26 +765,17 @@ export default function Home() {
                 className="text-center mb-10"
               >
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 mx-auto mb-8 flex items-center justify-center shadow-xl">
-                  <span className="text-white text-lg font-bold tracking-tight">A·M</span>
+                  <span className="text-white text-lg font-bold tracking-tight">LO</span>
                 </div>
                 <h1 className="text-4xl md:text-5xl font-light text-neutral-800 tracking-tight mb-4">
-                  Antonio & Mariana
+                  Life OS
                 </h1>
                 <p className="text-neutral-400 text-sm tracking-[0.15em] uppercase font-medium">
-                  Matchmakers for work & life
+                  Adaptive guidance for work & life
                 </p>
                 <p className="text-neutral-500 text-xs mt-3">
-                  Running mode: <span className="font-medium">Executor</span> (UI Contract v1.0)
+                  Voice adapts dynamically by context during the conversation.
                 </p>
-              </motion.div>
-
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, delay: 0.3 }}
-                className="mb-8"
-              >
-                <PersonaSelector active={selectedPersona} onChange={setSelectedPersona} />
               </motion.div>
 
               <motion.div
@@ -556,46 +919,10 @@ export default function Home() {
                       onClick={async () => {
                         const actionId = pendingConfirmation.actionId;
                         const action = pendingConfirmation.details?.action;
+                        const deliverableId = pendingConfirmation.details?.deliverableId;
                         clearConfirmationTimer(actionId);
                         confirmAction(actionId);
-                        processEvent({
-                          type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
-                          payload: {
-                            actionId,
-                            state: 'approved',
-                            decision: 'confirmed',
-                            resolvedAt: Date.now(),
-                          },
-                        });
-                        processEvent({
-                          type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
-                          payload: {
-                            actionId,
-                            state: 'executed',
-                            decision: 'confirmed',
-                            result: 'executed',
-                            resolvedAt: Date.now(),
-                          },
-                        });
-                        processEvent({
-                          type: UI_EVENT_TYPES.ACTION_AUDIT,
-                          payload: {
-                            actionId,
-                            callTimestamp: pendingConfirmation.details?.callTimestamp,
-                            action,
-                            decision: 'confirmed',
-                            result: 'executed',
-                            riskTier: pendingConfirmation.riskTier || 'high-risk-external-send',
-                          },
-                        });
-                        await postActionDecision({
-                          actionId,
-                          action,
-                          callTimestamp: pendingConfirmation.details?.callTimestamp,
-                          decision: 'confirmed',
-                          result: 'executed',
-                          riskTier: pendingConfirmation.riskTier || 'high-risk-external-send',
-                        });
+                        await handleModuleAction(action, { id: deliverableId, type: 'outreach' }, true);
                       }}
                       className="flex-1 bg-slate-900 text-white py-2 rounded-lg"
                     >
@@ -615,17 +942,6 @@ export default function Home() {
                             decision: 'cancelled',
                             result: 'cancelled-by-user',
                             resolvedAt: Date.now(),
-                          },
-                        });
-                        processEvent({
-                          type: UI_EVENT_TYPES.ACTION_AUDIT,
-                          payload: {
-                            actionId,
-                            callTimestamp: pendingConfirmation.details?.callTimestamp,
-                            action,
-                            decision: 'cancelled',
-                            result: 'cancelled-by-user',
-                            riskTier: pendingConfirmation.riskTier || 'high-risk-external-send',
                           },
                         });
                         await postActionDecision({
@@ -651,7 +967,7 @@ export default function Home() {
                   onClick={handleReset}
                   className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 flex items-center justify-center hover:opacity-80 transition-opacity cursor-pointer"
                 >
-                  <span className="text-white text-[10px] font-bold">A·M</span>
+                  <span className="text-white text-[10px] font-bold">LO</span>
                 </button>
               </div>
 

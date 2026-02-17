@@ -23,13 +23,19 @@ Purpose: when OpenClaw is implementing code and pushing to prod, Codex reviews e
 - Reconnect path requires resume token and supports replay from last acknowledged sequence.
 - Duplicate provider/webhook updates are idempotent.
 
-## Gate 5 — Production-readiness evidence (PR **or** direct-to-prod push)
-- Clear change summary and risk notes are recorded in the handoff artifact (PR description or production push note).
-- Command outputs included for lint/tests/syntax checks in the same handoff artifact.
-- Any deferred work explicitly tracked in `BACKLOG.md` and/or `docs/COORDINATION.md`.
-- Explicit reviewer go/no-go decision is recorded before phase transitions.
+## Gate 5 — Production-readiness evidence (PR or direct-to-prod)
+Evidence requirements apply to every increment regardless of delivery path (pull request merge or direct push to `prod`).
 
-## Gate 6 — Roadmap + architecture sync guard
-- `BACKLOG.md` statuses are updated to reflect implementation reality for touched P0/P1 items.
-- `docs/COORDINATION.md` includes a timestamped changed/next/risks note for the push.
-- Any hybrid architecture exceptions (legacy frontend paths, temporary fallbacks) are documented with removal follow-up tasks.
+Required artifacts:
+1. Clear change summary + risk notes.
+2. Command outputs for lint/tests/syntax checks.
+3. Links or explicit references to updated `BACKLOG.md` and `docs/COORDINATION.md` entries.
+4. Explicit reviewer go/no-go decision before any Phase transition.
+
+## Gate 6 — MVP Sellability release gate (mandatory)
+Before any release intended for paid pilots:
+1. `docs/releases/LATEST_EVIDENCE_BUNDLE.md` is present and complete.
+2. Production readiness docs under `docs/production-readiness/` are updated for scope changes.
+3. Runbook exists and is current: `docs/runbooks/LIVE_CALL_INCIDENT_RESPONSE.md`.
+4. Buyer-visible acceptance scenarios pass: `server/test/release-acceptance.test.mjs`.
+5. Production readiness checks pass: `server/test/production-readiness.test.mjs` + `scripts/verify-production-readiness.mjs`.
