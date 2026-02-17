@@ -17,6 +17,7 @@ export default function UnifiedInput({
   placeholder = "Type or speak...",
   onInterim,
   onListeningChange,
+  enableSpeech = true,
 }) {
   const [text, setText] = useState("");
   const [showTranscript, setShowTranscript] = useState(false);
@@ -138,7 +139,7 @@ export default function UnifiedInput({
   };
 
   const toggleMic = () => {
-    if (!supported) return;
+    if (!enableSpeech || !supported) return;
 
     if (voiceSessionActive || listening) {
       clearVoiceAutoSendTimer();
@@ -169,7 +170,7 @@ export default function UnifiedInput({
 
   // Permission denied or not supported UI
   const micErrorCode = String(error?.error || "");
-  const showMicError = !supported || Boolean(micErrorCode);
+  const showMicError = enableSpeech && (!supported || Boolean(micErrorCode));
   const isVoiceActive = voiceSessionActive || listening;
 
   return (
@@ -206,7 +207,7 @@ export default function UnifiedInput({
         {/* Right actions */}
         <div className="flex items-center gap-1 pb-1 pr-1">
           {/* Mic button - small, not giant */}
-          {supported && (
+          {enableSpeech && supported && (
             <Button
               type="button"
               onClick={toggleMic}

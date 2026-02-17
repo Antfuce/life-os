@@ -309,3 +309,20 @@
 ## Next Action
 
 **Product + Backend:** start UI stabilization triage/fix pass on top buyer-visible defects while preserving P1 safety/orchestration guardrails.
+
+## 2026-02-17 Update — Realtime call-session authority hardening
+
+### Completed
+- Added backend canonical realtime event coverage for call runtime/voice/turn milestones:
+  - `call.connecting`, `call.reconnecting`, `call.voice.config.updated`, `call.turn.owner_changed`, `call.turn.timing`
+- Added backend endpoint: `POST /v1/call/sessions/:sessionId/voice`
+  - Persona↔voice contract (`antonio`, `mariana`, `both`)
+  - Cloned-voice consent + policy approval gate
+  - Immutable action audit writes + canonical `safety.approved`/`safety.blocked`
+- Home UI now maps backend runtime events into deterministic UI state and exposes explicit fallback/recovery actions.
+- Browser speech now explicit fallback only (`UnifiedInput.enableSpeech`), with non-fallback modes remaining backend-call-session-first.
+
+### Remaining
+1. Execute full 5-gate UAT run sheet and publish PASS/FAIL evidence report.
+2. Add/expand automated tests for `/v1/call/sessions/:sessionId/voice` and turn timing/ownership event semantics.
+3. Resolve host `node --test` native assertion instability to unblock reliable local validation.

@@ -79,6 +79,9 @@ export default function Home() {
     pendingConfirmation,
     actionApprovals,
     conversationId,
+    callRuntime,
+    voiceConfig,
+    turnRuntime,
   } = state;
 
   const messagesEndRef = useRef(null);
@@ -89,6 +92,7 @@ export default function Home() {
   const [whisper, setWhisper] = React.useState("");
   const [ttsEnabled, setTtsEnabled] = React.useState(false);
   const [showMemory, setShowMemory] = React.useState(false);
+  const [voiceMode, setVoiceMode] = React.useState('realtime'); // realtime | browser-fallback | text
   const [callSession, setCallSession] = React.useState(null); // { sessionId, resumeToken, userId }
   const realtimeSequenceRef = useRef(0);
   const realtimePollRef = useRef(null);
@@ -124,13 +128,18 @@ export default function Home() {
   const createCallSession = useCallback(async () => {
     const userId = getOrCreateUserId();
 
+    processEvent({
+      type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
+      payload: { state: 'connecting', mode: voiceMode, provider: 'livekit' },
+    });
+
     const created = await fetch(`${API_ORIGIN}/v1/call/sessions`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'x-user-id': userId,
       },
-      body: JSON.stringify({ userId, provider: 'web-realtime' }),
+      body: JSON.stringify({ userId, provider: 'livekit', metadata: { voicePersona: currentSpeaker || 'both' } }),
     });
 
     if (!created.ok) {
@@ -151,10 +160,10 @@ export default function Home() {
       body: JSON.stringify({
         userId,
         status: 'active',
-        provider: 'web-realtime',
-        providerRoomId: `web_room_${session.sessionId}`,
-        providerParticipantId: `web_part_${userId}`,
-        providerCallId: `web_call_${session.sessionId}`,
+        provider: 'livekit',
+        providerRoomId: `lk_room_${session.sessionId}`,
+        providerParticipantId: `lk_part_${userId}`,
+        providerCallId: `lk_call_${session.sessionId}`,
       }),
     });
 
@@ -174,8 +183,12 @@ export default function Home() {
 
     setCallSession(next);
     realtimeSequenceRef.current = 0;
+    processEvent({
+      type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
+      payload: { state: 'connected', mode: voiceMode, provider: 'livekit' },
+    });
     return next;
-  }, [API_ORIGIN]);
+  }, [API_ORIGIN, currentSpeaker, processEvent, voiceMode]);
 
   const mapCanonicalRealtimeEvent = useCallback((event) => {
     if (!event?.type) return;
@@ -183,24 +196,129 @@ export default function Home() {
     const type = String(event.type);
     const payload = event.payload || {};
 
-    if (type === 'call.started' || type === 'call.connected') {
+    if (type === 'call.started' || type === 'call.connecting') {
+      processEvent({
+        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
+        payload: {
+          state: 'connecting',
+          provider: payload.provider || callRuntime?.provider || 'livekit',
+          mode: voiceMode,
+        },
+      });
       processEvent({
         type: UI_EVENT_TYPES.STATUS,
         payload: {
           type: 'call',
-          message: type === 'call.started' ? 'Call session started' : 'Call connected',
+          message: 'Connecting voice transport…',
         },
       });
       return;
     }
 
+    if (type === 'call.connected') {
+      processEvent({
+        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
+        payload: {
+          state: 'connected',
+          provider: payload.provider || callRuntime?.provider || 'livekit',
+          mode: voiceMode,
+        },
+      });
+      processEvent({
+        type: UI_EVENT_TYPES.STATUS,
+        payload: {
+          type: 'call',
+          message: 'Voice connected',
+        },
+      });
+      return;
+    }
+
+    if (type === 'call.reconnecting') {
+      processEvent({
+        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
+        payload: {
+          state: 'reconnecting',
+          mode: voiceMode,
+        },
+      });
+      processEvent({
+        type: UI_EVENT_TYPES.STATUS,
+        payload: {
+          type: 'call',
+          message: 'Reconnecting…',
+        },
+      });
+      return;
+    }
+
+    if (type === 'call.ended') {
+      processEvent({
+        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
+        payload: { state: 'ended', mode: voiceMode },
+      });
+      return;
+    }
+
     if (type === 'call.error' || type === 'call.terminal_failure') {
+      const code = payload.code || type;
+      processEvent({
+        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
+        payload: {
+          state: 'failed',
+          mode: voiceMode,
+        },
+      });
       processEvent({
         type: UI_EVENT_TYPES.ERROR,
         payload: {
-          code: payload.code || type,
+          code,
           message: payload.message || 'Call transport error',
-          recoverable: false,
+          recoverable: true,
+          details: {
+            reconnectSuggested: code !== 'MIC_PERMISSION_DENIED',
+            fallbackSuggested: true,
+          },
+        },
+      });
+      return;
+    }
+
+    if (type === 'call.voice.config.updated') {
+      processEvent({
+        type: UI_EVENT_TYPES.VOICE_CONFIG,
+        payload: {
+          persona: payload.persona || 'both',
+          label: payload.label || payload.voiceProfileId || 'Voice profile',
+          voiceProfileId: payload.voiceProfileId || null,
+          clonedVoice: payload.clonedVoice === true,
+          synthesisAllowed: payload.synthesisAllowed !== false,
+          policyId: payload.policyId || null,
+        },
+      });
+      return;
+    }
+
+    if (type === 'call.turn.owner_changed') {
+      processEvent({
+        type: UI_EVENT_TYPES.TURN_STATE,
+        payload: {
+          owner: payload.owner || 'none',
+          turnId: payload.turnId || null,
+          state: payload.owner === 'user' ? 'listening' : 'thinking',
+        },
+      });
+      return;
+    }
+
+    if (type === 'call.turn.timing') {
+      processEvent({
+        type: UI_EVENT_TYPES.TURN_STATE,
+        payload: {
+          owner: 'agent',
+          turnId: payload.turnId || null,
+          state: payload.sloBreached ? 'recovering' : 'speaking',
+          timing: payload,
         },
       });
       return;
@@ -302,6 +420,18 @@ export default function Home() {
       return;
     }
 
+    if (type === 'safety.blocked' && String(payload.actionType || '').includes('voice')) {
+      processEvent({
+        type: UI_EVENT_TYPES.ERROR,
+        payload: {
+          code: 'VOICE_POLICY_BLOCKED',
+          message: 'Cloned voice blocked until explicit consent + policy approval are present.',
+          recoverable: true,
+        },
+      });
+      return;
+    }
+
     if (type === 'safety.approved') {
       processEvent({
         type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
@@ -328,7 +458,7 @@ export default function Home() {
       });
       return;
     }
-  }, [currentSpeaker, processEvent, speak]);
+  }, [callRuntime?.provider, currentSpeaker, processEvent, speak, voiceMode]);
 
   // Poll canonical realtime events so backend stays source of truth.
   useEffect(() => {
@@ -449,7 +579,7 @@ export default function Home() {
 
     if (!hasStarted) {
       await startConversation(t);
-      if (!t) {
+      if (!t && voiceMode === 'browser-fallback') {
         setIsVoiceActive(true);
       }
       return;
@@ -489,6 +619,9 @@ export default function Home() {
           sessionId: activeConversationId,
           persona: personaHint,
           text,
+          turnId: `turn_${Date.now()}`,
+          captureAtMs: Date.now(),
+          voiceMode,
           messages: [...messages, { role: 'user', content: text }],
         }),
       });
@@ -512,6 +645,73 @@ export default function Home() {
         payload: { message: e.message, recoverable: true },
       });
     }
+  };
+
+  const updateVoiceProfile = async (persona, opts = {}) => {
+    if (!callSession?.sessionId || !callSession?.userId) return;
+
+    const response = await fetch(`${API_ORIGIN}/v1/call/sessions/${callSession.sessionId}/voice`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': callSession.userId,
+      },
+      body: JSON.stringify({
+        userId: callSession.userId,
+        persona,
+        userConsent: opts.userConsent === true,
+        policyApprovalId: opts.policyApprovalId || null,
+      }),
+    });
+
+    const body = await response.json().catch(() => ({}));
+    if (body?.events) {
+      Object.values(body.events).forEach((ev) => mapCanonicalRealtimeEvent(ev));
+    }
+    if (!response.ok) {
+      throw new Error(body?.message || `Voice profile update failed (${response.status})`);
+    }
+
+    if (body?.voiceConfig) {
+      processEvent({ type: UI_EVENT_TYPES.VOICE_CONFIG, payload: body.voiceConfig });
+      processEvent({ type: UI_EVENT_TYPES.SPEAKER_CHANGE, payload: { speaker: body.voiceConfig.persona || persona } });
+    }
+  };
+
+  const retryVoiceTransport = async () => {
+    if (!callSession?.sessionId || !callSession?.userId) return;
+    processEvent({ type: UI_EVENT_TYPES.CALL_RUNTIME_STATE, payload: { state: 'reconnecting', mode: voiceMode } });
+    const res = await fetch(`${API_ORIGIN}/v1/call/sessions/${callSession.sessionId}/reconnect`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': callSession.userId,
+      },
+      body: JSON.stringify({
+        userId: callSession.userId,
+        resumeToken: callSession.resumeToken,
+        lastAckSequence: realtimeSequenceRef.current || 0,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.message || 'Reconnect failed');
+    }
+    const replayEvents = Array.isArray(data?.replay?.events) ? data.replay.events : [];
+    replayEvents.forEach(mapCanonicalRealtimeEvent);
+    if (data?.voiceConfig) {
+      processEvent({ type: UI_EVENT_TYPES.VOICE_CONFIG, payload: data.voiceConfig });
+    }
+    processEvent({ type: UI_EVENT_TYPES.CALL_RUNTIME_STATE, payload: { state: 'connected', mode: voiceMode } });
+  };
+
+  const switchToBrowserFallback = () => {
+    setVoiceMode('browser-fallback');
+    processEvent({ type: UI_EVENT_TYPES.CALL_RUNTIME_STATE, payload: { mode: 'browser-fallback', state: callRuntime?.state || 'connected' } });
+    processEvent({
+      type: UI_EVENT_TYPES.STATUS,
+      payload: { type: 'voice', message: 'Browser speech fallback active (non-realtime transport)' },
+    });
   };
 
   // Handle module action (backend-authoritative lifecycle)
@@ -622,6 +822,8 @@ export default function Home() {
     setVoiceCaption("");
     setWhisper("");
     setShowMemory(false);
+    setVoiceMode('realtime');
+    processEvent({ type: UI_EVENT_TYPES.CALL_RUNTIME_STATE, payload: { state: 'idle', mode: 'realtime', provider: null } });
   };
 
   const getLatestDeliverable = (type) => {
@@ -684,7 +886,7 @@ export default function Home() {
                 transition={{ duration: 0.8, delay: 0.5 }}
                 className="w-full max-w-2xl px-4"
               >
-                <UnifiedInput onSend={handleSend} disabled={isStreaming} />
+                <UnifiedInput onSend={handleSend} disabled={isStreaming} enableSpeech={voiceMode === 'browser-fallback'} />
               </motion.div>
 
               <motion.p
@@ -725,6 +927,11 @@ export default function Home() {
               transition={{ duration: 0.5 }}
               className="flex-1 flex flex-col items-center justify-center relative h-full overflow-hidden"
             >
+              {/* Runtime state ribbon */}
+              <div className="absolute top-6 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-white/80 border border-neutral-200 text-[11px] text-neutral-700 shadow-sm z-20">
+                {`Call: ${callRuntime?.state || 'idle'} · Mode: ${voiceMode} · Voice: ${voiceConfig?.label || 'Balanced Core'} · Turn: ${turnRuntime?.state || 'idle'}`}
+              </div>
+
               {/* Voice captions */}
               <div className="absolute top-24 left-0 right-0 px-6">
                 <div className="max-w-2xl mx-auto">
@@ -791,8 +998,35 @@ export default function Home() {
 
               {/* Error display */}
               {error && (
-                <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-red-50 border border-red-200 rounded-lg px-4 py-2">
+                <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 max-w-lg w-[90%]">
                   <p className="text-red-600 text-sm">{error.message}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      onClick={async () => {
+                        try { await retryVoiceTransport(); } catch (e) {
+                          processEvent({ type: UI_EVENT_TYPES.ERROR, payload: { message: String(e?.message || e), recoverable: true } });
+                        }
+                      }}
+                      className="text-xs px-2 py-1 rounded bg-white border border-red-200 text-red-700"
+                    >
+                      Retry voice
+                    </button>
+                    <button
+                      onClick={switchToBrowserFallback}
+                      className="text-xs px-2 py-1 rounded bg-white border border-red-200 text-red-700"
+                    >
+                      Switch to browser fallback
+                    </button>
+                    <button
+                      onClick={async () => {
+                        setVoiceMode('text');
+                        processEvent({ type: UI_EVENT_TYPES.CALL_RUNTIME_STATE, payload: { mode: 'text', state: callRuntime?.state || 'connected' } });
+                      }}
+                      className="text-xs px-2 py-1 rounded bg-white border border-red-200 text-red-700"
+                    >
+                      Text mode
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -872,7 +1106,36 @@ export default function Home() {
               </div>
 
               {/* Controls - top right */}
-              <div className="absolute top-6 right-6 flex items-center gap-1">
+              <div className="absolute top-6 right-6 flex items-center gap-1 flex-wrap max-w-[420px] justify-end">
+                {['antonio', 'mariana', 'both'].map((p) => (
+                  <button
+                    key={p}
+                    onClick={async () => {
+                      try {
+                        const needsConsent = p !== 'both';
+                        await updateVoiceProfile(p, {
+                          userConsent: needsConsent,
+                          policyApprovalId: needsConsent ? `manual-approval-${Date.now()}` : null,
+                        });
+                      } catch (e) {
+                        processEvent({ type: UI_EVENT_TYPES.ERROR, payload: { message: String(e?.message || e), recoverable: true } });
+                      }
+                    }}
+                    className={`text-[11px] px-2 py-1 rounded-full border ${voiceConfig?.persona === p ? 'bg-neutral-900 text-white border-neutral-900' : 'bg-white/80 text-neutral-700 border-neutral-200'}`}
+                    title={`Switch voice to ${p}`}
+                  >
+                    {p}
+                  </button>
+                ))}
+
+                <button
+                  onClick={() => switchToBrowserFallback()}
+                  className={`text-[11px] px-2 py-1 rounded-full border ${voiceMode === 'browser-fallback' ? 'bg-amber-100 border-amber-300 text-amber-800' : 'bg-white/80 border-neutral-200 text-neutral-700'}`}
+                  title="Enable browser speech fallback"
+                >
+                  Browser fallback
+                </button>
+
                 {/* TTS toggle */}
                 <button
                   onClick={() => {
@@ -927,7 +1190,8 @@ export default function Home() {
                   disabled={isStreaming}
                   onInterim={setVoiceCaption}
                   onListeningChange={setIsVoiceActive}
-                  placeholder="Type or speak your message..."
+                  placeholder={voiceMode === 'browser-fallback' ? 'Type or speak your message…' : 'Type your message…'}
+                  enableSpeech={voiceMode === 'browser-fallback'}
                 />
               </div>
             </motion.div>

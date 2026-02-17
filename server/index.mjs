@@ -47,6 +47,7 @@ const ACTION_RISK_TIERS = {
 
 const SAFETY_POLICY_IDS = {
   EXTERNAL_SEND_CONFIRMATION: 'policy.external-send.confirmation',
+  VOICE_CLONE_CONSENT: 'policy.voice.clone.explicit-consent',
   DEFAULT: 'policy.default.allow',
 };
 
@@ -583,6 +584,7 @@ fastify.get('/', async () => ({
     ingestLiveKitEvent: '/v1/call/livekit/events (POST json)',
     reconnectCallSession: '/v1/call/sessions/:sessionId/reconnect (POST json)',
     executeCallTurn: '/v1/call/sessions/:sessionId/turn (POST json)',
+    updateVoiceProfile: '/v1/call/sessions/:sessionId/voice (POST json)',
     listTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots (GET)',
     compactTranscriptSnapshots: '/v1/realtime/sessions/:sessionId/transcript-snapshots/compact (POST json)',
     listUsageMeterRecords: '/v1/billing/sessions/:sessionId/usage-records (GET)',
@@ -645,6 +647,16 @@ const CALL_SESSION_TRANSITIONS = {
   [CALL_SESSION_STATUS.ENDED]: new Set(),
   [CALL_SESSION_STATUS.FAILED]: new Set(),
 };
+
+const PERSONA_VOICE_MAP = {
+  both: { voiceProfileId: 'voice.default.both', label: 'Balanced Core', clonedVoice: false },
+  antonio: { voiceProfileId: 'voice.clone.antonio', label: 'Antonio Clone', clonedVoice: true },
+  mariana: { voiceProfileId: 'voice.clone.mariana', label: 'Mariana Clone', clonedVoice: true },
+};
+
+const TURN_SLO_THRESHOLD_MS = Number.isFinite(Number(process.env.TURN_SLO_THRESHOLD_MS))
+  ? Math.max(300, Math.trunc(Number(process.env.TURN_SLO_THRESHOLD_MS)))
+  : 2500;
 
 function sendError(req, reply, statusCode, code, message, retryable = false) {
   return reply.code(statusCode).send({
@@ -1749,6 +1761,36 @@ function normalizeCallSessionRow(row) {
 }
 
 
+function resolveVoiceConfigFromSession(sessionRowOrNormalized) {
+  const metadata = sessionRowOrNormalized?.metadata
+    || parseStoredMetadata(sessionRowOrNormalized?.metadataJson);
+  const requestedPersona = String(metadata?.voicePersona || 'both').toLowerCase();
+  const persona = PERSONA_VOICE_MAP[requestedPersona] ? requestedPersona : 'both';
+  const base = PERSONA_VOICE_MAP[persona];
+
+  const clonedVoiceConsent = metadata?.clonedVoiceConsent === true;
+  const policyApprovalId = metadata?.voicePolicyApprovalId ? String(metadata.voicePolicyApprovalId) : null;
+  const synthesisAllowed = base.clonedVoice ? clonedVoiceConsent : true;
+
+  return {
+    persona,
+    voiceProfileId: base.voiceProfileId,
+    label: base.label,
+    clonedVoice: base.clonedVoice,
+    clonedVoiceConsent,
+    policyApprovalId,
+    synthesisAllowed,
+  };
+}
+
+function getUpdatedMetadataWithVoice(existingMetadata, patch = {}) {
+  const next = { ...(existingMetadata || {}) };
+  if (patch.voicePersona !== undefined) next.voicePersona = patch.voicePersona;
+  if (patch.clonedVoiceConsent !== undefined) next.clonedVoiceConsent = patch.clonedVoiceConsent;
+  if (patch.voicePolicyApprovalId !== undefined) next.voicePolicyApprovalId = patch.voicePolicyApprovalId;
+  return next;
+}
+
 function findCallSessionByProviderCorrelation({ providerCallId, providerRoomId, providerParticipantId }) {
   if (providerCallId) {
     const byCallId = dbCtx.getCallSessionByProviderCallId.get(providerCallId);
@@ -1841,6 +1883,29 @@ fastify.post('/v1/call/sessions', async (req, reply) => {
       channel: 'voice',
       direction: 'outbound',
       provider: session.provider || 'livekit',
+    },
+  }));
+  publishRealtimeEvent(createRealtimeEvent({
+    sessionId: session.sessionId,
+    type: 'call.connecting',
+    payload: {
+      callId: session.sessionId,
+      provider: session.provider || 'livekit',
+    },
+  }));
+
+  const voiceConfig = resolveVoiceConfigFromSession(session);
+  publishRealtimeEvent(createRealtimeEvent({
+    sessionId: session.sessionId,
+    type: 'call.voice.config.updated',
+    payload: {
+      callId: session.sessionId,
+      persona: voiceConfig.persona,
+      voiceProfileId: voiceConfig.voiceProfileId,
+      label: voiceConfig.label,
+      clonedVoice: voiceConfig.clonedVoice,
+      synthesisAllowed: voiceConfig.synthesisAllowed,
+      policyId: voiceConfig.policyApprovalId,
     },
   }));
 
@@ -2083,18 +2148,193 @@ fastify.post('/v1/call/sessions/:sessionId/reconnect', async (req, reply) => {
 
   const limitRaw = body.limit !== undefined ? Number(body.limit) : 100;
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
+  publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'call.reconnecting',
+    actor: { role: 'system', id: auth.userId },
+    payload: {
+      callId: sessionId,
+      attempt: 1,
+      at: nowIso(),
+      reason: 'resume_requested',
+    },
+  }));
+
   const rows = dbCtx.listRealtimeEventsAfterSequence.all(sessionId, ackSequence, limit);
   const events = rows.map(normalizeRealtimeEventRow);
   const latestSequence = Number(dbCtx.getRealtimeSessionMaxSequence.get(sessionId)?.maxSequence || 0);
 
+  const normalizedSession = normalizeCallSessionRow(existing);
+  const voiceConfig = resolveVoiceConfigFromSession(normalizedSession);
+
   return {
     ok: true,
-    session: normalizeCallSessionRow(existing),
+    session: normalizedSession,
+    voiceConfig,
     replay: {
       fromSequence: ackSequence,
       latestSequence,
       events,
       transcriptState: mergeTranscriptEvents(events),
+    },
+  };
+});
+
+fastify.post('/v1/call/sessions/:sessionId/voice', async (req, reply) => {
+  const body = req.body || {};
+  const auth = getAuthenticatedUserId(req, body);
+  if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
+
+  const sessionId = String(req.params?.sessionId || '').trim();
+  if (!sessionId) return sendError(req, reply, 400, 'INVALID_REQUEST', 'sessionId is required', false);
+
+  const existing = dbCtx.getCallSessionById.get(sessionId);
+  if (!existing) return sendError(req, reply, 404, 'SESSION_NOT_FOUND', 'Session not found', false);
+  if (existing.userId !== auth.userId) return sendError(req, reply, 403, 'CROSS_USER_FORBIDDEN', 'Session does not belong to authenticated user', false);
+
+  const requestedPersona = String(body.persona || '').trim().toLowerCase();
+  if (!PERSONA_VOICE_MAP[requestedPersona]) {
+    return sendError(req, reply, 400, 'INVALID_REQUEST', 'persona must be one of antonio|mariana|both', false);
+  }
+
+  const requestedProfile = PERSONA_VOICE_MAP[requestedPersona];
+  const userConsent = body.userConsent === true;
+  const policyApprovalId = body.policyApprovalId ? String(body.policyApprovalId).trim() : '';
+  const actionId = body.actionId ? String(body.actionId) : `voice-config-${stableId(sessionId, requestedPersona, Date.now()).slice(0, 16)}`;
+
+  const requiresClonePolicy = requestedProfile.clonedVoice === true;
+  const policyId = SAFETY_POLICY_IDS.VOICE_CLONE_CONSENT;
+
+  if (requiresClonePolicy && (!userConsent || !policyApprovalId)) {
+    const blocked = publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'safety.blocked',
+      actor: { role: 'system', id: auth.userId },
+      payload: {
+        policyId,
+        reason: 'explicit_voice_clone_consent_and_policy_approval_required',
+        decision: 'blocked',
+        actionId,
+        actionType: 'voice.config.update',
+        riskTier: ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND,
+      },
+    })).event;
+
+    dbCtx.insertActionAudit.run(
+      stableId(sessionId, actionId, Date.now(), 'blocked'),
+      actionId,
+      sessionId,
+      Date.now(),
+      Date.now(),
+      'voice.config.update',
+      ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND,
+      'blocked',
+      'blocked',
+      JSON.stringify({
+        sessionId,
+        actorId: auth.userId,
+        policyId,
+        requestedPersona,
+        requestedVoiceProfileId: requestedProfile.voiceProfileId,
+      }),
+    );
+
+    return reply.code(403).send({
+      ok: false,
+      blocked: true,
+      code: 'VOICE_POLICY_BLOCKED',
+      message: 'Explicit consent + policyApprovalId required for cloned voices',
+      event: blocked,
+    });
+  }
+
+  const approved = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'safety.approved',
+    actor: { role: 'system', id: auth.userId },
+    payload: {
+      policyId,
+      decision: 'approved',
+      actionId,
+      actionType: 'voice.config.update',
+      riskTier: requiresClonePolicy ? ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND : ACTION_RISK_TIERS.LOW_RISK_WRITE,
+    },
+  })).event;
+
+  const existingMetadata = parseStoredMetadata(existing.metadataJson);
+  const mergedMetadata = getUpdatedMetadataWithVoice(existingMetadata, {
+    voicePersona: requestedPersona,
+    clonedVoiceConsent: requiresClonePolicy ? true : false,
+    voicePolicyApprovalId: requiresClonePolicy ? policyApprovalId : null,
+  });
+
+  const updatedAtMs = Date.now();
+  dbCtx.updateCallSession.run(
+    existing.status,
+    existing.resumeValidUntilMs,
+    existing.lastAckSequence || null,
+    existing.lastAckTimestamp || null,
+    existing.lastAckEventId || null,
+    existing.provider,
+    existing.providerRoomId,
+    existing.providerParticipantId,
+    existing.providerCallId,
+    JSON.stringify(mergedMetadata),
+    existing.lastError,
+    updatedAtMs,
+    existing.startedAtMs,
+    existing.endedAtMs,
+    existing.failedAtMs,
+    sessionId,
+  );
+
+  const row = dbCtx.getCallSessionById.get(sessionId);
+  const session = normalizeCallSessionRow(row);
+  const voiceConfig = resolveVoiceConfigFromSession(session);
+
+  const configured = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'call.voice.config.updated',
+    actor: { role: 'system', id: auth.userId },
+    payload: {
+      callId: sessionId,
+      persona: voiceConfig.persona,
+      voiceProfileId: voiceConfig.voiceProfileId,
+      label: voiceConfig.label,
+      clonedVoice: voiceConfig.clonedVoice,
+      synthesisAllowed: voiceConfig.synthesisAllowed,
+      policyId: voiceConfig.policyApprovalId,
+    },
+  })).event;
+
+  dbCtx.insertActionAudit.run(
+    stableId(sessionId, actionId, Date.now(), 'approved'),
+    actionId,
+    sessionId,
+    Date.now(),
+    Date.now(),
+    'voice.config.update',
+    requiresClonePolicy ? ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND : ACTION_RISK_TIERS.LOW_RISK_WRITE,
+    'approved',
+    'executed',
+    JSON.stringify({
+      sessionId,
+      actorId: auth.userId,
+      policyId,
+      approvedEventId: approved.eventId,
+      configuredEventId: configured.eventId,
+      requestedPersona,
+      activeVoiceProfileId: voiceConfig.voiceProfileId,
+    }),
+  );
+
+  return {
+    ok: true,
+    session,
+    voiceConfig,
+    events: {
+      safetyApproved: approved,
+      voiceConfigured: configured,
     },
   };
 });
@@ -2197,6 +2437,21 @@ fastify.post('/v1/call/sessions/:sessionId/state', async (req, reply) => {
         callId: sessionId,
         connectedAt: new Date(startedAtMs).toISOString(),
         providerSessionId: session.providerCallId || undefined,
+      },
+    }));
+
+    const voiceConfig = resolveVoiceConfigFromSession(session);
+    publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.voice.config.updated',
+      payload: {
+        callId: sessionId,
+        persona: voiceConfig.persona,
+        voiceProfileId: voiceConfig.voiceProfileId,
+        label: voiceConfig.label,
+        clonedVoice: voiceConfig.clonedVoice,
+        synthesisAllowed: voiceConfig.synthesisAllowed,
+        policyId: voiceConfig.policyApprovalId,
       },
     }));
   }
@@ -3641,12 +3896,28 @@ fastify.post('/v1/call/sessions/:sessionId/turn', async (req, reply) => {
   const text = String(body.text || '').trim();
   if (!text) return sendError(req, reply, 400, 'INVALID_REQUEST', 'text is required', false);
 
+  const turnId = body.turnId ? String(body.turnId) : `turn_${stableId(sessionId, Date.now(), text).slice(0, 16)}`;
+  const captureAtMs = Number.isFinite(Number(body.captureAtMs)) ? Math.max(0, Math.trunc(Number(body.captureAtMs))) : Date.now();
+
   const conversationId = sessionId;
   const requestedPersona = body.persona && PERSONAS[body.persona] && body.persona !== 'executor' ? body.persona : 'both';
   const persona = 'executor';
   const messages = Array.isArray(body.messages) ? body.messages : [];
 
   const userUtteranceId = `utt_user_${stableId(sessionId, Date.now(), text).slice(0, 16)}`;
+  const turnOwnerUserEvent = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'call.turn.owner_changed',
+    actor: { role: 'user', id: auth.userId },
+    payload: {
+      callId: sessionId,
+      turnId,
+      owner: 'user',
+      reason: 'user_turn_started',
+    },
+    ts: nowIso(),
+  })).event;
+
   const userTranscriptEvent = publishRealtimeEvent(createRealtimeEvent({
     sessionId,
     type: 'transcript.final',
@@ -3675,8 +3946,33 @@ fastify.post('/v1/call/sessions/:sessionId/turn', async (req, reply) => {
 
   const token = await getGatewayToken();
   if (!token) {
+    publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.error',
+      actor: { role: 'system', id: 'backend' },
+      payload: {
+        code: 'PROVIDER_UNAVAILABLE',
+        message: 'Realtime provider unavailable: missing gateway token',
+        retryable: true,
+      },
+      ts: nowIso(),
+    }));
     return reply.code(500).send({ ok: false, code: 'MISSING_GATEWAY_TOKEN', message: 'Missing OpenClaw gateway token on server' });
   }
+
+  const backendReceiveAtMs = Date.now();
+  const turnOwnerAgentEvent = publishRealtimeEvent(createRealtimeEvent({
+    sessionId,
+    type: 'call.turn.owner_changed',
+    actor: { role: 'system', id: 'backend' },
+    payload: {
+      callId: sessionId,
+      turnId,
+      owner: 'agent',
+      reason: 'assistant_processing',
+    },
+    ts: nowIso(),
+  })).event;
 
   const upstream = await fetch(OPENCLAW_RESPONSES_URL, {
     method: 'POST',
@@ -3713,6 +4009,7 @@ fastify.post('/v1/call/sessions/:sessionId/turn', async (req, reply) => {
     return reply.code(500).send({ ok: false, code: 'TURN_FAILED', detail });
   }
 
+  const orchestratorDoneAtMs = Date.now();
   const rawTextOut = extractOutputText(json) || '';
   const { events, remainingText } = parseUIEvents(rawTextOut);
 
@@ -3802,11 +4099,50 @@ fastify.post('/v1/call/sessions/:sessionId/turn', async (req, reply) => {
     }
   }
 
+  let turnTimingEvent = null;
+  let voiceSafetyEvent = null;
+
   {
     const ats = Date.now();
     const assistantMid = stableId(conversationId, 'assistant', ats, effectiveSpeaker, cleanedText);
     dbCtx.upsertConv.run(conversationId, ats, ats, effectiveSpeaker);
     dbCtx.insertMsg.run(assistantMid, conversationId, ats, 'assistant', effectiveSpeaker, cleanedText);
+
+    const timing = {
+      callId: sessionId,
+      turnId,
+      captureToBackendMs: Math.max(0, backendReceiveAtMs - captureAtMs),
+      orchestratorMs: Math.max(0, orchestratorDoneAtMs - backendReceiveAtMs),
+      playbackStartMs: Math.max(0, ats - orchestratorDoneAtMs),
+      totalMs: Math.max(0, ats - captureAtMs),
+    };
+    timing.sloBreached = timing.totalMs > TURN_SLO_THRESHOLD_MS;
+    timing.thresholdMs = TURN_SLO_THRESHOLD_MS;
+
+    turnTimingEvent = publishRealtimeEvent(createRealtimeEvent({
+      sessionId,
+      type: 'call.turn.timing',
+      actor: { role: 'system', id: 'backend' },
+      payload: timing,
+      ts: nowIso(),
+    })).event;
+
+    const voiceConfig = resolveVoiceConfigFromSession(existing);
+    if (voiceConfig.clonedVoice && !voiceConfig.synthesisAllowed) {
+      voiceSafetyEvent = publishRealtimeEvent(createRealtimeEvent({
+        sessionId,
+        type: 'safety.blocked',
+        actor: { role: 'system', id: 'backend' },
+        payload: {
+          policyId: SAFETY_POLICY_IDS.VOICE_CLONE_CONSENT,
+          reason: 'cloned_voice_synthesis_blocked_until_approved',
+          decision: 'blocked',
+          actionId: turnId,
+          actionType: 'voice.synthesis',
+          riskTier: ACTION_RISK_TIERS.HIGH_RISK_EXTERNAL_SEND,
+        },
+      })).event;
+    }
   }
 
   return {
@@ -3818,7 +4154,15 @@ fastify.post('/v1/call/sessions/:sessionId/turn', async (req, reply) => {
       content: cleanedText,
       speaker: effectiveSpeaker,
     },
-    events: [userTranscriptEvent, assistantTranscriptEvent, ...eventBridge],
+    events: [
+      turnOwnerUserEvent,
+      userTranscriptEvent,
+      turnOwnerAgentEvent,
+      assistantTranscriptEvent,
+      turnTimingEvent,
+      ...(voiceSafetyEvent ? [voiceSafetyEvent] : []),
+      ...eventBridge,
+    ].filter(Boolean),
   };
 });
 

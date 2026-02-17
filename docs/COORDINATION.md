@@ -173,3 +173,13 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Added a copy-paste UAT release-blocking run sheet with strict 5-gate sequence and PASS/FAIL reporting template: Repo Hygiene, Backend Executability, Call Lifecycle, UI Contract+Safety, Docs Sync. Included mandatory marker-scan command as evidence and explicit all-gates-pass GO rule.
 - Next: Execute run sheet gate-by-gate and report PASS/FAIL before UI signoff.
 - Risks: Gate 4 still contains manual Base44 validation steps; without disciplined evidence capture, UI safety regressions can be missed.
+
+## 2026-02-17T11:40:00Z — OpenClaw run note (realtime voice/session authority hardening)
+- Changed: Implemented backend+frontend call-session runtime hardening for realtime voice architecture alignment:
+  - Backend: added canonical realtime events for `call.connecting`, `call.reconnecting`, `call.voice.config.updated`, `call.turn.owner_changed`, `call.turn.timing` with validator coverage.
+  - Backend: added `POST /v1/call/sessions/:sessionId/voice` persona→voice contract (`antonio|mariana|both`) with cloned-voice consent/policy gate, immutable action audit writes, and safety approved/blocked canonical events.
+  - Backend: turn path now emits deterministic turn ownership + timing milestone events and provider-unavailable error signaling.
+  - Frontend (`Home.jsx`): reducer-driven call runtime/voice/turn state mapping, visible runtime ribbon, explicit browser-speech fallback mode labeling, one-click recovery actions (retry/reconnect/fallback/text mode), and mid-session backend voice switching controls.
+  - Frontend (`UnifiedInput`): browser speech input now explicit via `enableSpeech`; disabled by default unless fallback mode is selected.
+- Next: Run UAT run sheet gates with real environment evidence, then tune UI controls/policy-approval UX for production operator flow.
+- Risks: Local host `node --test` instability remains; need CI/alt-host validation for new route/event contract tests.

@@ -12,6 +12,18 @@ const EVENT_PAYLOAD_VALIDATORS = {
     && inEnum(p.endReason, ['completed', 'user_hangup', 'timeout', 'agent_handover']),
   'call.error': (p) => req(p, ['code', 'message', 'retryable']) && typeof p.retryable === 'boolean',
   'call.terminal_failure': (p) => req(p, ['callId', 'failedAt', 'code', 'message']) && isIsoTs(p.failedAt),
+  'call.connecting': (p) => req(p, ['callId']),
+  'call.reconnecting': (p) => req(p, ['callId', 'attempt', 'at']) && isIsoTs(p.at) && isNonNegInt(p.attempt),
+  'call.voice.config.updated': (p) => req(p, ['callId', 'persona', 'voiceProfileId', 'label', 'synthesisAllowed'])
+    && inEnum(p.persona, ['antonio', 'mariana', 'both'])
+    && typeof p.synthesisAllowed === 'boolean',
+  'call.turn.owner_changed': (p) => req(p, ['callId', 'turnId', 'owner']) && inEnum(p.owner, ['user', 'agent']),
+  'call.turn.timing': (p) => req(p, ['callId', 'turnId', 'captureToBackendMs', 'orchestratorMs', 'playbackStartMs', 'totalMs', 'sloBreached'])
+    && isNonNegInt(p.captureToBackendMs)
+    && isNonNegInt(p.orchestratorMs)
+    && isNonNegInt(p.playbackStartMs)
+    && isNonNegInt(p.totalMs)
+    && typeof p.sloBreached === 'boolean',
 
   'transcript.partial': (p) => req(p, ['utteranceId', 'speaker', 'text', 'startMs', 'endMs'])
     && inEnum(p.speaker, ['user', 'agent', 'unknown'])

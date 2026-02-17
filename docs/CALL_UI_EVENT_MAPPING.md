@@ -24,21 +24,25 @@ Frontend acts as:
 
 | Canonical event | UI event/effect |
 |---|---|
-| `call.started` | `status` ("Call session started") |
-| `call.connected` | `status` ("Call connected") |
-| `call.error` | `error` |
-| `call.terminal_failure` | `error` (non-recoverable) |
+| `call.started`/`call.connecting` | `call.runtime.state=connecting` + status |
+| `call.connected` | `call.runtime.state=connected` + status |
+| `call.reconnecting` | `call.runtime.state=reconnecting` + status |
+| `call.ended` | `call.runtime.state=ended` |
+| `call.error`/`call.terminal_failure` | `call.runtime.state=failed` + `error` (recoverable actions shown) |
+| `call.voice.config.updated` | `voice.config` (persona/label/profile/policy/synthesis gate) |
+| `call.turn.owner_changed` | `turn.state` (`listening`/`thinking`) |
+| `call.turn.timing` | `turn.state` timing payload + SLO breach cue |
 | `transcript.partial` (speaker=user) | update live voice caption |
 | `transcript.final` (speaker=agent) | `text.done` append assistant message |
 | `orchestration.action.requested` | `action.audit` (`pending/requested`) |
 | `safety.blocked` + `reason=explicit_user_confirmation_required` | `confirm.required` |
+| `safety.blocked` + `actionType~voice` | explicit voice-policy error state |
 | `safety.approved` | `action.approval.state=approved` |
 | `action.executed` | `action.approval.state=executed` |
 | `action.failed` | `action.approval.state=failed` |
 
-## Transitional note
+## Current transport note
 
-Current assistant text generation still uses `/v1/chat/stream` while the call-session/realtime lifecycle is now explicit and backend-authoritative.
+`Home.jsx` turn execution is now call-session authoritative (`POST /v1/call/sessions/:sessionId/turn`) and no longer uses `/v1/chat/stream`.
 
-Planned next step:
-- replace chat-stream-only text transport with fully transport-backed realtime voice/text stream (LiveKit/realtime families), keeping browser Web Speech only as fallback.
+Browser Web Speech remains available only as an explicit fallback mode (non-transport-realtime) and is labeled as such in UI.

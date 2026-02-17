@@ -19,6 +19,9 @@ export const UI_EVENT_TYPES = {
   CONFIRM_REQUIRED: 'confirm.required',
   ACTION_APPROVAL_STATE: 'action.approval.state',
   ACTION_AUDIT: 'action.audit',
+  CALL_RUNTIME_STATE: 'call.runtime.state',
+  VOICE_CONFIG: 'voice.config',
+  TURN_STATE: 'turn.state',
   DONE: 'done',
 };
 
@@ -49,6 +52,28 @@ const initialState = {
   // Action approval/audit
   actionApprovals: {}, // { [actionId]: { state, ... } }
   actionAuditTrail: [],
+
+  // Call runtime
+  callRuntime: {
+    state: 'idle', // idle|connecting|connected|reconnecting|failed|ended
+    mode: 'realtime', // realtime|browser-fallback|text
+    provider: null,
+    lastTransitionAt: null,
+  },
+  voiceConfig: {
+    persona: 'both',
+    label: 'Balanced Core',
+    voiceProfileId: null,
+    clonedVoice: false,
+    synthesisAllowed: true,
+    policyId: null,
+  },
+  turnRuntime: {
+    owner: 'none', // none|user|agent
+    turnId: null,
+    state: 'idle', // idle|listening|thinking|speaking
+    timing: null,
+  },
 
   // Meta
   conversationId: null,
@@ -232,6 +257,37 @@ function uiEventReducer(state, action) {
       return {
         ...state,
         actionAuditTrail: [...state.actionAuditTrail, payload],
+      };
+    }
+
+    case UI_EVENT_TYPES.CALL_RUNTIME_STATE: {
+      return {
+        ...state,
+        callRuntime: {
+          ...state.callRuntime,
+          ...payload,
+          lastTransitionAt: Date.now(),
+        },
+      };
+    }
+
+    case UI_EVENT_TYPES.VOICE_CONFIG: {
+      return {
+        ...state,
+        voiceConfig: {
+          ...state.voiceConfig,
+          ...payload,
+        },
+      };
+    }
+
+    case UI_EVENT_TYPES.TURN_STATE: {
+      return {
+        ...state,
+        turnRuntime: {
+          ...state.turnRuntime,
+          ...payload,
+        },
       };
     }
 
