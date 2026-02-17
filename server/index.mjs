@@ -1825,7 +1825,7 @@ fastify.get('/v1/user/memory', async (req, reply) => {
   if (auth.code) return sendError(req, reply, 401, auth.code, auth.message, false);
 
   try {
-    const stmt = db.prepare('SELECT id, userId, category, key, value, created_date FROM user_memory WHERE userId = ? ORDER BY created_date DESC');
+    const stmt = dbCtx.db.prepare('SELECT id, userId, category, key, value, created_date FROM user_memory WHERE userId = ? ORDER BY created_date DESC');
     const memories = stmt.all(auth.userId);
     return reply.send({ memories });
   } catch (err) {
@@ -1849,7 +1849,7 @@ fastify.post('/v1/user/memory', async (req, reply) => {
     const id = `mem_${stableId(auth.userId, Date.now(), Math.random()).slice(0, 16)}`;
     const created_date = Date.now();
     
-    const stmt = db.prepare('INSERT INTO user_memory (id, userId, category, key, value, created_date) VALUES (?, ?, ?, ?, ?, ?)');
+    const stmt = dbCtx.db.prepare('INSERT INTO user_memory (id, userId, category, key, value, created_date) VALUES (?, ?, ?, ?, ?, ?)');
     stmt.run(id, auth.userId, category, key, value, created_date);
     
     return reply.send({ 
@@ -1878,7 +1878,7 @@ fastify.delete('/v1/user/memory/:id', async (req, reply) => {
 
   try {
     // First check if memory exists and belongs to user
-    const checkStmt = db.prepare('SELECT userId FROM user_memory WHERE id = ?');
+    const checkStmt = dbCtx.db.prepare('SELECT userId FROM user_memory WHERE id = ?');
     const memory = checkStmt.get(id);
     
     if (!memory) {
@@ -1889,7 +1889,7 @@ fastify.delete('/v1/user/memory/:id', async (req, reply) => {
       return sendError(req, reply, 403, 'FORBIDDEN', 'Cannot delete another user\'s memory', false);
     }
     
-    const deleteStmt = db.prepare('DELETE FROM user_memory WHERE id = ?');
+    const deleteStmt = dbCtx.db.prepare('DELETE FROM user_memory WHERE id = ?');
     deleteStmt.run(id);
     
     return reply.send({ success: true, id });
