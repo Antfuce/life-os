@@ -21,8 +21,9 @@
 - **Dependencies:** None (foundational)
 
 #### 2. LiveKit Session Bridge (Realtime Transport)
-- **Status:** Not started
+- **Status:** In progress
 - **What:** Integrate LiveKit as the realtime voice/media layer with backend-owned session control.
+- **Progress:** Backend token issuance route (`POST /v1/call/sessions/:sessionId/livekit/token`) and provider event ingest route (`POST /v1/call/livekit/events`) exist with tests for metadata mapping and canonical call event translation. Remaining work: wire Home/Base44 runtime to call-session-first UX and remove legacy-only chat path assumptions.
 - **Scope:**
   - Generate short-lived LiveKit access tokens via backend-only endpoints
   - Map backend `sessionId` ↔ LiveKit room/participant metadata
@@ -32,8 +33,9 @@
 - **Dependencies:** Depends on **1. Call Session Service**
 
 #### 3. Realtime Event Schema v1
-- **Status:** Not started
+- **Status:** In progress
 - **What:** Define and version canonical event contract for call flow.
+- **Progress:** Envelope validation and replay/checkpoint paths are implemented in backend endpoints (`/v1/realtime/events`, `/v1/realtime/sessions/:sessionId/events`, `/v1/realtime/sessions/:sessionId/checkpoint`) with contract documentation in `docs/REALTIME_EVENT_CONTRACT.md`. Remaining work: align UI-contract event rendering with canonical call/realtime families in production flows.
 - **Scope:**
   - Event envelope (`eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`)
   - Required event families: `call.*`, `transcript.*`, `orchestration.*`, `safety.*`, `billing.*`
@@ -42,8 +44,9 @@
 - **Dependencies:** Parallel with **1**, required by **2** and all downstream realtime work
 
 #### 4. Failure Recovery + Reconnect Semantics
-- **Status:** Not started
+- **Status:** In progress
 - **What:** Ensure call continuity under disconnects and transient backend failures.
+- **Progress:** Resume token issuance and reconnect replay endpoint (`POST /v1/call/sessions/:sessionId/reconnect`) are implemented with tests for invalid token rejection and replay-from-ack behavior. Remaining work: expose reconnect/terminal failure UX states in Home flow and validate end-to-end behavior in Base44 runtime.
 - **Scope:**
   - Session resume token and reconnect window
   - Idempotent event replay from last acknowledged sequence
@@ -184,6 +187,16 @@
 10. Provider correlation identifiers added (`provider`, `providerRoomId`, `providerParticipantId`, `providerCallId`) with atomic activation updates
 
 ---
+
+
+## Architecture Migration Status (Reality Check)
+
+- **Current state:** Hybrid. The repository contains backend-authoritative call/realtime endpoints, while parts of frontend still use legacy/Base44-native data paths.
+- **Required target:** Frontend renders UI and calls backend only; backend remains the only persistence/business-logic layer; OpenClaw remains orchestration-only.
+- **Before Phase-1 completion:**
+  1. Migrate talk experience entry path in `src/pages/Home.jsx` to explicit call-session lifecycle (`/v1/call/sessions*`, reconnect, terminal failure states).
+  2. Remove remaining direct `base44.entities.*` usage from user-facing production flows in favor of backend endpoints.
+  3. Keep `BACKLOG.md`, `docs/COORDINATION.md`, and `docs/REVIEW_MODE_CHECKLIST.md` updated together on every production push.
 
 ## Blockers
 
