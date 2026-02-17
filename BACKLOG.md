@@ -22,6 +22,16 @@
 - **Dependencies:** None (foundational)
 
 #### 2. LiveKit Session Bridge (Realtime Transport)
+codex/assess-current-mvp-tasks-and-completion-status-fk46sm
+- **Status:** In progress
+- **What:** Integrate LiveKit as the realtime voice/media layer with backend-owned session control.
+- **Progress:** Backend token issuance route (`POST /v1/call/sessions/:sessionId/livekit/token`) and provider event ingest route (`POST /v1/call/livekit/events`) exist with tests for metadata mapping and canonical call event translation. Remaining work: wire Home/Base44 runtime to call-session-first UX and remove legacy-only chat path assumptions.
+- **Scope:**
+  - Generate short-lived LiveKit access tokens via backend-only endpoints
+  - Map backend `sessionId` ↔ LiveKit room/participant metadata
+  - Forward provider call state into canonical `call.*` events
+  - Keep backend websocket fan-out for non-media orchestration and UI state events
+=======
 - **Status:** **Done**
 - **What:** Wire LiveKit transport through backend token issuance + provider event ingestion/translation.
 - **Current status:** Token issuance, session↔room mapping persistence, canonical event translation, webhook authenticity/replay protection, and live-provider operator evidence capture are in place.
@@ -35,10 +45,20 @@
   - `node --test server/test/call-sessions.test.mjs` (token + translation + webhook signature/replay coverage)
   - `node scripts/livekit-e2e-evidence.mjs --mode=prepare --baseUrl=http://127.0.0.1:3901 --userId=pilot-livekit`
   - `node scripts/livekit-e2e-evidence.mjs --mode=collect --context=/tmp/livekit-e2e-context.json --report=docs/releases/livekit-e2e-evidence-2026-02-16T17-50-55-000Z.md`
+ prod
 - **Owner:** Backend
 - **Dependencies:** Depends on **1. Call Session Service**
 
 #### 3. Realtime Event Schema v1
+ codex/assess-current-mvp-tasks-and-completion-status-fk46sm
+- **Status:** In progress
+- **What:** Define and version canonical event contract for call flow.
+- **Progress:** Envelope validation and replay/checkpoint paths are implemented in backend endpoints (`/v1/realtime/events`, `/v1/realtime/sessions/:sessionId/events`, `/v1/realtime/sessions/:sessionId/checkpoint`) with contract documentation in `docs/REALTIME_EVENT_CONTRACT.md`. Remaining work: align UI-contract event rendering with canonical call/realtime families in production flows.
+- **Scope:**
+  - Event envelope (`eventId`, `sessionId`, `ts`, `type`, `payload`, `schemaVersion`)
+  - Required event families: `call.*`, `transcript.*`, `orchestration.*`, `safety.*`, `billing.*`
+  - Validation and schema docs
+=======
 - **Status:** **Done**
 - **What:** Enforce canonical realtime envelope + typed event families.
 - **Current status:** Canonical envelope validation, family payload contracts, deterministic replay semantics, and schema-regression fixture guard are implemented.
@@ -52,10 +72,20 @@
 - **Verification:**
   - `node --test server/test/realtime-schema-contract.test.mjs`
   - `node --test server/test/realtime-events.test.mjs`
+ prod
 - **Owner:** Backend + OpenClaw
 - **Dependencies:** Parallel with **1**, required by **2** and all downstream realtime work
 
 #### 4. Failure Recovery + Reconnect Semantics
+ codex/assess-current-mvp-tasks-and-completion-status-fk46sm
+- **Status:** In progress
+- **What:** Ensure call continuity under disconnects and transient backend failures.
+- **Progress:** Resume token issuance and reconnect replay endpoint (`POST /v1/call/sessions/:sessionId/reconnect`) are implemented with tests for invalid token rejection and replay-from-ack behavior. Remaining work: expose reconnect/terminal failure UX states in Home flow and validate end-to-end behavior in Base44 runtime.
+- **Scope:**
+  - Session resume token and reconnect window
+  - Idempotent event replay from last acknowledged sequence
+  - Retry policies and terminal failure events for UX
+=======
 - **Status:** **Done**
 - **What:** Provide resilient resume/reconnect behavior with replay/checkpoint semantics and terminal-failure signaling.
 - **Current status:** Resume token checks, deterministic replay, stale-checkpoint protection, and reconnect failure operations runbook are in place.
@@ -68,6 +98,7 @@
 - **Implementation:** `server/index.mjs` (`/v1/call/sessions/:sessionId/reconnect`, checkpoint stale-sequence guard), `server/db.mjs` (resume/ack columns), `server/test/call-sessions.test.mjs`, `docs/runbooks/RECONNECT_FAILURE_OPERATIONS.md`
 - **Verification:**
   - `node --test server/test/call-sessions.test.mjs`
+ prod
 - **Owner:** Backend
 - **Dependencies:** Depends on **1**, **2**, and **3**
 
