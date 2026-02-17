@@ -4,8 +4,16 @@ Purpose: when OpenClaw is implementing code and pushing to prod, Codex reviews e
 
 ## Gate 1 — Repo hygiene (must pass first)
 - No unresolved merge markers (`<<<<<<<`, `=======`, `>>>>>>>`) in changed files.
+- **No merge/conflict artifacts in runtime/test files before integration or UAT testing.**
+  - Runtime/test scope includes at least: `server/**/*.mjs`, `server/test/**/*.mjs`, `src/**/*.jsx`, `src/**/*.js`.
 - Lint passes for frontend/backend touched scope.
 - Backend tests for touched scope execute successfully.
+
+Mandatory evidence command (must appear in push/PR notes):
+```bash
+grep -RInE "^(\s*(<<<<<<<|=======|>>>>>>>|codex/[^[:space:]]*|prod)\s*)$" server src || true
+```
+Expected result: no matches in runtime/test code.
 
 ## Gate 2 — Architecture contract compliance
 - Frontend calls backend only (no direct OpenClaw/database calls).

@@ -163,3 +163,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Added targeted backend tests for call-session turn semantics (`server/test/call-turn.test.mjs`) covering ownership enforcement and canonical event emission (`transcript.final`, `action.proposed`, `action.requires_confirmation`) with replay visibility assertions. Updated backlog remaining-scope wording to reflect bridge replacement completion and focus on lifecycle cleanup + canonical mapping hardening.
 - Next: Investigate/resolve Node runtime assertion crash in this host (`node --test` internal callback scope assertion) so new tests can be executed here and in CI consistently; then tighten canonical deliverable subtype contracts and remove compatibility payload shims.
 - Risks: Local validation on this host is currently limited by Node runtime test-runner instability (native assertion during `node --test`), despite lint passing and production push success.
+
+## 2026-02-17T10:05:00Z — OpenClaw run note (runtime hygiene gate hardening)
+- Changed: Tightened review governance to explicitly block integration/UAT testing unless runtime/test files are clean of merge/conflict artifacts. Updated checklist with mandatory evidence command for marker scanning and required inclusion of scan output in push notes.
+- Next: Ensure every prod push note includes the marker-scan command + result, then run integration/UAT only after clean scan confirmation.
+- Risks: Without strict scan evidence discipline, hidden merge artifacts can bypass doc-level status alignment and break runtime behavior late in testing.
