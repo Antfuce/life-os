@@ -167,9 +167,9 @@
 - **Progress:** Home now creates/activates call sessions (`/v1/call/sessions`, `/state`), polls canonical realtime events (`/v1/realtime/sessions/:sessionId/events`), dispatches transcript/action lifecycle from backend events, and dispatches orchestration actions via backend endpoint instead of local-only lifecycle timers.
 - **Implementation:** `src/pages/Home.jsx`, `docs/CALL_UI_EVENT_MAPPING.md`
 - **Remaining scope:**
-  - Replace `/v1/chat/stream` with transport-native realtime voice/text stream.
   - Complete deprecation of frontend-managed action lifecycle/timeouts.
-  - Finalize canonical mapping coverage for `deliverable.*` publication path.
+  - Finalize canonical mapping coverage for `deliverable.*` publication path and remove temporary compatibility payload bridging.
+  - Add deterministic automated tests for `/v1/call/sessions/:sessionId/turn` canonical emission + replay behavior in CI runtime.
 - **Owner:** Frontend + Backend
 - **Dependencies:** Depends on **1**, **2**, **3**, **5**, **6**
 
