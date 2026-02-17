@@ -125,6 +125,27 @@ export default function Home() {
 
   const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || import.meta.env.VITE_BASE44_APP_BASE_URL || "";
 
+  const speak = useCallback((text) => {
+    if (!ttsEnabled) return;
+    if (typeof window === "undefined") return;
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+
+    const t = String(text || "").trim();
+    if (!t) return;
+
+    try {
+      synth.cancel();
+      const u = new SpeechSynthesisUtterance(t);
+      u.rate = 1.0;
+      u.pitch = 1.0;
+      u.lang = "en-US";
+      synth.speak(u);
+    } catch {
+      // noop
+    }
+  }, [ttsEnabled]);
+
   const createCallSession = useCallback(async () => {
     const userId = getOrCreateUserId();
 
@@ -151,6 +172,18 @@ export default function Home() {
     const session = createdJson?.session;
     if (!session?.sessionId) throw new Error('missing call session id');
 
+    // Boot flow contract:
+    // 1) POST /v1/call/sessions
+    // 2) store session_id locally
+    // 3) connect realtime endpoint via callSession-driven poll effect
+    const provisional = {
+      sessionId: session.sessionId,
+      resumeToken: session.resumeToken,
+      userId,
+    };
+    setCallSession(provisional);
+    realtimeSequenceRef.current = 0;
+
     const activateResp = await fetch(`${API_ORIGIN}/v1/call/sessions/${session.sessionId}/state`, {
       method: 'POST',
       headers: {
@@ -169,6 +202,11 @@ export default function Home() {
 
     if (!activateResp.ok) {
       const detail = await activateResp.text().catch(() => '');
+      setCallSession(null);
+      processEvent({
+        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
+        payload: { state: 'failed', mode: voiceMode, provider: 'livekit' },
+      });
       throw new Error(`call session activate failed: ${activateResp.status} ${detail}`);
     }
 
@@ -182,11 +220,6 @@ export default function Home() {
     };
 
     setCallSession(next);
-    realtimeSequenceRef.current = 0;
-    processEvent({
-      type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
-      payload: { state: 'connected', mode: voiceMode, provider: 'livekit' },
-    });
     return next;
   }, [API_ORIGIN, currentSpeaker, processEvent, voiceMode]);
 
@@ -512,28 +545,6 @@ export default function Home() {
     }
   }, [hasStarted]);
 
-  // TTS
-  const speak = useCallback((text) => {
-    if (!ttsEnabled) return;
-    if (typeof window === "undefined") return;
-    const synth = window.speechSynthesis;
-    if (!synth) return;
-
-    const t = String(text || "").trim();
-    if (!t) return;
-
-    try {
-      synth.cancel();
-      const u = new SpeechSynthesisUtterance(t);
-      u.rate = 1.0;
-      u.pitch = 1.0;
-      u.lang = "en-US";
-      synth.speak(u);
-    } catch {
-      // noop
-    }
-  }, [ttsEnabled]);
-
   // Start conversation
   const startConversation = async (initialText) => {
     const id = `${Date.now()}`;
@@ -578,7 +589,19 @@ export default function Home() {
     const t = (text ?? "").trim();
 
     if (!hasStarted) {
-      await startConversation(t);
+      try {
+        await startConversation(t);
+      } catch (e) {
+        processEvent({
+          type: UI_EVENT_TYPES.ERROR,
+          payload: {
+            code: 'CALL_BOOT_FAILED',
+            message: String(e?.message || e),
+            recoverable: true,
+          },
+        });
+        return;
+      }
       if (!t && voiceMode === 'browser-fallback') {
         setIsVoiceActive(true);
       }

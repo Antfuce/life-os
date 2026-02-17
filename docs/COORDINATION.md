@@ -183,3 +183,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
   - Frontend (`UnifiedInput`): browser speech input now explicit via `enableSpeech`; disabled by default unless fallback mode is selected.
 - Next: Run UAT run sheet gates with real environment evidence, then tune UI controls/policy-approval UX for production operator flow.
 - Risks: Local host `node --test` instability remains; need CI/alt-host validation for new route/event contract tests.
+
+## 2026-02-17T10:31:00Z — OpenClaw run note (Task A boot-flow tightening)
+- Changed: Updated `src/pages/Home.jsx` call-session boot sequence to be explicitly call-session-first: create session (`POST /v1/call/sessions`) → immediately store `sessionId` in local state (which attaches realtime polling endpoint) → then activate session state (`/state`) and let canonical realtime events drive runtime UI state transitions.
+- Changed: Added boot-failure handling path (`CALL_BOOT_FAILED`) and activation-failure rollback (`setCallSession(null)` + runtime failed state).
+- Note: runtime state remains event-driven (`call.started/call.connecting/call.connected/call.reconnecting/call.error/call.ended`) rather than optimistic UI state flips.
