@@ -2,6 +2,8 @@
 
 Purpose: when OpenClaw is implementing code and pushing to prod, Codex reviews each increment against MVP architecture and release safety.
 
+UAT release blocking sequence is defined in: `docs/runbooks/UAT_GO_NO_GO_RUN_SHEET.md`.
+
 ## Gate 1 — Repo hygiene (must pass first)
 - No unresolved merge markers (`<<<<<<<`, `=======`, `>>>>>>>`) in changed files.
 - **No merge/conflict artifacts in runtime/test files before integration or UAT testing.**

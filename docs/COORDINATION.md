@@ -168,3 +168,8 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Tightened review governance to explicitly block integration/UAT testing unless runtime/test files are clean of merge/conflict artifacts. Updated checklist with mandatory evidence command for marker scanning and required inclusion of scan output in push notes.
 - Next: Ensure every prod push note includes the marker-scan command + result, then run integration/UAT only after clean scan confirmation.
 - Risks: Without strict scan evidence discipline, hidden merge artifacts can bypass doc-level status alignment and break runtime behavior late in testing.
+
+## 2026-02-17T10:05:00Z — OpenClaw run note (UAT Go/No-Go gate run sheet)
+- Changed: Added a copy-paste UAT release-blocking run sheet with strict 5-gate sequence and PASS/FAIL reporting template: Repo Hygiene, Backend Executability, Call Lifecycle, UI Contract+Safety, Docs Sync. Included mandatory marker-scan command as evidence and explicit all-gates-pass GO rule.
+- Next: Execute run sheet gate-by-gate and report PASS/FAIL before UI signoff.
+- Risks: Gate 4 still contains manual Base44 validation steps; without disciplined evidence capture, UI safety regressions can be missed.
