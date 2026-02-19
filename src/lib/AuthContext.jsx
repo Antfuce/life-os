@@ -3,7 +3,19 @@ import { base44 } from '@/api/base44Client';
 import { appParams } from '@/lib/app-params';
 import { createAxiosClient } from '@base44/sdk/dist/utils/axios-client';
 
-export const AuthContext = createContext();
+const FALLBACK_AUTH_CONTEXT = {
+  user: null,
+  isAuthenticated: false,
+  isLoadingAuth: false,
+  isLoadingPublicSettings: false,
+  authError: null,
+  appPublicSettings: null,
+  logout: () => {},
+  navigateToLogin: () => {},
+  checkAppState: async () => {},
+};
+
+export const AuthContext = createContext(FALLBACK_AUTH_CONTEXT);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -147,8 +159,5 @@ export const AuthProvider = ({ children }) => {
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+  return context || FALLBACK_AUTH_CONTEXT;
 };
