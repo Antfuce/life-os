@@ -130,6 +130,25 @@ function parseLegacySpeakerTag(text) {
   return { speaker, cleaned };
 }
 
+function computeNovelTextDelta(previousText, nextText) {
+  const prev = String(previousText || '');
+  const next = String(nextText || '');
+  if (!next) return '';
+  if (!prev) return next;
+  if (next === prev) return '';
+  if (next.startsWith(prev)) return next.slice(prev.length);
+  if (prev.includes(next)) return '';
+
+  const maxOverlap = Math.min(prev.length, next.length);
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    if (prev.slice(-overlap) === next.slice(0, overlap)) {
+      return next.slice(overlap);
+    }
+  }
+
+  return next;
+}
+
 // Parse UI contract events from text
 function parseUIEvents(text) {
   const events = [];
@@ -381,7 +400,7 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
     const dec = new TextDecoder('utf-8');
     let buf = '';
     let fullText = '';
-    let accumulatedDelta = '';
+    let lastRemainingText = '';
     let speaker = null;
     let eventsEmitted = new Set();
 
@@ -409,18 +428,17 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
         if (event === 'response.output_text.delta') {
           const delta = (dataJson && (dataJson.delta ?? dataJson.text)) || '';
           if (typeof delta === 'string' && delta.length) {
-            accumulatedDelta += delta;
             fullText += delta;
-            
-            // Try to parse UI events from accumulated text
-            const { events, remainingText } = parseUIEvents(accumulatedDelta);
-            
+
+            // Parse UI events from full generated text so far
+            const { events, remainingText } = parseUIEvents(fullText);
+
             for (const uiEvent of events) {
               // Avoid duplicate events
               const eventKey = `${uiEvent.type}-${JSON.stringify(uiEvent.payload)}`;
               if (!eventsEmitted.has(eventKey)) {
                 eventsEmitted.add(eventKey);
-                
+
                 // Handle speaker change
                 if (uiEvent.type === UI_EVENTS.SPEAKER_CHANGE) {
                   speaker = uiEvent.payload.speaker;
@@ -440,15 +458,17 @@ fastify.post('/v1/chat/stream', async (req, reply) => {
                 }
               }
             }
-            
-            // Emit text delta with remaining text (minus parsed events)
-            if (remainingText) {
-              emitUIEvent(UI_EVENTS.TEXT_DELTA, { 
-                delta: remainingText.slice(-delta.length), 
+
+            // Emit only novel user-visible delta (prevents repeated sentence spam)
+            const textDelta = computeNovelTextDelta(lastRemainingText, remainingText);
+            if (textDelta) {
+              emitUIEvent(UI_EVENTS.TEXT_DELTA, {
+                delta: textDelta,
                 fullText: remainingText,
-                messageId: conversationId 
+                messageId: conversationId,
               });
             }
+            lastRemainingText = remainingText;
           }
         }
       }
