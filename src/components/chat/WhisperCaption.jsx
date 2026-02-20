@@ -12,7 +12,7 @@ export default function WhisperCaption({ text, visible }) {
           transition={{ duration: 0.5 }}
           className="text-center"
         >
-          <p className="text-[13px] tracking-[0.08em] text-neutral-300 font-light">
+          <p className="text-[13px] tracking-[0.06em] text-neutral-500 font-normal">
             {text}
           </p>
         </motion.div>

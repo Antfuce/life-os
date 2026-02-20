@@ -20,7 +20,7 @@ export default function AvatarWithWaves({ persona, isActive }) {
                 delay: i * 0.2,
                 repeat: Infinity,
               }}
-              className="absolute rounded-full border-2 border-cyan-400"
+              className="absolute rounded-full border-2 border-violet-300/80"
               style={{
                 width: "120px",
                 height: "120px",
@@ -36,12 +36,12 @@ export default function AvatarWithWaves({ persona, isActive }) {
           isActive
             ? {
                 boxShadow: [
-                  "0 0 40px rgba(34, 211, 238, 0.4)",
-                  "0 0 60px rgba(34, 211, 238, 0.6)",
-                  "0 0 40px rgba(34, 211, 238, 0.4)",
+                  "0 0 34px rgba(139, 92, 246, 0.22)",
+                  "0 0 52px rgba(139, 92, 246, 0.34)",
+                  "0 0 34px rgba(139, 92, 246, 0.22)",
                 ],
               }
-            : { boxShadow: "0 0 0px rgba(34, 211, 238, 0)" }
+            : { boxShadow: "0 0 0px rgba(139, 92, 246, 0)" }
         }
         transition={{ duration: 2, repeat: Infinity }}
         className="rounded-full p-2"

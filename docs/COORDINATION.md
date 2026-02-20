@@ -8,34 +8,6 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Prefer small, reviewable increments aligned to `BACKLOG.md` priority.
 
 ---
- codex/assess-current-mvp-tasks-and-completion-status-zdz8sf
-
-## 2026-02-16T09:09:34Z — Codex run note
-- Changed: Completed a 360° MVP readiness/red-team audit based on current backlog, architecture, status docs, and executable checks.
-- Next: Resolve merge-conflict artifacts in backend/test files, then finish P0 LiveKit bridge + event schema/recovery tasks in canonical order.
-- Risks: Current repo state includes syntax-breaking conflict markers that block lint/tests and hide real reliability/security regressions.
-
-## 2026-02-16T11:46:00Z — Codex run note (review-mode alignment)
-- Changed: Updated coordination guidance to support the new operating mode where OpenClaw executes Phase 0 coding and Codex performs architecture/quality review before production pushes.
-- Next: OpenClaw should submit Phase 0 increments in strict dependency order (P0 #1 → #2 → #3 → #4), with per-PR evidence for schema validation, reconnect semantics, and replay idempotency.
-- Risks: If review gates are skipped, unresolved merge artifacts and regression risk can propagate directly to production.
-
-## 2026-02-17T00:00:00Z — Codex run note (status-sync patch)
-- Changed: Synced `BACKLOG.md` status tracking to implementation reality by moving P0 #2/#3/#4 from "Not started" to "In progress" and adding concrete progress + remaining work notes, including architecture migration gaps.
-- Next: Finish talk-experience migration to call-session-first runtime (Home path), remove remaining direct Base44 entity usage in production user flows, and keep phase status/docs aligned per push.
-- Risks: If hybrid frontend/backend paths remain undocumented or unsynced, teams may ship features that appear complete in code but fail MVP architecture and sellability gates.
-
-## 2026-02-17T10:45:00Z — Codex run note (voice MVP execution docs)
-- Changed: Added `docs/VOICE_MVP_DECISION_FORM.md` and `docs/VOICE_MVP_UAT_RUNSHEET.md` so product can lock Antonio/Mariana voice decisions and run a consistent realtime voice UAT gate before rollout.
-- Next: Product owner completes decision form, OpenClaw implements against those selections, then run UAT runsheet gates A-E before broader testing.
-- Risks: If voice policy/consent and switching rules are not decided up front, implementation can drift and produce unsafe or inconsistent user-facing behavior.
-
-## 2026-02-17T11:05:00Z — Codex run note (auth provider crash fix)
-- Changed: Fixed runtime crash `useAuth must be used within an AuthProvider` by wrapping root app render in `AuthProvider` in `src/main.jsx`.
-- Next: Re-run Base44 UI flow to verify app boot + navigation logging works without auth-context errors, then continue voice MVP UAT gates.
-- Risks: If app-level auth bootstrap fails upstream, users may still see auth-required states, but the provider wiring crash is resolved.
-
-=======
 
 ## 2026-02-16T09:09:34Z — Codex run note
 - Changed: Completed a 360° MVP readiness/red-team audit based on current backlog, architecture, status docs, and executable checks.
@@ -177,53 +149,22 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Next: Re-test live environment to capture concrete runtime error text (if any) and patch root cause immediately.
 - Risks: Error boundary improves observability/containment but does not itself resolve underlying runtime defects.
 
-## 2026-02-17T09:22:00Z — OpenClaw run note (talk-path realignment to call-session authority)
-- Changed: Began migration of Home talk path from chat-first flow to explicit call-session lifecycle: frontend now creates/activates call sessions (`/v1/call/sessions`, `/state`), ends sessions on reset, publishes transcript events to canonical realtime ingest (`/v1/realtime/events`), polls canonical realtime stream (`/v1/realtime/sessions/:sessionId/events`) and maps `call.* / transcript.* / orchestration.* / safety.* / action.*` families into UI contract events. Added backend-authoritative orchestration action execution path (`/v1/orchestration/actions/execute`) and removed frontend-managed confirmation timeout ownership from action dispatch path. Published mapping contract doc: `docs/CALL_UI_EVENT_MAPPING.md`.
-- Next: Replace transitional `/v1/chat/stream` text generation bridge with transport-native realtime voice/text stream and complete deprecation of frontend lifecycle simulation paths.
-- Risks: Current phase is hybrid (session/realtime lifecycle authoritative, text generation still bridged through `/v1/chat/stream`), so temporary dual-path complexity remains until transport-native stream cutover is completed.
+## 2026-02-20T08:57:13Z — OpenClaw run note (UI stabilization sprint, legacy Base44 isolation)
+- Changed: Isolated legacy Base44 entity pages behind a frontend feature flag so MVP defaults to a single stable Home route. Added `src/lib/featureFlags.js`, gated page registration in `src/pages.config.js`, added env control (`VITE_ENABLE_LEGACY_BASE44_PAGES=false`) in `.env.example`, and hardened `Home.jsx` with confirmation-timer cleanup on unmount.
+- Next: Validate published Base44 build uses the new default and run focused repro on Home stream/voice flow only; re-enable legacy pages only with explicit maintenance pass.
+- Risks: If legacy pages are re-enabled without backend-aligned data source migration, prior Base44 entity/API drift can reintroduce buyer-visible glitches.
 
-## 2026-02-17T09:49:00Z — OpenClaw run note (bridge replacement: call-session turn path)
-- Changed: Replaced Home's remaining `/v1/chat/stream` dependency with call-session turn execution (`POST /v1/call/sessions/:sessionId/turn`). Backend now publishes canonical realtime events for turn lifecycle (`transcript.final` user/agent + mapped `orchestration/action` families from parsed UI intents), while frontend consumes immediate canonical events and continues canonical replay polling. Root endpoint map updated with new turn route and mapping doc updated.
-- Next: Add deterministic tests for `/v1/call/sessions/:sessionId/turn` canonical emission semantics (including deliverable/confirmation mapping and replay ordering) and complete cleanup of legacy chat endpoints if no remaining consumers.
-- Risks: UI-intent-to-canonical mapping currently uses compatibility translation (`action.proposed` + embedded `deliverable/uiEvent` payloads), which should be formalized as explicit canonical subtype contracts in next schema increment.
+## 2026-02-20T09:01:58Z — OpenClaw run note (UI stabilization sprint, Home flow polish)
+- Changed: Completed focused Home UX polish pass: replaced jittery `scrollIntoView` behavior with feed-container pin-to-bottom logic tuned for streaming, added stream lifecycle control (abort + request-id guard) to prevent stale/overlapping SSE updates, normalized SSE chunk parsing for CRLF variants, throttled whisper overlay updates to reduce flicker, and centralized whisper-hide timer cleanup/reset.
+- Next: Publish latest Base44 revision and run live smoke checks (rapid voice→text turns, long streaming replies, and reset mid-stream) to confirm smoother behavior under real usage.
+- Risks: Web Speech/browser timing variance can still create perceived latency differences across devices even with frontend stream/render hardening.
 
-## 2026-02-17T09:57:00Z — OpenClaw run note (turn-path hardening follow-up)
-- Changed: Added targeted backend tests for call-session turn semantics (`server/test/call-turn.test.mjs`) covering ownership enforcement and canonical event emission (`transcript.final`, `action.proposed`, `action.requires_confirmation`) with replay visibility assertions. Updated backlog remaining-scope wording to reflect bridge replacement completion and focus on lifecycle cleanup + canonical mapping hardening.
-- Next: Investigate/resolve Node runtime assertion crash in this host (`node --test` internal callback scope assertion) so new tests can be executed here and in CI consistently; then tighten canonical deliverable subtype contracts and remove compatibility payload shims.
-- Risks: Local validation on this host is currently limited by Node runtime test-runner instability (native assertion during `node --test`), despite lint passing and production push success.
+## 2026-02-20T09:27:10Z — OpenClaw run note (product polish pass 1)
+- Changed: Executed product-focused frontend polish on Home/chat UX: removed non-functional top-right control clutter, added explicit connection/status pill, converted noisy floating suggestions into stable suggestion chips, upgraded message bubbles with streaming indicator + improved spacing/readability, improved textarea auto-resize behavior and accessibility labels in `UnifiedInput`, and aligned avatar/whisper visuals to a calmer production style. Also hid action-approval debug panel behind `VITE_SHOW_ACTION_APPROVAL_DEBUG=false` default.
+- Next: Publish and run full product smoke on real flows (long chat history scroll, voice-first turns, interrupt/reset while streaming, confirmation gates).
+- Risks: Visual quality is improved but final perceived polish still depends on cross-device rendering and Web Speech behavior variance.
 
-## 2026-02-17T10:05:00Z — OpenClaw run note (runtime hygiene gate hardening)
-- Changed: Tightened review governance to explicitly block integration/UAT testing unless runtime/test files are clean of merge/conflict artifacts. Updated checklist with mandatory evidence command for marker scanning and required inclusion of scan output in push notes.
-- Next: Ensure every prod push note includes the marker-scan command + result, then run integration/UAT only after clean scan confirmation.
-- Risks: Without strict scan evidence discipline, hidden merge artifacts can bypass doc-level status alignment and break runtime behavior late in testing.
-
-## 2026-02-17T10:05:00Z — OpenClaw run note (UAT Go/No-Go gate run sheet)
-- Changed: Added a copy-paste UAT release-blocking run sheet with strict 5-gate sequence and PASS/FAIL reporting template: Repo Hygiene, Backend Executability, Call Lifecycle, UI Contract+Safety, Docs Sync. Included mandatory marker-scan command as evidence and explicit all-gates-pass GO rule.
-- Next: Execute run sheet gate-by-gate and report PASS/FAIL before UI signoff.
-- Risks: Gate 4 still contains manual Base44 validation steps; without disciplined evidence capture, UI safety regressions can be missed.
-
-## 2026-02-17T11:40:00Z — OpenClaw run note (realtime voice/session authority hardening)
-- Changed: Implemented backend+frontend call-session runtime hardening for realtime voice architecture alignment:
-  - Backend: added canonical realtime events for `call.connecting`, `call.reconnecting`, `call.voice.config.updated`, `call.turn.owner_changed`, `call.turn.timing` with validator coverage.
-  - Backend: added `POST /v1/call/sessions/:sessionId/voice` persona→voice contract (`antonio|mariana|both`) with cloned-voice consent/policy gate, immutable action audit writes, and safety approved/blocked canonical events.
-  - Backend: turn path now emits deterministic turn ownership + timing milestone events and provider-unavailable error signaling.
-  - Frontend (`Home.jsx`): reducer-driven call runtime/voice/turn state mapping, visible runtime ribbon, explicit browser-speech fallback mode labeling, one-click recovery actions (retry/reconnect/fallback/text mode), and mid-session backend voice switching controls.
-  - Frontend (`UnifiedInput`): browser speech input now explicit via `enableSpeech`; disabled by default unless fallback mode is selected.
-- Next: Run UAT run sheet gates with real environment evidence, then tune UI controls/policy-approval UX for production operator flow.
-- Risks: Local host `node --test` instability remains; need CI/alt-host validation for new route/event contract tests.
-
-## 2026-02-17T10:31:00Z — OpenClaw run note (Task A boot-flow tightening)
-- Changed: Updated `src/pages/Home.jsx` call-session boot sequence to be explicitly call-session-first: create session (`POST /v1/call/sessions`) → immediately store `sessionId` in local state (which attaches realtime polling endpoint) → then activate session state (`/state`) and let canonical realtime events drive runtime UI state transitions.
-- Changed: Added boot-failure handling path (`CALL_BOOT_FAILED`) and activation-failure rollback (`setCallSession(null)` + runtime failed state).
-- Note: runtime state remains event-driven (`call.started/call.connecting/call.connected/call.reconnecting/call.error/call.ended`) rather than optimistic UI state flips.
-
-## 2026-02-17T13:28:00Z — Codex run note (Base44 deployment verification)
-- Changed: Added deployment version marker component (`VersionMarker.jsx`) that displays commit SHA, build timestamp, and app version in collapsible UI (bottom-right corner). Updated `vite.config.js` to inject build-time git/version info as environment variables. Integrated VersionMarker into Layout so it appears on all pages. Optimized build info caching to avoid redundant git command executions. All security checks pass (CodeQL: 0 alerts).
-- Next: Base44 must re-publish after this merge to pick up the new version marker in preview environment.
-- Risks: Version marker depends on git being available during build; falls back to 'unknown' if git commands fail.
-
-## 2026-02-17T16:36:00Z — Codex run note (AuthContext hook error fix)
-- Changed: Fixed UI crash "useAuth must be used within an AuthProvider" by making NavigationTracker use `useContext(AuthContext)` directly with optional chaining instead of `useAuth()` hook. Exported AuthContext from AuthContext.jsx. Changes are minimal: 2 files, 5 insertions, 4 deletions.
-- Next: Monitor for any other components that might have similar context access issues. All current pages and components checked - none use useAuth.
-- Risks: None. Build, lint pass. No test infrastructure exists. Change is backward compatible - useAuth() hook still works for other consumers.
- prod
+## 2026-02-20T09:37:34Z — OpenClaw run note (product polish pass 2: states, copy, mobile)
+- Changed: Completed product polish pass 2 on Home flow: improved microcopy across landing + input for production tone, added explicit trust copy for confirmation-gated external sends, introduced status notice rendering (`status.message` + progress), added empty/feed guidance copy, added streaming pre-delta placeholder message, and upgraded error UX with actionable retry + dismiss controls. Added retry wiring using last-turn payload persistence to avoid user retyping. Also tightened mobile spacing/safe-area behavior for feed/input/header controls (`100dvh`, safe-area bottom offsets, responsive paddings).
+- Next: Publish latest revision and run real-device smoke checklist (iOS Safari safe-area, Android Chrome keyboard/textarea growth, retry on transient stream failure).
+- Risks: Retry behavior currently reuses last turn payload; if backend side-effects are introduced to stream initiation later, explicit idempotency tokens should be added before enabling automatic retries.

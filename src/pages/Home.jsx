@@ -1,9 +1,9 @@
 import React, { useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Brain, Volume2, VolumeX } from "lucide-react";
+import { Volume2, VolumeX } from "lucide-react";
 
 import { useUIEventReducer, UI_EVENT_TYPES } from "../hooks/useUIEventReducer";
-import { renderModule, renderInlineModule, getActionMetadata } from "../lib/moduleRegistry";
+import { renderModule, renderInlineModule, executeModuleAction, getActionMetadata } from "../lib/moduleRegistry";
 import MessageBubble from "../components/chat/MessageBubble";
 import UnifiedInput from "../components/chat/UnifiedInput";
 import WhisperCaption from "../components/chat/WhisperCaption";
@@ -11,6 +11,7 @@ import FloatingHints from "../components/chat/FloatingHints";
 import WhisperResponse from "../components/voice/WhisperResponse";
 import AvatarWithWaves from "../components/voice/AvatarWithWaves";
 import FloatingModule from "../components/voice/FloatingModule";
+import { isActionApprovalDebugVisible } from "../lib/featureFlags";
 
 const WELCOME_MESSAGES = {
   antonio: "Let’s go tactical. Tell me your target and constraints, and I’ll map the fastest route.",
@@ -26,20 +27,8 @@ const COACHING_KEYWORDS = [
   'coach', 'coaching', 'confidence', 'anxious', 'anxiety', 'stress', 'overwhelmed', 'burnout', 'motivation', 'stuck',
 ];
 
-const USER_ID_STORAGE_KEY = 'lifeos.user.id';
-
-function getOrCreateUserId() {
-  if (typeof window === 'undefined') return 'lifeos-web-anon';
-  try {
-    const existing = window.localStorage.getItem(USER_ID_STORAGE_KEY);
-    if (existing) return existing;
-    const created = `lifeos-web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    window.localStorage.setItem(USER_ID_STORAGE_KEY, created);
-    return created;
-  } catch {
-    return 'lifeos-web-anon';
-  }
-}
+const WHISPER_HIDE_DELAY_MS = 2500;
+const WHISPER_UPDATE_THROTTLE_MS = 120;
 
 function inferPersonaHint({ text = '', activeModes = {}, currentSpeaker = 'both' } = {}) {
   if (currentSpeaker === 'antonio' || currentSpeaker === 'mariana') return currentSpeaker;
@@ -79,23 +68,21 @@ export default function Home() {
     pendingConfirmation,
     actionApprovals,
     conversationId,
-    callRuntime,
-    voiceConfig,
-    turnRuntime,
   } = state;
 
-  const messagesEndRef = useRef(null);
+  const messageFeedRef = useRef(null);
+  const streamControlRef = useRef({ requestId: 0, controller: null });
+  const whisperHideTimerRef = useRef(null);
+  const lastWhisperUpdateAtRef = useRef(0);
+  const lastRenderedMessageCountRef = useRef(0);
+  const lastTurnRef = useRef(null);
   const [hasStarted, setHasStarted] = React.useState(false);
   const [showHint, setShowHint] = React.useState(false);
   const [voiceCaption, setVoiceCaption] = React.useState("");
   const [isVoiceActive, setIsVoiceActive] = React.useState(false);
   const [whisper, setWhisper] = React.useState("");
   const [ttsEnabled, setTtsEnabled] = React.useState(false);
-  const [showMemory, setShowMemory] = React.useState(false);
-  const [voiceMode, setVoiceMode] = React.useState('realtime'); // realtime | browser-fallback | text
-  const [callSession, setCallSession] = React.useState(null); // { sessionId, resumeToken, userId }
-  const realtimeSequenceRef = useRef(0);
-  const realtimePollRef = useRef(null);
+  const [errorNoticeDismissed, setErrorNoticeDismissed] = React.useState(false);
   const confirmationTimersRef = useRef({});
 
   const clearConfirmationTimer = useCallback((actionId) => {
@@ -105,6 +92,36 @@ export default function Home() {
       delete confirmationTimersRef.current[actionId];
     }
   }, []);
+
+  const clearWhisperHideTimer = useCallback(() => {
+    if (whisperHideTimerRef.current) {
+      clearTimeout(whisperHideTimerRef.current);
+      whisperHideTimerRef.current = null;
+    }
+  }, []);
+
+  const updateWhisperPreview = useCallback((text, { force = false } = {}) => {
+    const next = String(text || '').trim();
+    if (!next) return;
+
+    const now = Date.now();
+    if (!force && now - lastWhisperUpdateAtRef.current < WHISPER_UPDATE_THROTTLE_MS) {
+      return;
+    }
+
+    lastWhisperUpdateAtRef.current = now;
+    setWhisper(next.slice(-140));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      Object.values(confirmationTimersRef.current).forEach((timerId) => clearTimeout(timerId));
+      confirmationTimersRef.current = {};
+      clearWhisperHideTimer();
+      streamControlRef.current.controller?.abort?.();
+      streamControlRef.current.controller = null;
+    };
+  }, [clearWhisperHideTimer]);
 
   const postActionDecision = useCallback(async (payload) => {
     const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || import.meta.env.VITE_BASE44_APP_BASE_URL || "";
@@ -123,8 +140,44 @@ export default function Home() {
     return inferPersonaHint({ text, activeModes, currentSpeaker });
   }, [activeModes, currentSpeaker]);
 
-  const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || import.meta.env.VITE_BASE44_APP_BASE_URL || "";
+  useEffect(() => {
+    if (error) {
+      setErrorNoticeDismissed(false);
+    }
+  }, [error]);
 
+  // Keep feed pinned near bottom without jitter during streaming
+  useEffect(() => {
+    const feed = messageFeedRef.current;
+    if (!feed) return;
+
+    const rafId = window.requestAnimationFrame(() => {
+      const visibleCount = messages.length + (isStreaming && currentMessage ? 1 : 0);
+      const hasNewMessage = visibleCount > lastRenderedMessageCountRef.current;
+      const distanceFromBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+      const isNearBottom = distanceFromBottom < 140;
+
+      if (isStreaming) {
+        feed.scrollTo({ top: feed.scrollHeight, behavior: 'auto' });
+      } else if (hasNewMessage && isNearBottom) {
+        feed.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' });
+      }
+
+      lastRenderedMessageCountRef.current = visibleCount;
+    });
+
+    return () => window.cancelAnimationFrame(rafId);
+  }, [messages, currentMessage, isStreaming]);
+
+  // Show hint after delay
+  useEffect(() => {
+    if (!hasStarted) {
+      const hintTimer = setTimeout(() => setShowHint(true), 8000);
+      return () => clearTimeout(hintTimer);
+    }
+  }, [hasStarted]);
+
+  // TTS
   const speak = useCallback((text) => {
     if (!ttsEnabled) return;
     if (typeof window === "undefined") return;
@@ -146,405 +199,6 @@ export default function Home() {
     }
   }, [ttsEnabled]);
 
-  const createCallSession = useCallback(async () => {
-    const userId = getOrCreateUserId();
-
-    processEvent({
-      type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
-      payload: { state: 'connecting', mode: voiceMode, provider: 'livekit' },
-    });
-
-    const created = await fetch(`${API_ORIGIN}/v1/call/sessions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-user-id': userId,
-      },
-      body: JSON.stringify({ userId, provider: 'livekit', metadata: { voicePersona: currentSpeaker || 'both' } }),
-    });
-
-    if (!created.ok) {
-      const detail = await created.text().catch(() => '');
-      throw new Error(`call session create failed: ${created.status} ${detail}`);
-    }
-
-    const createdJson = await created.json();
-    const session = createdJson?.session;
-    if (!session?.sessionId) throw new Error('missing call session id');
-
-    // Boot flow contract:
-    // 1) POST /v1/call/sessions
-    // 2) store session_id locally
-    // 3) connect realtime endpoint via callSession-driven poll effect
-    const provisional = {
-      sessionId: session.sessionId,
-      resumeToken: session.resumeToken,
-      userId,
-    };
-    setCallSession(provisional);
-    realtimeSequenceRef.current = 0;
-
-    const activateResp = await fetch(`${API_ORIGIN}/v1/call/sessions/${session.sessionId}/state`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-user-id': userId,
-      },
-      body: JSON.stringify({
-        userId,
-        status: 'active',
-        provider: 'livekit',
-        providerRoomId: `lk_room_${session.sessionId}`,
-        providerParticipantId: `lk_part_${userId}`,
-        providerCallId: `lk_call_${session.sessionId}`,
-      }),
-    });
-
-    if (!activateResp.ok) {
-      const detail = await activateResp.text().catch(() => '');
-      setCallSession(null);
-      processEvent({
-        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
-        payload: { state: 'failed', mode: voiceMode, provider: 'livekit' },
-      });
-      throw new Error(`call session activate failed: ${activateResp.status} ${detail}`);
-    }
-
-    const activatedJson = await activateResp.json();
-    const activeSession = activatedJson?.session || session;
-
-    const next = {
-      sessionId: activeSession.sessionId,
-      resumeToken: activeSession.resumeToken,
-      userId,
-    };
-
-    setCallSession(next);
-    return next;
-  }, [API_ORIGIN, currentSpeaker, processEvent, voiceMode]);
-
-  const mapCanonicalRealtimeEvent = useCallback((event) => {
-    if (!event?.type) return;
-
-    const type = String(event.type);
-    const payload = event.payload || {};
-
-    if (type === 'call.started' || type === 'call.connecting') {
-      processEvent({
-        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
-        payload: {
-          state: 'connecting',
-          provider: payload.provider || callRuntime?.provider || 'livekit',
-          mode: voiceMode,
-        },
-      });
-      processEvent({
-        type: UI_EVENT_TYPES.STATUS,
-        payload: {
-          type: 'call',
-          message: 'Connecting voice transport…',
-        },
-      });
-      return;
-    }
-
-    if (type === 'call.connected') {
-      processEvent({
-        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
-        payload: {
-          state: 'connected',
-          provider: payload.provider || callRuntime?.provider || 'livekit',
-          mode: voiceMode,
-        },
-      });
-      processEvent({
-        type: UI_EVENT_TYPES.STATUS,
-        payload: {
-          type: 'call',
-          message: 'Voice connected',
-        },
-      });
-      return;
-    }
-
-    if (type === 'call.reconnecting') {
-      processEvent({
-        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
-        payload: {
-          state: 'reconnecting',
-          mode: voiceMode,
-        },
-      });
-      processEvent({
-        type: UI_EVENT_TYPES.STATUS,
-        payload: {
-          type: 'call',
-          message: 'Reconnecting…',
-        },
-      });
-      return;
-    }
-
-    if (type === 'call.ended') {
-      processEvent({
-        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
-        payload: { state: 'ended', mode: voiceMode },
-      });
-      return;
-    }
-
-    if (type === 'call.error' || type === 'call.terminal_failure') {
-      const code = payload.code || type;
-      processEvent({
-        type: UI_EVENT_TYPES.CALL_RUNTIME_STATE,
-        payload: {
-          state: 'failed',
-          mode: voiceMode,
-        },
-      });
-      processEvent({
-        type: UI_EVENT_TYPES.ERROR,
-        payload: {
-          code,
-          message: payload.message || 'Call transport error',
-          recoverable: true,
-          details: {
-            reconnectSuggested: code !== 'MIC_PERMISSION_DENIED',
-            fallbackSuggested: true,
-          },
-        },
-      });
-      return;
-    }
-
-    if (type === 'call.voice.config.updated') {
-      processEvent({
-        type: UI_EVENT_TYPES.VOICE_CONFIG,
-        payload: {
-          persona: payload.persona || 'both',
-          label: payload.label || payload.voiceProfileId || 'Voice profile',
-          voiceProfileId: payload.voiceProfileId || null,
-          clonedVoice: payload.clonedVoice === true,
-          synthesisAllowed: payload.synthesisAllowed !== false,
-          policyId: payload.policyId || null,
-        },
-      });
-      return;
-    }
-
-    if (type === 'call.turn.owner_changed') {
-      processEvent({
-        type: UI_EVENT_TYPES.TURN_STATE,
-        payload: {
-          owner: payload.owner || 'none',
-          turnId: payload.turnId || null,
-          state: payload.owner === 'user' ? 'listening' : 'thinking',
-        },
-      });
-      return;
-    }
-
-    if (type === 'call.turn.timing') {
-      processEvent({
-        type: UI_EVENT_TYPES.TURN_STATE,
-        payload: {
-          owner: 'agent',
-          turnId: payload.turnId || null,
-          state: payload.sloBreached ? 'recovering' : 'speaking',
-          timing: payload,
-        },
-      });
-      return;
-    }
-
-    if (type === 'transcript.partial') {
-      if (payload.speaker === 'user') {
-        setVoiceCaption(String(payload.text || ''));
-      }
-      return;
-    }
-
-    if (type === 'transcript.final') {
-      const text = String(payload.text || '').trim();
-      if (!text) return;
-
-      if (payload.speaker === 'agent') {
-        processEvent({
-          type: UI_EVENT_TYPES.TEXT_DONE,
-          payload: {
-            fullText: text,
-            messageId: event.eventId || Date.now(),
-            speaker: currentSpeaker,
-          },
-        });
-        setWhisper(text.slice(-140));
-        speak(text);
-        setTimeout(() => setWhisper(''), 2500);
-      }
-      return;
-    }
-
-    if (type === 'orchestration.action.requested') {
-      processEvent({
-        type: UI_EVENT_TYPES.ACTION_AUDIT,
-        payload: {
-          actionId: payload.actionId,
-          action: payload.actionType,
-          decision: 'pending',
-          result: 'requested',
-          riskTier: payload.riskTier,
-          callTimestamp: Date.now(),
-        },
-      });
-      return;
-    }
-
-    if (type === 'action.proposed') {
-      const actionType = String(payload.actionType || '');
-      const deliverable = payload.deliverable;
-      if (deliverable && actionType.includes('deliverable.cv')) {
-        processEvent({ type: UI_EVENT_TYPES.DELIVERABLE_CV, payload: deliverable });
-      } else if (deliverable && actionType.includes('deliverable.interview')) {
-        processEvent({ type: UI_EVENT_TYPES.DELIVERABLE_INTERVIEW, payload: deliverable });
-      } else if (deliverable && actionType.includes('deliverable.outreach')) {
-        processEvent({ type: UI_EVENT_TYPES.DELIVERABLE_OUTREACH, payload: deliverable });
-      }
-      return;
-    }
-
-    if (type === 'action.requires_confirmation') {
-      processEvent({
-        type: UI_EVENT_TYPES.CONFIRM_REQUIRED,
-        payload: {
-          actionId: payload.actionId,
-          message: payload.reason || 'Confirm external send. This cannot be undone.',
-          details: {
-            action: payload.uiEvent?.details?.action || payload.actionType,
-            callTimestamp: Date.now(),
-            deliverableId: payload.uiEvent?.details?.deliverableId,
-          },
-          riskTier: 'high-risk-external-send',
-          timeout: 30_000,
-          expiresAt: Date.now() + 30_000,
-          onConfirm: 'outreach.send.execute',
-          onCancel: 'outreach.send.cancel',
-        },
-      });
-      return;
-    }
-
-    if (type === 'safety.blocked' && payload.reason === 'explicit_user_confirmation_required') {
-      processEvent({
-        type: UI_EVENT_TYPES.CONFIRM_REQUIRED,
-        payload: {
-          actionId: payload.actionId,
-          message: 'Confirm external send. This cannot be undone.',
-          details: {
-            action: payload.actionType,
-            callTimestamp: Date.now(),
-          },
-          riskTier: payload.riskTier || 'high-risk-external-send',
-          timeout: 30_000,
-          expiresAt: Date.now() + 30_000,
-          onConfirm: 'outreach.send.execute',
-          onCancel: 'outreach.send.cancel',
-        },
-      });
-      return;
-    }
-
-    if (type === 'safety.blocked' && String(payload.actionType || '').includes('voice')) {
-      processEvent({
-        type: UI_EVENT_TYPES.ERROR,
-        payload: {
-          code: 'VOICE_POLICY_BLOCKED',
-          message: 'Cloned voice blocked until explicit consent + policy approval are present.',
-          recoverable: true,
-        },
-      });
-      return;
-    }
-
-    if (type === 'safety.approved') {
-      processEvent({
-        type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
-        payload: {
-          actionId: payload.actionId,
-          state: 'approved',
-          decision: 'confirmed',
-          resolvedAt: Date.now(),
-        },
-      });
-      return;
-    }
-
-    if (type === 'action.executed' || type === 'action.failed') {
-      processEvent({
-        type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
-        payload: {
-          actionId: payload.actionId,
-          state: type === 'action.executed' ? 'executed' : 'failed',
-          decision: type === 'action.executed' ? 'confirmed' : 'failed',
-          result: type === 'action.executed' ? 'executed' : (payload.code || 'failed'),
-          resolvedAt: Date.now(),
-        },
-      });
-      return;
-    }
-  }, [callRuntime?.provider, currentSpeaker, processEvent, speak, voiceMode]);
-
-  // Poll canonical realtime events so backend stays source of truth.
-  useEffect(() => {
-    if (!callSession?.sessionId || !callSession?.userId) return;
-
-    const poll = async () => {
-      const afterSequence = realtimeSequenceRef.current || 0;
-      const url = `${API_ORIGIN}/v1/realtime/sessions/${callSession.sessionId}/events?afterSequence=${afterSequence}&limit=200`;
-      try {
-        const resp = await fetch(url, {
-          headers: {
-            'x-user-id': callSession.userId,
-          },
-        });
-        if (!resp.ok) return;
-        const data = await resp.json();
-        const events = Array.isArray(data?.events) ? data.events : [];
-        for (const ev of events) {
-          if (typeof ev?.sequence === 'number') {
-            realtimeSequenceRef.current = Math.max(realtimeSequenceRef.current || 0, ev.sequence);
-          }
-          mapCanonicalRealtimeEvent(ev);
-        }
-      } catch {
-        // noop
-      }
-    };
-
-    poll();
-    realtimePollRef.current = setInterval(poll, 1200);
-
-    return () => {
-      if (realtimePollRef.current) {
-        clearInterval(realtimePollRef.current);
-        realtimePollRef.current = null;
-      }
-    };
-  }, [API_ORIGIN, callSession, mapCanonicalRealtimeEvent]);
-
-
-  // Auto-scroll to bottom
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, currentMessage]);
-
-  // Show hint after delay
-  useEffect(() => {
-    if (!hasStarted) {
-      const hintTimer = setTimeout(() => setShowHint(true), 8000);
-      return () => clearTimeout(hintTimer);
-    }
-  }, [hasStarted]);
-
   // Start conversation
   const startConversation = async (initialText) => {
     const id = `${Date.now()}`;
@@ -557,8 +211,6 @@ export default function Home() {
       timestamp: new Date().toISOString(),
     };
 
-    const activeCall = await createCallSession();
-
     // Add welcome message via reducer
     processEvent({
       type: UI_EVENT_TYPES.TEXT_DONE,
@@ -566,14 +218,6 @@ export default function Home() {
         fullText: welcomeMsg.content,
         messageId: id,
         speaker: initialPersona,
-      },
-    });
-
-    // Set explicit conversation/call session authority
-    processEvent({
-      type: UI_EVENT_TYPES.DONE,
-      payload: {
-        conversationId: activeCall?.sessionId || id,
       },
     });
 
@@ -589,28 +233,24 @@ export default function Home() {
     const t = (text ?? "").trim();
 
     if (!hasStarted) {
-      try {
-        await startConversation(t);
-      } catch (e) {
-        processEvent({
-          type: UI_EVENT_TYPES.ERROR,
-          payload: {
-            code: 'CALL_BOOT_FAILED',
-            message: String(e?.message || e),
-            recoverable: true,
-          },
-        });
-        return;
-      }
-      if (!t && voiceMode === 'browser-fallback') {
+      await startConversation(t);
+      if (!t) {
         setIsVoiceActive(true);
       }
       return;
     }
 
-    if (!t) return;
+    if (!t || isStreaming) return;
 
+    clearWhisperHideTimer();
     const personaHint = resolvePersonaHint(t);
+    const requestMessages = [...messages, { role: 'user', content: t }];
+    lastTurnRef.current = {
+      text: t,
+      personaHint,
+      requestMessages,
+      createdAt: Date.now(),
+    };
 
     // Add user message
     sendMessage(t);
@@ -620,233 +260,273 @@ export default function Home() {
       payload: { speaker: personaHint },
     });
 
-    // Send to backend assistant turn path (backend emits canonical transcript/action events)
-    await streamFromBackend(t, personaHint);
+    // Send to backend
+    await streamFromBackend(t, personaHint, requestMessages);
   };
 
-  // Call-session authoritative turn path (no /v1/chat/stream bridge)
-  const streamFromBackend = async (text, personaHint = 'both') => {
-    try {
-      const activeConversationId = callSession?.sessionId || conversationId || `${Date.now()}`;
-      const userId = callSession?.userId || getOrCreateUserId();
+  // Stream from backend with UI event parsing
+  const streamFromBackend = async (text, personaHint = 'both', requestMessagesOverride = null) => {
+    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || import.meta.env.VITE_BASE44_APP_BASE_URL || "";
+    let latestAssistantText = '';
 
-      const r = await fetch(`${API_ORIGIN}/v1/call/sessions/${activeConversationId}/turn`, {
+    const previousController = streamControlRef.current.controller;
+    previousController?.abort?.();
+
+    const controller = new AbortController();
+    const requestId = streamControlRef.current.requestId + 1;
+    streamControlRef.current = { requestId, controller };
+
+    const isCurrentStream = () => streamControlRef.current.requestId === requestId;
+
+    const normalizeChunk = (value) => String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    const mergeAssistantText = (incoming) => {
+      const next = String(incoming || '');
+      if (!next) return latestAssistantText;
+      if (!latestAssistantText) {
+        latestAssistantText = next;
+        return latestAssistantText;
+      }
+      if (next.startsWith(latestAssistantText)) {
+        latestAssistantText = next;
+        return latestAssistantText;
+      }
+      latestAssistantText = `${latestAssistantText}${next}`;
+      return latestAssistantText;
+    };
+
+    try {
+      const r = await fetch(`${API_ORIGIN}/v1/chat/stream`, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-user-id': userId,
-        },
+        headers: { 'content-type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
-          userId,
-          conversationId: activeConversationId,
-          sessionId: activeConversationId,
+          conversationId,
           persona: personaHint,
-          text,
-          turnId: `turn_${Date.now()}`,
-          captureAtMs: Date.now(),
-          voiceMode,
-          messages: [...messages, { role: 'user', content: text }],
+          messages: requestMessagesOverride || [...messages, { role: 'user', content: text }],
         }),
       });
 
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        throw new Error(data?.message || `Turn failed (${r.status})`);
+      if (!r.ok || !r.body) {
+        throw new Error('Stream failed');
       }
 
-      const canonicalEvents = Array.isArray(data?.events) ? data.events : [];
-      for (const ev of canonicalEvents) {
-        if (typeof ev?.sequence === 'number') {
-          realtimeSequenceRef.current = Math.max(realtimeSequenceRef.current || 0, ev.sequence);
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+
+      const parseBlock = (block) => {
+        const lines = String(block || '').split('\n');
+        let ev = null;
+        const dataLines = [];
+        for (const line of lines) {
+          if (line.startsWith('event:')) ev = line.slice('event:'.length).trim();
+          if (line.startsWith('data:')) dataLines.push(line.slice('data:'.length).trim());
         }
-        mapCanonicalRealtimeEvent(ev);
+        const dataRaw = dataLines.join('\n');
+        let data = null;
+        try { data = JSON.parse(dataRaw); } catch {}
+        return { ev, data };
+      };
+
+      const processParsedEvent = ({ ev, data }) => {
+        if (!ev || !isCurrentStream()) return;
+
+        if (data?.v === '1.0' || data?.type) {
+          const structuredType = data.type || ev;
+          const structuredPayload = data.payload || data;
+
+          if (structuredType === UI_EVENT_TYPES.TEXT_DELTA) {
+            const merged = mergeAssistantText(structuredPayload.fullText || structuredPayload.delta || '');
+            if (merged) updateWhisperPreview(merged);
+          } else if (structuredType === UI_EVENT_TYPES.TEXT_DONE) {
+            const merged = mergeAssistantText(structuredPayload.fullText || '');
+            if (merged) updateWhisperPreview(merged, { force: true });
+          }
+
+          processEvent({
+            type: structuredType,
+            payload: structuredPayload,
+          });
+          return;
+        }
+
+        if (ev === 'delta' && data?.text) {
+          const merged = mergeAssistantText(data.text);
+          processEvent({
+            type: UI_EVENT_TYPES.TEXT_DELTA,
+            payload: { delta: data.text },
+          });
+          updateWhisperPreview(merged);
+          return;
+        }
+
+        if (ev === 'speaker' && data?.speaker) {
+          processEvent({
+            type: UI_EVENT_TYPES.SPEAKER_CHANGE,
+            payload: { speaker: data.speaker },
+          });
+          return;
+        }
+
+        if (ev === 'done') {
+          processEvent({
+            type: UI_EVENT_TYPES.DONE,
+            payload: data || {},
+          });
+          return;
+        }
+
+        if (ev === 'error') {
+          processEvent({
+            type: UI_EVENT_TYPES.ERROR,
+            payload: { message: data?.error || 'Unknown error' },
+          });
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done || !isCurrentStream()) break;
+
+        buf += normalizeChunk(dec.decode(value, { stream: true }));
+
+        let sep;
+        while ((sep = buf.indexOf('\n\n')) !== -1) {
+          const block = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          processParsedEvent(parseBlock(block));
+        }
+      }
+
+      if (isCurrentStream()) {
+        buf += normalizeChunk(dec.decode());
+        const tail = buf.trim();
+        if (tail) {
+          processParsedEvent(parseBlock(tail));
+        }
       }
     } catch (e) {
-      console.error('Turn error:', e);
+      if (e?.name === 'AbortError') return;
+
+      console.error('Stream error:', e);
       processEvent({
         type: UI_EVENT_TYPES.ERROR,
         payload: { message: e.message, recoverable: true },
       });
+    } finally {
+      if (isCurrentStream()) {
+        streamControlRef.current.controller = null;
+      }
+    }
+
+    if (isCurrentStream() && latestAssistantText) {
+      speak(latestAssistantText);
+      clearWhisperHideTimer();
+      whisperHideTimerRef.current = setTimeout(() => setWhisper(""), WHISPER_HIDE_DELAY_MS);
     }
   };
 
-  const updateVoiceProfile = async (persona, opts = {}) => {
-    if (!callSession?.sessionId || !callSession?.userId) return;
+  const handleRetryLastTurn = async () => {
+    if (isStreaming) return;
+    const lastTurn = lastTurnRef.current;
+    if (!lastTurn?.text) return;
 
-    const response = await fetch(`${API_ORIGIN}/v1/call/sessions/${callSession.sessionId}/voice`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-user-id': callSession.userId,
-      },
-      body: JSON.stringify({
-        userId: callSession.userId,
-        persona,
-        userConsent: opts.userConsent === true,
-        policyApprovalId: opts.policyApprovalId || null,
-      }),
-    });
-
-    const body = await response.json().catch(() => ({}));
-    if (body?.events) {
-      Object.values(body.events).forEach((ev) => mapCanonicalRealtimeEvent(ev));
-    }
-    if (!response.ok) {
-      throw new Error(body?.message || `Voice profile update failed (${response.status})`);
-    }
-
-    if (body?.voiceConfig) {
-      processEvent({ type: UI_EVENT_TYPES.VOICE_CONFIG, payload: body.voiceConfig });
-      processEvent({ type: UI_EVENT_TYPES.SPEAKER_CHANGE, payload: { speaker: body.voiceConfig.persona || persona } });
-    }
+    setVoiceCaption('');
+    setErrorNoticeDismissed(false);
+    await streamFromBackend(lastTurn.text, lastTurn.personaHint || 'both', lastTurn.requestMessages);
   };
 
-  const retryVoiceTransport = async () => {
-    if (!callSession?.sessionId || !callSession?.userId) return;
-    processEvent({ type: UI_EVENT_TYPES.CALL_RUNTIME_STATE, payload: { state: 'reconnecting', mode: voiceMode } });
-    const res = await fetch(`${API_ORIGIN}/v1/call/sessions/${callSession.sessionId}/reconnect`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-user-id': callSession.userId,
-      },
-      body: JSON.stringify({
-        userId: callSession.userId,
-        resumeToken: callSession.resumeToken,
-        lastAckSequence: realtimeSequenceRef.current || 0,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data?.message || 'Reconnect failed');
-    }
-    const replayEvents = Array.isArray(data?.replay?.events) ? data.replay.events : [];
-    replayEvents.forEach(mapCanonicalRealtimeEvent);
-    if (data?.voiceConfig) {
-      processEvent({ type: UI_EVENT_TYPES.VOICE_CONFIG, payload: data.voiceConfig });
-    }
-    processEvent({ type: UI_EVENT_TYPES.CALL_RUNTIME_STATE, payload: { state: 'connected', mode: voiceMode } });
-  };
-
-  const switchToBrowserFallback = () => {
-    setVoiceMode('browser-fallback');
-    processEvent({ type: UI_EVENT_TYPES.CALL_RUNTIME_STATE, payload: { mode: 'browser-fallback', state: callRuntime?.state || 'connected' } });
-    processEvent({
-      type: UI_EVENT_TYPES.STATUS,
-      payload: { type: 'voice', message: 'Browser speech fallback active (non-realtime transport)' },
-    });
-  };
-
-  // Handle module action (backend-authoritative lifecycle)
-  const handleModuleAction = async (actionName, deliverable, userConfirmation = false, forcedActionId = null) => {
+  // Handle module action
+  const handleModuleAction = (actionName, deliverable) => {
     const actionMeta = getActionMetadata(actionName);
     const callTs = Date.now();
-    const actionId = forcedActionId || `${actionName}-${callTs}`;
 
-    if (!callSession?.sessionId || !callSession?.userId) {
+    if (actionMeta.requiresConfirmation) {
+      const actionId = `${actionName}-${callTs}`;
+      const timeoutMs = 30_000;
+      const expiresAt = callTs + timeoutMs;
+
       processEvent({
-        type: UI_EVENT_TYPES.ERROR,
-        payload: { message: 'Call session not ready for action execution', recoverable: true },
+        type: UI_EVENT_TYPES.CONFIRM_REQUIRED,
+        payload: {
+          actionId,
+          message: 'Confirm external send. This cannot be undone.',
+          details: {
+            action: actionName,
+            callTimestamp: callTs,
+            deliverableId: deliverable?.id,
+          },
+          riskTier: actionMeta.riskTier,
+          timeout: timeoutMs,
+          expiresAt,
+          onConfirm: 'outreach.send.execute',
+          onCancel: 'outreach.send.cancel',
+        },
       });
+
+      processEvent({
+        type: UI_EVENT_TYPES.ACTION_AUDIT,
+        payload: {
+          actionId,
+          callTimestamp: callTs,
+          action: actionName,
+          decision: 'pending',
+          result: 'awaiting-user-confirmation',
+          riskTier: actionMeta.riskTier,
+        },
+      });
+
+      clearConfirmationTimer(actionId);
+      confirmationTimersRef.current[actionId] = setTimeout(() => {
+        processEvent({
+          type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
+          payload: {
+            actionId,
+            state: 'failed',
+            decision: 'timed_out',
+            result: 'cancelled-on-timeout',
+            resolvedAt: Date.now(),
+          },
+        });
+        processEvent({
+          type: UI_EVENT_TYPES.ACTION_AUDIT,
+          payload: {
+            actionId,
+            callTimestamp: callTs,
+            action: actionName,
+            decision: 'timed_out',
+            result: 'cancelled-on-timeout',
+            riskTier: actionMeta.riskTier,
+          },
+        });
+        postActionDecision({
+          actionId,
+          action: actionName,
+          callTimestamp: callTs,
+          riskTier: actionMeta.riskTier,
+          decision: 'timed_out',
+          result: 'cancelled-on-timeout',
+        });
+      }, timeoutMs);
       return;
     }
 
-    try {
-      const resp = await fetch(`${API_ORIGIN}/v1/orchestration/actions/execute`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-user-id': callSession.userId,
-        },
-        body: JSON.stringify({
-          userId: callSession.userId,
-          sessionId: callSession.sessionId,
-          conversationId: callSession.sessionId,
-          actionId,
-          actionType: actionName,
-          summary: `${actionName} requested from UI module`,
-          riskTier: actionMeta.riskTier,
-          userConfirmation,
-          payload: {
-            deliverableId: deliverable?.id,
-            deliverableType: deliverable?.type,
-            data: deliverable?.data,
-          },
-          metadata: {
-            source: 'ui.module.action',
-            callTimestamp: callTs,
-          },
-        }),
-      });
-
-      const body = await resp.json().catch(() => ({}));
-
-      if (Array.isArray(body?.events)) {
-        body.events.forEach((ev) => mapCanonicalRealtimeEvent(ev));
-      } else if (body?.events && typeof body.events === 'object') {
-        Object.values(body.events).forEach((ev) => mapCanonicalRealtimeEvent(ev));
-      }
-
-      if (!resp.ok) {
-        if (!body?.blocked) {
-          processEvent({
-            type: UI_EVENT_TYPES.ERROR,
-            payload: {
-              code: body?.code || 'ACTION_EXECUTION_FAILED',
-              message: body?.message || `Action failed (${resp.status})`,
-              recoverable: true,
-            },
-          });
-        }
-        return;
-      }
-
-      processEvent({
-        type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
-        payload: {
-          actionId,
-          state: body?.ack?.status === 'executed' ? 'executed' : 'approved',
-          decision: body?.decision?.decision || 'approved',
-          result: body?.ack?.outcomeRef || 'executed',
-          resolvedAt: Date.now(),
-        },
-      });
-    } catch (e) {
-      processEvent({
-        type: UI_EVENT_TYPES.ERROR,
-        payload: {
-          code: 'ACTION_EXECUTION_NETWORK_ERROR',
-          message: String(e?.message || e),
-          recoverable: true,
-        },
-      });
-    }
+    executeModuleAction(actionName, deliverable, processEvent);
   };
 
 
   // Reset conversation
   const handleReset = () => {
-    if (callSession?.sessionId && callSession?.userId) {
-      fetch(`${API_ORIGIN}/v1/call/sessions/${callSession.sessionId}/state`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-user-id': callSession.userId,
-        },
-        body: JSON.stringify({ userId: callSession.userId, status: 'ended' }),
-      }).catch(() => {});
-    }
-
+    streamControlRef.current.controller?.abort?.();
+    streamControlRef.current.controller = null;
+    clearWhisperHideTimer();
+    lastTurnRef.current = null;
     clearConversation();
-    setCallSession(null);
-    realtimeSequenceRef.current = 0;
     setHasStarted(false);
     setIsVoiceActive(false);
     setVoiceCaption("");
     setWhisper("");
-    setShowMemory(false);
-    setVoiceMode('realtime');
-    processEvent({ type: UI_EVENT_TYPES.CALL_RUNTIME_STATE, payload: { state: 'idle', mode: 'realtime', provider: null } });
   };
 
   const getLatestDeliverable = (type) => {
@@ -861,15 +541,27 @@ export default function Home() {
   const latestInterviewDeliverable = getLatestDeliverable('interview');
   const latestOutreachDeliverable = getLatestDeliverable('outreach');
 
+  const connectionStatusLabel = error
+    ? 'Needs attention'
+    : isStreaming
+      ? 'Responding'
+      : (status?.message ? 'Working' : 'Ready');
+
+  const connectionStatusClass = error
+    ? 'text-rose-600 border-rose-200 bg-rose-50/85'
+    : isStreaming
+      ? 'text-violet-600 border-violet-200 bg-violet-50/85'
+      : 'text-emerald-600 border-emerald-200 bg-emerald-50/85';
+
   return (
-    <div className="relative h-screen overflow-hidden bg-gradient-to-b from-stone-50 via-neutral-50 to-stone-100">
+    <div className="relative min-h-[100dvh] h-screen overflow-hidden bg-gradient-to-b from-stone-50 via-neutral-50 to-stone-100">
       {/* Background texture */}
       <div className="absolute inset-0 opacity-[0.015]" style={{
         backgroundImage: `radial-gradient(circle at 1px 1px, black 1px, transparent 0)`,
         backgroundSize: "32px 32px"
       }} />
 
-      <div className="relative h-full flex flex-col">
+      <div className="relative min-h-[100dvh] h-full flex flex-col">
         {/* Floating Hints */}
         <FloatingHints visible={!hasStarted} />
 
@@ -881,7 +573,7 @@ export default function Home() {
               initial={{ opacity: 1 }}
               exit={{ opacity: 0, y: -20 }}
               transition={{ duration: 0.4, ease: "easeInOut" }}
-              className="flex-1 flex flex-col items-center justify-center px-6"
+              className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6"
             >
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
@@ -896,10 +588,10 @@ export default function Home() {
                   Life OS
                 </h1>
                 <p className="text-neutral-400 text-sm tracking-[0.15em] uppercase font-medium">
-                  Adaptive guidance for work & life
+                  Productive guidance for career and life execution
                 </p>
                 <p className="text-neutral-500 text-xs mt-3">
-                  Voice adapts dynamically by context during the conversation.
+                  Ask in plain language. Get concrete next steps, drafts, and decisions.
                 </p>
               </motion.div>
 
@@ -909,17 +601,25 @@ export default function Home() {
                 transition={{ duration: 0.8, delay: 0.5 }}
                 className="w-full max-w-2xl px-4"
               >
-                <UnifiedInput onSend={handleSend} disabled={isStreaming} enableSpeech={voiceMode === 'browser-fallback'} />
+                <UnifiedInput
+                  onSend={handleSend}
+                  disabled={isStreaming}
+                  placeholder="Ask for CV, interview prep, outreach, or a concrete plan..."
+                />
               </motion.div>
 
               <motion.p
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ duration: 1, delay: 1 }}
-                className="mt-6 text-[12px] tracking-[0.15em] uppercase text-neutral-400"
+                className="mt-6 text-[11px] tracking-[0.15em] uppercase text-neutral-400"
               >
-                your next chapter starts with a conversation
+                built for real execution, not ideas only
               </motion.p>
+
+              <p className="mt-2 text-[12px] text-neutral-500 text-center">
+                External sends always require your explicit confirmation.
+              </p>
 
               <AnimatePresence>
                 {showHint && (
@@ -931,7 +631,7 @@ export default function Home() {
                     className="mt-12 max-w-md mx-auto"
                   >
                     <div className="text-neutral-500 text-sm text-center">
-                      Try: "Build my CV" or "Prepare me for an interview at Rinuccini"
+                      Try: “Build my CV for this role” or “Give me a 7-day interview prep plan”.
                     </div>
                   </motion.div>
                 )}
@@ -948,15 +648,10 @@ export default function Home() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ duration: 0.5 }}
-              className="flex-1 flex flex-col items-center justify-center relative h-full overflow-hidden"
+              className="flex-1 flex flex-col items-center justify-center relative h-full overflow-hidden px-1"
             >
-              {/* Runtime state ribbon */}
-              <div className="absolute top-6 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-white/80 border border-neutral-200 text-[11px] text-neutral-700 shadow-sm z-20">
-                {`Call: ${callRuntime?.state || 'idle'} · Mode: ${voiceMode} · Voice: ${voiceConfig?.label || 'Balanced Core'} · Turn: ${turnRuntime?.state || 'idle'}`}
-              </div>
-
               {/* Voice captions */}
-              <div className="absolute top-24 left-0 right-0 px-6">
+              <div className="absolute top-20 sm:top-24 left-0 right-0 px-4 sm:px-6">
                 <div className="max-w-2xl mx-auto">
                   <WhisperCaption text={voiceCaption} visible={!!voiceCaption} />
                 </div>
@@ -967,19 +662,26 @@ export default function Home() {
                 {whisper && <WhisperResponse text={whisper} visible={!!whisper} />}
               </AnimatePresence>
 
+              {/* Status notice */}
+              {status?.message && !error && (
+                <div className="absolute top-14 sm:top-16 left-1/2 -translate-x-1/2 rounded-full border border-violet-200 bg-white/85 px-3 py-1 text-[11px] text-violet-700 shadow-sm z-10 max-w-[calc(100vw-2rem)] truncate">
+                  {status.message}{typeof status.progress === 'number' ? ` · ${status.progress}%` : ''}
+                </div>
+              )}
+
               {/* Central Avatar */}
               <div className="flex-1 flex items-center justify-center">
                 <AvatarWithWaves persona={currentSpeaker} isActive={isVoiceActive} />
               </div>
 
               {/* Message feed */}
-              <div className="absolute bottom-28 left-0 right-0 px-6 overflow-y-auto max-h-[60vh]">
+              <div ref={messageFeedRef} className="absolute bottom-[calc(env(safe-area-inset-bottom)+6.75rem)] sm:bottom-28 left-0 right-0 px-4 sm:px-6 overflow-y-auto max-h-[58vh] sm:max-h-[60vh]">
                 <div className="max-w-2xl mx-auto space-y-3">
-                  {messages.slice(-6).map((m, idx) => (
-                    <MessageBubble 
-                      key={m.id || idx} 
-                      message={m} 
-                      isLast={idx === Math.min(messages.length, 6) - 1} 
+                  {messages.map((m, idx) => (
+                    <MessageBubble
+                      key={m.id || idx}
+                      message={m}
+                      isLast={idx === messages.length - 1}
                     />
                   ))}
                   
@@ -995,6 +697,24 @@ export default function Home() {
                       isLast={true}
                       isStreaming={true}
                     />
+                  )}
+
+                  {isStreaming && !currentMessage && (
+                    <MessageBubble
+                      message={{
+                        role: 'assistant',
+                        content: 'Thinking through the best next step…',
+                        persona: currentSpeaker,
+                        timestamp: new Date().toISOString(),
+                      }}
+                      isStreaming={true}
+                    />
+                  )}
+
+                  {messages.length <= 1 && !isStreaming && (
+                    <div className="rounded-2xl border border-white/70 bg-white/75 p-4 text-sm text-neutral-600 shadow-sm">
+                      Start with one specific goal and a constraint. Example: “I need a CV for a backend role by Monday.”
+                    </div>
                   )}
                   
                   {/* Inline CV Preview */}
@@ -1014,48 +734,35 @@ export default function Home() {
                     deliverable: latestOutreachDeliverable,
                     onAction: handleModuleAction,
                   })}
-                  
-                  <div ref={messagesEndRef} />
                 </div>
               </div>
 
               {/* Error display */}
-              {error && (
-                <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 max-w-lg w-[90%]">
-                  <p className="text-red-600 text-sm">{error.message}</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
+              {error && !errorNoticeDismissed && (
+                <div className="absolute top-16 sm:top-20 left-1/2 -translate-x-1/2 bg-red-50/95 border border-red-200 rounded-xl px-4 py-3 shadow-sm w-[min(92vw,30rem)] z-20">
+                  <p className="text-red-700 text-sm font-medium">Couldn’t complete that response.</p>
+                  <p className="text-red-600 text-xs mt-1">{error.message || 'Please try again.'}</p>
+                  <div className="mt-3 flex items-center gap-2">
                     <button
-                      onClick={async () => {
-                        try { await retryVoiceTransport(); } catch (e) {
-                          processEvent({ type: UI_EVENT_TYPES.ERROR, payload: { message: String(e?.message || e), recoverable: true } });
-                        }
-                      }}
-                      className="text-xs px-2 py-1 rounded bg-white border border-red-200 text-red-700"
+                      onClick={handleRetryLastTurn}
+                      disabled={isStreaming || !lastTurnRef.current?.text}
+                      className="px-3 py-1.5 rounded-md bg-red-600 text-white text-xs disabled:opacity-50"
                     >
-                      Retry voice
+                      Retry
                     </button>
                     <button
-                      onClick={switchToBrowserFallback}
-                      className="text-xs px-2 py-1 rounded bg-white border border-red-200 text-red-700"
+                      onClick={() => setErrorNoticeDismissed(true)}
+                      className="px-3 py-1.5 rounded-md bg-white text-neutral-600 border border-red-100 text-xs"
                     >
-                      Switch to browser fallback
-                    </button>
-                    <button
-                      onClick={async () => {
-                        setVoiceMode('text');
-                        processEvent({ type: UI_EVENT_TYPES.CALL_RUNTIME_STATE, payload: { mode: 'text', state: callRuntime?.state || 'connected' } });
-                      }}
-                      className="text-xs px-2 py-1 rounded bg-white border border-red-200 text-red-700"
-                    >
-                      Text mode
+                      Dismiss
                     </button>
                   </div>
                 </div>
               )}
 
 
-              {/* Approval state summary */}
-              {Object.values(actionApprovals || {}).length > 0 && (
+              {/* Approval state summary (debug only) */}
+              {isActionApprovalDebugVisible && Object.values(actionApprovals || {}).length > 0 && (
                 <div className="absolute top-20 right-6 bg-white/90 border border-neutral-200 rounded-lg px-3 py-2 text-xs shadow-sm max-w-xs">
                   <p className="font-medium text-neutral-700 mb-1">Action approvals</p>
                   <div className="space-y-1">
@@ -1076,10 +783,46 @@ export default function Home() {
                       onClick={async () => {
                         const actionId = pendingConfirmation.actionId;
                         const action = pendingConfirmation.details?.action;
-                        const deliverableId = pendingConfirmation.details?.deliverableId;
                         clearConfirmationTimer(actionId);
                         confirmAction(actionId);
-                        await handleModuleAction(action, { id: deliverableId, type: 'outreach' }, true, actionId);
+                        processEvent({
+                          type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
+                          payload: {
+                            actionId,
+                            state: 'approved',
+                            decision: 'confirmed',
+                            resolvedAt: Date.now(),
+                          },
+                        });
+                        processEvent({
+                          type: UI_EVENT_TYPES.ACTION_APPROVAL_STATE,
+                          payload: {
+                            actionId,
+                            state: 'executed',
+                            decision: 'confirmed',
+                            result: 'executed',
+                            resolvedAt: Date.now(),
+                          },
+                        });
+                        processEvent({
+                          type: UI_EVENT_TYPES.ACTION_AUDIT,
+                          payload: {
+                            actionId,
+                            callTimestamp: pendingConfirmation.details?.callTimestamp,
+                            action,
+                            decision: 'confirmed',
+                            result: 'executed',
+                            riskTier: pendingConfirmation.riskTier || 'high-risk-external-send',
+                          },
+                        });
+                        await postActionDecision({
+                          actionId,
+                          action,
+                          callTimestamp: pendingConfirmation.details?.callTimestamp,
+                          decision: 'confirmed',
+                          result: 'executed',
+                          riskTier: pendingConfirmation.riskTier || 'high-risk-external-send',
+                        });
                       }}
                       className="flex-1 bg-slate-900 text-white py-2 rounded-lg"
                     >
@@ -1101,6 +844,17 @@ export default function Home() {
                             resolvedAt: Date.now(),
                           },
                         });
+                        processEvent({
+                          type: UI_EVENT_TYPES.ACTION_AUDIT,
+                          payload: {
+                            actionId,
+                            callTimestamp: pendingConfirmation.details?.callTimestamp,
+                            action,
+                            decision: 'cancelled',
+                            result: 'cancelled-by-user',
+                            riskTier: pendingConfirmation.riskTier || 'high-risk-external-send',
+                          },
+                        });
                         await postActionDecision({
                           actionId,
                           action,
@@ -1119,7 +873,7 @@ export default function Home() {
               )}
 
               {/* Header - top left */}
-              <div className="absolute top-6 left-6 flex items-center gap-3">
+              <div className="absolute top-4 sm:top-6 left-4 sm:left-6 flex items-center gap-3">
                 <button
                   onClick={handleReset}
                   className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 flex items-center justify-center hover:opacity-80 transition-opacity cursor-pointer"
@@ -1129,35 +883,10 @@ export default function Home() {
               </div>
 
               {/* Controls - top right */}
-              <div className="absolute top-6 right-6 flex items-center gap-1 flex-wrap max-w-[420px] justify-end">
-                {['antonio', 'mariana', 'both'].map((p) => (
-                  <button
-                    key={p}
-                    onClick={async () => {
-                      try {
-                        const needsConsent = p !== 'both';
-                        await updateVoiceProfile(p, {
-                          userConsent: needsConsent,
-                          policyApprovalId: needsConsent ? `manual-approval-${Date.now()}` : null,
-                        });
-                      } catch (e) {
-                        processEvent({ type: UI_EVENT_TYPES.ERROR, payload: { message: String(e?.message || e), recoverable: true } });
-                      }
-                    }}
-                    className={`text-[11px] px-2 py-1 rounded-full border ${voiceConfig?.persona === p ? 'bg-neutral-900 text-white border-neutral-900' : 'bg-white/80 text-neutral-700 border-neutral-200'}`}
-                    title={`Switch voice to ${p}`}
-                  >
-                    {p}
-                  </button>
-                ))}
-
-                <button
-                  onClick={() => switchToBrowserFallback()}
-                  className={`text-[11px] px-2 py-1 rounded-full border ${voiceMode === 'browser-fallback' ? 'bg-amber-100 border-amber-300 text-amber-800' : 'bg-white/80 border-neutral-200 text-neutral-700'}`}
-                  title="Enable browser speech fallback"
-                >
-                  Browser fallback
-                </button>
+              <div className="absolute top-4 sm:top-6 right-4 sm:right-6 flex items-center gap-2">
+                <div className={`px-2.5 py-1 rounded-full border text-[11px] shadow-sm ${connectionStatusClass}`}>
+                  {connectionStatusLabel}
+                </div>
 
                 {/* TTS toggle */}
                 <button
@@ -1168,22 +897,14 @@ export default function Home() {
                       return next;
                     });
                   }}
-                  className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
+                  className="relative w-9 h-9 rounded-xl flex items-center justify-center bg-white/60 hover:bg-white/80 border border-white/70 transition-colors"
                   title={ttsEnabled ? "Voice playback: on" : "Voice playback: off"}
                 >
                   {ttsEnabled ? (
-                    <Volume2 className="w-4 h-4 text-neutral-500" />
+                    <Volume2 className="w-4 h-4 text-neutral-600" />
                   ) : (
                     <VolumeX className="w-4 h-4 text-neutral-400" />
                   )}
-                </button>
-
-                {/* Memory toggle */}
-                <button
-                  onClick={() => setShowMemory(!showMemory)}
-                  className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
-                >
-                  <Brain className="w-4 h-4 text-neutral-500" />
                 </button>
               </div>
 
@@ -1207,15 +928,17 @@ export default function Home() {
               </AnimatePresence>
 
               {/* Input */}
-              <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-8 pb-6 px-4 z-20">
+              <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white/95 to-transparent pt-6 sm:pt-8 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] px-3 sm:px-4 z-20">
                 <UnifiedInput
                   onSend={handleSend}
                   disabled={isStreaming}
                   onInterim={setVoiceCaption}
                   onListeningChange={setIsVoiceActive}
-                  placeholder={voiceMode === 'browser-fallback' ? 'Type or speak your message…' : 'Type your message…'}
-                  enableSpeech={voiceMode === 'browser-fallback'}
+                  placeholder="Describe your goal and constraint…"
                 />
+                <p className="mt-2 text-center text-[11px] text-neutral-400">
+                  No auto-send actions. External sends always require confirmation.
+                </p>
               </div>
             </motion.div>
           )}

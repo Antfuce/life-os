@@ -125,6 +125,14 @@ export default function UnifiedInput({
     };
   }, [clearVoiceAutoSendTimer]);
 
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+
+    input.style.height = "0px";
+    input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
+  }, [text]);
+
   const handleSubmit = (e) => {
     e?.preventDefault();
     if (!text.trim() || disabled) return;
@@ -190,7 +198,7 @@ export default function UnifiedInput({
       </AnimatePresence>
 
       {/* Input container */}
-      <div className="relative flex items-end gap-2 bg-white border border-neutral-200 rounded-2xl shadow-sm p-2 focus-within:ring-2 focus-within:ring-violet-500/20 focus-within:border-violet-500 transition-all">
+      <div className="relative flex items-end gap-2 bg-white/95 border border-neutral-200 rounded-2xl shadow-sm p-2 focus-within:ring-2 focus-within:ring-violet-500/20 focus-within:border-violet-500 transition-all">
         {/* Text input */}
         <textarea
           ref={inputRef}
@@ -200,8 +208,7 @@ export default function UnifiedInput({
           disabled={disabled}
           placeholder={placeholder}
           rows={1}
-          className="flex-1 resize-none bg-transparent px-3 py-2.5 text-[15px] placeholder:text-neutral-400 focus:outline-none max-h-[120px] min-h-[44px]"
-          style={{ fieldSizing: "content" }}
+          className="flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2.5 text-[15px] placeholder:text-neutral-400 focus:outline-none max-h-[120px] min-h-[44px]"
         />
 
         {/* Right actions */}
@@ -214,6 +221,7 @@ export default function UnifiedInput({
               disabled={disabled}
               variant={isVoiceActive ? "destructive" : "ghost"}
               size="icon"
+              aria-label={isVoiceActive ? "Stop voice input" : "Start voice input"}
               className={`h-9 w-9 rounded-full transition-all ${
                 isVoiceActive ? "bg-red-500 hover:bg-red-600 animate-pulse" : "hover:bg-neutral-100"
               }`}
@@ -233,6 +241,7 @@ export default function UnifiedInput({
             onClick={handleSubmit}
             disabled={disabled || !text.trim()}
             size="icon"
+            aria-label="Send message"
             className="h-9 w-9 rounded-full bg-violet-600 hover:bg-violet-700 disabled:opacity-40"
           >
             <Send className="w-4 h-4" />

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 
-export default function WhisperResponse({ text, visible, duration = 4000 }) {
+export default function WhisperResponse({ text, visible, duration = 3200 }) {
   const [show, setShow] = useState(visible);
 
   useEffect(() => {
@@ -22,31 +22,14 @@ export default function WhisperResponse({ text, visible, duration = 4000 }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: -20 }}
+      initial={{ opacity: 0, y: -16 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: 20 }}
-      transition={{ duration: 0.6 }}
-      className="fixed top-1/4 left-1/2 -translate-x-1/2 max-w-2xl pointer-events-none"
+      exit={{ opacity: 0, y: 12 }}
+      transition={{ duration: 0.22 }}
+      className="fixed top-20 left-1/2 -translate-x-1/2 max-w-2xl pointer-events-none px-4 z-10"
     >
-      <div className="text-center space-y-2">
-        <motion.p
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.4 }}
-          className="text-neutral-400 text-lg italic leading-relaxed"
-        >
-          {text}
-        </motion.p>
-        
-        {/* Movie-credits-style fade lines */}
-        <motion.div
-          initial={{ scaleX: 0 }}
-          animate={{ scaleX: 1 }}
-          exit={{ scaleX: 0 }}
-          transition={{ duration: 0.8 }}
-          className="h-px bg-gradient-to-r from-transparent via-neutral-300 to-transparent"
-        />
+      <div className="rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm px-4 py-2 shadow-sm">
+        <p className="text-neutral-600 text-sm leading-relaxed text-center">{text}</p>
       </div>
     </motion.div>
   );
