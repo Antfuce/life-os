@@ -52,14 +52,21 @@ import Memory from './pages/Memory';
 import Social from './pages/Social';
 import Home from './pages/Home';
 import __Layout from './Layout.jsx';
+import { isLegacyBase44PagesEnabled } from './lib/featureFlags';
 
+const CORE_PAGES = {
+    "Home": Home,
+};
 
-export const PAGES = {
+const LEGACY_BASE44_PAGES = {
     "Deliverables": Deliverables,
     "Memory": Memory,
     "Social": Social,
-    "Home": Home,
-}
+};
+
+export const PAGES = isLegacyBase44PagesEnabled
+    ? { ...CORE_PAGES, ...LEGACY_BASE44_PAGES }
+    : CORE_PAGES;
 
 export const pagesConfig = {
     mainPage: "Home",

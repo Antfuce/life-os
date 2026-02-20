@@ -148,3 +148,23 @@ Shared async coordination log for Codex ↔ OpenClaw ↔ humans.
 - Changed: Added global React runtime error boundary (`src/components/system/AppErrorBoundary.jsx`, wired in `src/main.jsx`) so production UI crashes no longer fail as blank white screen and instead surface actionable error context + reload control.
 - Next: Re-test live environment to capture concrete runtime error text (if any) and patch root cause immediately.
 - Risks: Error boundary improves observability/containment but does not itself resolve underlying runtime defects.
+
+## 2026-02-20T08:57:13Z — OpenClaw run note (UI stabilization sprint, legacy Base44 isolation)
+- Changed: Isolated legacy Base44 entity pages behind a frontend feature flag so MVP defaults to a single stable Home route. Added `src/lib/featureFlags.js`, gated page registration in `src/pages.config.js`, added env control (`VITE_ENABLE_LEGACY_BASE44_PAGES=false`) in `.env.example`, and hardened `Home.jsx` with confirmation-timer cleanup on unmount.
+- Next: Validate published Base44 build uses the new default and run focused repro on Home stream/voice flow only; re-enable legacy pages only with explicit maintenance pass.
+- Risks: If legacy pages are re-enabled without backend-aligned data source migration, prior Base44 entity/API drift can reintroduce buyer-visible glitches.
+
+## 2026-02-20T09:01:58Z — OpenClaw run note (UI stabilization sprint, Home flow polish)
+- Changed: Completed focused Home UX polish pass: replaced jittery `scrollIntoView` behavior with feed-container pin-to-bottom logic tuned for streaming, added stream lifecycle control (abort + request-id guard) to prevent stale/overlapping SSE updates, normalized SSE chunk parsing for CRLF variants, throttled whisper overlay updates to reduce flicker, and centralized whisper-hide timer cleanup/reset.
+- Next: Publish latest Base44 revision and run live smoke checks (rapid voice→text turns, long streaming replies, and reset mid-stream) to confirm smoother behavior under real usage.
+- Risks: Web Speech/browser timing variance can still create perceived latency differences across devices even with frontend stream/render hardening.
+
+## 2026-02-20T09:27:10Z — OpenClaw run note (product polish pass 1)
+- Changed: Executed product-focused frontend polish on Home/chat UX: removed non-functional top-right control clutter, added explicit connection/status pill, converted noisy floating suggestions into stable suggestion chips, upgraded message bubbles with streaming indicator + improved spacing/readability, improved textarea auto-resize behavior and accessibility labels in `UnifiedInput`, and aligned avatar/whisper visuals to a calmer production style. Also hid action-approval debug panel behind `VITE_SHOW_ACTION_APPROVAL_DEBUG=false` default.
+- Next: Publish and run full product smoke on real flows (long chat history scroll, voice-first turns, interrupt/reset while streaming, confirmation gates).
+- Risks: Visual quality is improved but final perceived polish still depends on cross-device rendering and Web Speech behavior variance.
+
+## 2026-02-20T09:37:34Z — OpenClaw run note (product polish pass 2: states, copy, mobile)
+- Changed: Completed product polish pass 2 on Home flow: improved microcopy across landing + input for production tone, added explicit trust copy for confirmation-gated external sends, introduced status notice rendering (`status.message` + progress), added empty/feed guidance copy, added streaming pre-delta placeholder message, and upgraded error UX with actionable retry + dismiss controls. Added retry wiring using last-turn payload persistence to avoid user retyping. Also tightened mobile spacing/safe-area behavior for feed/input/header controls (`100dvh`, safe-area bottom offsets, responsive paddings).
+- Next: Publish latest revision and run real-device smoke checklist (iOS Safari safe-area, Android Chrome keyboard/textarea growth, retry on transient stream failure).
+- Risks: Retry behavior currently reuses last turn payload; if backend side-effects are introduced to stream initiation later, explicit idempotency tokens should be added before enabling automatic retries.

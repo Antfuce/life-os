@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Brain, Volume2, VolumeX } from "lucide-react";
+import { Volume2, VolumeX } from "lucide-react";
 
 import { useUIEventReducer, UI_EVENT_TYPES } from "../hooks/useUIEventReducer";
 import { renderModule, renderInlineModule, executeModuleAction, getActionMetadata } from "../lib/moduleRegistry";
@@ -11,6 +11,7 @@ import FloatingHints from "../components/chat/FloatingHints";
 import WhisperResponse from "../components/voice/WhisperResponse";
 import AvatarWithWaves from "../components/voice/AvatarWithWaves";
 import FloatingModule from "../components/voice/FloatingModule";
+import { isActionApprovalDebugVisible } from "../lib/featureFlags";
 
 const WELCOME_MESSAGES = {
   antonio: "Let’s go tactical. Tell me your target and constraints, and I’ll map the fastest route.",
@@ -25,6 +26,9 @@ const STRATEGY_KEYWORDS = [
 const COACHING_KEYWORDS = [
   'coach', 'coaching', 'confidence', 'anxious', 'anxiety', 'stress', 'overwhelmed', 'burnout', 'motivation', 'stuck',
 ];
+
+const WHISPER_HIDE_DELAY_MS = 2500;
+const WHISPER_UPDATE_THROTTLE_MS = 120;
 
 function inferPersonaHint({ text = '', activeModes = {}, currentSpeaker = 'both' } = {}) {
   if (currentSpeaker === 'antonio' || currentSpeaker === 'mariana') return currentSpeaker;
@@ -66,14 +70,19 @@ export default function Home() {
     conversationId,
   } = state;
 
-  const messagesEndRef = useRef(null);
+  const messageFeedRef = useRef(null);
+  const streamControlRef = useRef({ requestId: 0, controller: null });
+  const whisperHideTimerRef = useRef(null);
+  const lastWhisperUpdateAtRef = useRef(0);
+  const lastRenderedMessageCountRef = useRef(0);
+  const lastTurnRef = useRef(null);
   const [hasStarted, setHasStarted] = React.useState(false);
   const [showHint, setShowHint] = React.useState(false);
   const [voiceCaption, setVoiceCaption] = React.useState("");
   const [isVoiceActive, setIsVoiceActive] = React.useState(false);
   const [whisper, setWhisper] = React.useState("");
   const [ttsEnabled, setTtsEnabled] = React.useState(false);
-  const [showMemory, setShowMemory] = React.useState(false);
+  const [errorNoticeDismissed, setErrorNoticeDismissed] = React.useState(false);
   const confirmationTimersRef = useRef({});
 
   const clearConfirmationTimer = useCallback((actionId) => {
@@ -83,6 +92,36 @@ export default function Home() {
       delete confirmationTimersRef.current[actionId];
     }
   }, []);
+
+  const clearWhisperHideTimer = useCallback(() => {
+    if (whisperHideTimerRef.current) {
+      clearTimeout(whisperHideTimerRef.current);
+      whisperHideTimerRef.current = null;
+    }
+  }, []);
+
+  const updateWhisperPreview = useCallback((text, { force = false } = {}) => {
+    const next = String(text || '').trim();
+    if (!next) return;
+
+    const now = Date.now();
+    if (!force && now - lastWhisperUpdateAtRef.current < WHISPER_UPDATE_THROTTLE_MS) {
+      return;
+    }
+
+    lastWhisperUpdateAtRef.current = now;
+    setWhisper(next.slice(-140));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      Object.values(confirmationTimersRef.current).forEach((timerId) => clearTimeout(timerId));
+      confirmationTimersRef.current = {};
+      clearWhisperHideTimer();
+      streamControlRef.current.controller?.abort?.();
+      streamControlRef.current.controller = null;
+    };
+  }, [clearWhisperHideTimer]);
 
   const postActionDecision = useCallback(async (payload) => {
     const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || import.meta.env.VITE_BASE44_APP_BASE_URL || "";
@@ -101,11 +140,34 @@ export default function Home() {
     return inferPersonaHint({ text, activeModes, currentSpeaker });
   }, [activeModes, currentSpeaker]);
 
-
-  // Auto-scroll to bottom
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, currentMessage]);
+    if (error) {
+      setErrorNoticeDismissed(false);
+    }
+  }, [error]);
+
+  // Keep feed pinned near bottom without jitter during streaming
+  useEffect(() => {
+    const feed = messageFeedRef.current;
+    if (!feed) return;
+
+    const rafId = window.requestAnimationFrame(() => {
+      const visibleCount = messages.length + (isStreaming && currentMessage ? 1 : 0);
+      const hasNewMessage = visibleCount > lastRenderedMessageCountRef.current;
+      const distanceFromBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+      const isNearBottom = distanceFromBottom < 140;
+
+      if (isStreaming) {
+        feed.scrollTo({ top: feed.scrollHeight, behavior: 'auto' });
+      } else if (hasNewMessage && isNearBottom) {
+        feed.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' });
+      }
+
+      lastRenderedMessageCountRef.current = visibleCount;
+    });
+
+    return () => window.cancelAnimationFrame(rafId);
+  }, [messages, currentMessage, isStreaming]);
 
   // Show hint after delay
   useEffect(() => {
@@ -178,9 +240,17 @@ export default function Home() {
       return;
     }
 
-    if (!t) return;
+    if (!t || isStreaming) return;
 
+    clearWhisperHideTimer();
     const personaHint = resolvePersonaHint(t);
+    const requestMessages = [...messages, { role: 'user', content: t }];
+    lastTurnRef.current = {
+      text: t,
+      personaHint,
+      requestMessages,
+      createdAt: Date.now(),
+    };
 
     // Add user message
     sendMessage(t);
@@ -191,13 +261,24 @@ export default function Home() {
     });
 
     // Send to backend
-    await streamFromBackend(t, personaHint);
+    await streamFromBackend(t, personaHint, requestMessages);
   };
 
   // Stream from backend with UI event parsing
-  const streamFromBackend = async (text, personaHint = 'both') => {
+  const streamFromBackend = async (text, personaHint = 'both', requestMessagesOverride = null) => {
     const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || import.meta.env.VITE_BASE44_APP_BASE_URL || "";
     let latestAssistantText = '';
+
+    const previousController = streamControlRef.current.controller;
+    previousController?.abort?.();
+
+    const controller = new AbortController();
+    const requestId = streamControlRef.current.requestId + 1;
+    streamControlRef.current = { requestId, controller };
+
+    const isCurrentStream = () => streamControlRef.current.requestId === requestId;
+
+    const normalizeChunk = (value) => String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
     const mergeAssistantText = (incoming) => {
       const next = String(incoming || '');
@@ -218,10 +299,11 @@ export default function Home() {
       const r = await fetch(`${API_ORIGIN}/v1/chat/stream`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           conversationId,
           persona: personaHint,
-          messages: [...messages, { role: 'user', content: text }],
+          messages: requestMessagesOverride || [...messages, { role: 'user', content: text }],
         }),
       });
 
@@ -248,7 +330,7 @@ export default function Home() {
       };
 
       const processParsedEvent = ({ ev, data }) => {
-        if (!ev) return;
+        if (!ev || !isCurrentStream()) return;
 
         if (data?.v === '1.0' || data?.type) {
           const structuredType = data.type || ev;
@@ -256,10 +338,10 @@ export default function Home() {
 
           if (structuredType === UI_EVENT_TYPES.TEXT_DELTA) {
             const merged = mergeAssistantText(structuredPayload.fullText || structuredPayload.delta || '');
-            if (merged) setWhisper(merged.slice(-140));
+            if (merged) updateWhisperPreview(merged);
           } else if (structuredType === UI_EVENT_TYPES.TEXT_DONE) {
             const merged = mergeAssistantText(structuredPayload.fullText || '');
-            if (merged) setWhisper(merged.slice(-140));
+            if (merged) updateWhisperPreview(merged, { force: true });
           }
 
           processEvent({
@@ -275,7 +357,7 @@ export default function Home() {
             type: UI_EVENT_TYPES.TEXT_DELTA,
             payload: { delta: data.text },
           });
-          setWhisper(merged.slice(-140));
+          updateWhisperPreview(merged);
           return;
         }
 
@@ -305,8 +387,9 @@ export default function Home() {
 
       while (true) {
         const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
+        if (done || !isCurrentStream()) break;
+
+        buf += normalizeChunk(dec.decode(value, { stream: true }));
 
         let sep;
         while ((sep = buf.indexOf('\n\n')) !== -1) {
@@ -316,22 +399,42 @@ export default function Home() {
         }
       }
 
-      const tail = buf.trim();
-      if (tail) {
-        processParsedEvent(parseBlock(tail));
+      if (isCurrentStream()) {
+        buf += normalizeChunk(dec.decode());
+        const tail = buf.trim();
+        if (tail) {
+          processParsedEvent(parseBlock(tail));
+        }
       }
     } catch (e) {
+      if (e?.name === 'AbortError') return;
+
       console.error('Stream error:', e);
       processEvent({
         type: UI_EVENT_TYPES.ERROR,
         payload: { message: e.message, recoverable: true },
       });
+    } finally {
+      if (isCurrentStream()) {
+        streamControlRef.current.controller = null;
+      }
     }
 
-    if (latestAssistantText) {
+    if (isCurrentStream() && latestAssistantText) {
       speak(latestAssistantText);
-      setTimeout(() => setWhisper(""), 2500);
+      clearWhisperHideTimer();
+      whisperHideTimerRef.current = setTimeout(() => setWhisper(""), WHISPER_HIDE_DELAY_MS);
     }
+  };
+
+  const handleRetryLastTurn = async () => {
+    if (isStreaming) return;
+    const lastTurn = lastTurnRef.current;
+    if (!lastTurn?.text) return;
+
+    setVoiceCaption('');
+    setErrorNoticeDismissed(false);
+    await streamFromBackend(lastTurn.text, lastTurn.personaHint || 'both', lastTurn.requestMessages);
   };
 
   // Handle module action
@@ -415,12 +518,15 @@ export default function Home() {
 
   // Reset conversation
   const handleReset = () => {
+    streamControlRef.current.controller?.abort?.();
+    streamControlRef.current.controller = null;
+    clearWhisperHideTimer();
+    lastTurnRef.current = null;
     clearConversation();
     setHasStarted(false);
     setIsVoiceActive(false);
     setVoiceCaption("");
     setWhisper("");
-    setShowMemory(false);
   };
 
   const getLatestDeliverable = (type) => {
@@ -435,15 +541,27 @@ export default function Home() {
   const latestInterviewDeliverable = getLatestDeliverable('interview');
   const latestOutreachDeliverable = getLatestDeliverable('outreach');
 
+  const connectionStatusLabel = error
+    ? 'Needs attention'
+    : isStreaming
+      ? 'Responding'
+      : (status?.message ? 'Working' : 'Ready');
+
+  const connectionStatusClass = error
+    ? 'text-rose-600 border-rose-200 bg-rose-50/85'
+    : isStreaming
+      ? 'text-violet-600 border-violet-200 bg-violet-50/85'
+      : 'text-emerald-600 border-emerald-200 bg-emerald-50/85';
+
   return (
-    <div className="relative h-screen overflow-hidden bg-gradient-to-b from-stone-50 via-neutral-50 to-stone-100">
+    <div className="relative min-h-[100dvh] h-screen overflow-hidden bg-gradient-to-b from-stone-50 via-neutral-50 to-stone-100">
       {/* Background texture */}
       <div className="absolute inset-0 opacity-[0.015]" style={{
         backgroundImage: `radial-gradient(circle at 1px 1px, black 1px, transparent 0)`,
         backgroundSize: "32px 32px"
       }} />
 
-      <div className="relative h-full flex flex-col">
+      <div className="relative min-h-[100dvh] h-full flex flex-col">
         {/* Floating Hints */}
         <FloatingHints visible={!hasStarted} />
 
@@ -455,7 +573,7 @@ export default function Home() {
               initial={{ opacity: 1 }}
               exit={{ opacity: 0, y: -20 }}
               transition={{ duration: 0.4, ease: "easeInOut" }}
-              className="flex-1 flex flex-col items-center justify-center px-6"
+              className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6"
             >
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
@@ -470,10 +588,10 @@ export default function Home() {
                   Life OS
                 </h1>
                 <p className="text-neutral-400 text-sm tracking-[0.15em] uppercase font-medium">
-                  Adaptive guidance for work & life
+                  Productive guidance for career and life execution
                 </p>
                 <p className="text-neutral-500 text-xs mt-3">
-                  Voice adapts dynamically by context during the conversation.
+                  Ask in plain language. Get concrete next steps, drafts, and decisions.
                 </p>
               </motion.div>
 
@@ -483,17 +601,25 @@ export default function Home() {
                 transition={{ duration: 0.8, delay: 0.5 }}
                 className="w-full max-w-2xl px-4"
               >
-                <UnifiedInput onSend={handleSend} disabled={isStreaming} />
+                <UnifiedInput
+                  onSend={handleSend}
+                  disabled={isStreaming}
+                  placeholder="Ask for CV, interview prep, outreach, or a concrete plan..."
+                />
               </motion.div>
 
               <motion.p
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ duration: 1, delay: 1 }}
-                className="mt-6 text-[12px] tracking-[0.15em] uppercase text-neutral-400"
+                className="mt-6 text-[11px] tracking-[0.15em] uppercase text-neutral-400"
               >
-                your next chapter starts with a conversation
+                built for real execution, not ideas only
               </motion.p>
+
+              <p className="mt-2 text-[12px] text-neutral-500 text-center">
+                External sends always require your explicit confirmation.
+              </p>
 
               <AnimatePresence>
                 {showHint && (
@@ -505,7 +631,7 @@ export default function Home() {
                     className="mt-12 max-w-md mx-auto"
                   >
                     <div className="text-neutral-500 text-sm text-center">
-                      Try: "Build my CV" or "Prepare me for an interview at Rinuccini"
+                      Try: “Build my CV for this role” or “Give me a 7-day interview prep plan”.
                     </div>
                   </motion.div>
                 )}
@@ -522,10 +648,10 @@ export default function Home() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ duration: 0.5 }}
-              className="flex-1 flex flex-col items-center justify-center relative h-full overflow-hidden"
+              className="flex-1 flex flex-col items-center justify-center relative h-full overflow-hidden px-1"
             >
               {/* Voice captions */}
-              <div className="absolute top-24 left-0 right-0 px-6">
+              <div className="absolute top-20 sm:top-24 left-0 right-0 px-4 sm:px-6">
                 <div className="max-w-2xl mx-auto">
                   <WhisperCaption text={voiceCaption} visible={!!voiceCaption} />
                 </div>
@@ -536,19 +662,26 @@ export default function Home() {
                 {whisper && <WhisperResponse text={whisper} visible={!!whisper} />}
               </AnimatePresence>
 
+              {/* Status notice */}
+              {status?.message && !error && (
+                <div className="absolute top-14 sm:top-16 left-1/2 -translate-x-1/2 rounded-full border border-violet-200 bg-white/85 px-3 py-1 text-[11px] text-violet-700 shadow-sm z-10 max-w-[calc(100vw-2rem)] truncate">
+                  {status.message}{typeof status.progress === 'number' ? ` · ${status.progress}%` : ''}
+                </div>
+              )}
+
               {/* Central Avatar */}
               <div className="flex-1 flex items-center justify-center">
                 <AvatarWithWaves persona={currentSpeaker} isActive={isVoiceActive} />
               </div>
 
               {/* Message feed */}
-              <div className="absolute bottom-28 left-0 right-0 px-6 overflow-y-auto max-h-[60vh]">
+              <div ref={messageFeedRef} className="absolute bottom-[calc(env(safe-area-inset-bottom)+6.75rem)] sm:bottom-28 left-0 right-0 px-4 sm:px-6 overflow-y-auto max-h-[58vh] sm:max-h-[60vh]">
                 <div className="max-w-2xl mx-auto space-y-3">
-                  {messages.slice(-6).map((m, idx) => (
-                    <MessageBubble 
-                      key={m.id || idx} 
-                      message={m} 
-                      isLast={idx === Math.min(messages.length, 6) - 1} 
+                  {messages.map((m, idx) => (
+                    <MessageBubble
+                      key={m.id || idx}
+                      message={m}
+                      isLast={idx === messages.length - 1}
                     />
                   ))}
                   
@@ -564,6 +697,24 @@ export default function Home() {
                       isLast={true}
                       isStreaming={true}
                     />
+                  )}
+
+                  {isStreaming && !currentMessage && (
+                    <MessageBubble
+                      message={{
+                        role: 'assistant',
+                        content: 'Thinking through the best next step…',
+                        persona: currentSpeaker,
+                        timestamp: new Date().toISOString(),
+                      }}
+                      isStreaming={true}
+                    />
+                  )}
+
+                  {messages.length <= 1 && !isStreaming && (
+                    <div className="rounded-2xl border border-white/70 bg-white/75 p-4 text-sm text-neutral-600 shadow-sm">
+                      Start with one specific goal and a constraint. Example: “I need a CV for a backend role by Monday.”
+                    </div>
                   )}
                   
                   {/* Inline CV Preview */}
@@ -583,21 +734,35 @@ export default function Home() {
                     deliverable: latestOutreachDeliverable,
                     onAction: handleModuleAction,
                   })}
-                  
-                  <div ref={messagesEndRef} />
                 </div>
               </div>
 
               {/* Error display */}
-              {error && (
-                <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-red-50 border border-red-200 rounded-lg px-4 py-2">
-                  <p className="text-red-600 text-sm">{error.message}</p>
+              {error && !errorNoticeDismissed && (
+                <div className="absolute top-16 sm:top-20 left-1/2 -translate-x-1/2 bg-red-50/95 border border-red-200 rounded-xl px-4 py-3 shadow-sm w-[min(92vw,30rem)] z-20">
+                  <p className="text-red-700 text-sm font-medium">Couldn’t complete that response.</p>
+                  <p className="text-red-600 text-xs mt-1">{error.message || 'Please try again.'}</p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      onClick={handleRetryLastTurn}
+                      disabled={isStreaming || !lastTurnRef.current?.text}
+                      className="px-3 py-1.5 rounded-md bg-red-600 text-white text-xs disabled:opacity-50"
+                    >
+                      Retry
+                    </button>
+                    <button
+                      onClick={() => setErrorNoticeDismissed(true)}
+                      className="px-3 py-1.5 rounded-md bg-white text-neutral-600 border border-red-100 text-xs"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
                 </div>
               )}
 
 
-              {/* Approval state summary */}
-              {Object.values(actionApprovals || {}).length > 0 && (
+              {/* Approval state summary (debug only) */}
+              {isActionApprovalDebugVisible && Object.values(actionApprovals || {}).length > 0 && (
                 <div className="absolute top-20 right-6 bg-white/90 border border-neutral-200 rounded-lg px-3 py-2 text-xs shadow-sm max-w-xs">
                   <p className="font-medium text-neutral-700 mb-1">Action approvals</p>
                   <div className="space-y-1">
@@ -708,7 +873,7 @@ export default function Home() {
               )}
 
               {/* Header - top left */}
-              <div className="absolute top-6 left-6 flex items-center gap-3">
+              <div className="absolute top-4 sm:top-6 left-4 sm:left-6 flex items-center gap-3">
                 <button
                   onClick={handleReset}
                   className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 via-rose-500 to-violet-500 flex items-center justify-center hover:opacity-80 transition-opacity cursor-pointer"
@@ -718,7 +883,11 @@ export default function Home() {
               </div>
 
               {/* Controls - top right */}
-              <div className="absolute top-6 right-6 flex items-center gap-1">
+              <div className="absolute top-4 sm:top-6 right-4 sm:right-6 flex items-center gap-2">
+                <div className={`px-2.5 py-1 rounded-full border text-[11px] shadow-sm ${connectionStatusClass}`}>
+                  {connectionStatusLabel}
+                </div>
+
                 {/* TTS toggle */}
                 <button
                   onClick={() => {
@@ -728,22 +897,14 @@ export default function Home() {
                       return next;
                     });
                   }}
-                  className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
+                  className="relative w-9 h-9 rounded-xl flex items-center justify-center bg-white/60 hover:bg-white/80 border border-white/70 transition-colors"
                   title={ttsEnabled ? "Voice playback: on" : "Voice playback: off"}
                 >
                   {ttsEnabled ? (
-                    <Volume2 className="w-4 h-4 text-neutral-500" />
+                    <Volume2 className="w-4 h-4 text-neutral-600" />
                   ) : (
                     <VolumeX className="w-4 h-4 text-neutral-400" />
                   )}
-                </button>
-
-                {/* Memory toggle */}
-                <button
-                  onClick={() => setShowMemory(!showMemory)}
-                  className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-white/40 transition-colors"
-                >
-                  <Brain className="w-4 h-4 text-neutral-500" />
                 </button>
               </div>
 
@@ -767,14 +928,17 @@ export default function Home() {
               </AnimatePresence>
 
               {/* Input */}
-              <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-8 pb-6 px-4 z-20">
+              <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white/95 to-transparent pt-6 sm:pt-8 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] px-3 sm:px-4 z-20">
                 <UnifiedInput
                   onSend={handleSend}
                   disabled={isStreaming}
                   onInterim={setVoiceCaption}
                   onListeningChange={setIsVoiceActive}
-                  placeholder="Type or speak your message..."
+                  placeholder="Describe your goal and constraint…"
                 />
+                <p className="mt-2 text-center text-[11px] text-neutral-400">
+                  No auto-send actions. External sends always require confirmation.
+                </p>
               </div>
             </motion.div>
           )}
