@@ -76,6 +76,7 @@ export default function Home() {
   const lastWhisperUpdateAtRef = useRef(0);
   const lastRenderedMessageCountRef = useRef(0);
   const lastTurnRef = useRef(null);
+  const hasStartedRef = useRef(false);
   const [hasStarted, setHasStarted] = React.useState(false);
   const [showHint, setShowHint] = React.useState(false);
   const [voiceCaption, setVoiceCaption] = React.useState("");
@@ -141,6 +142,10 @@ export default function Home() {
   }, [activeModes, currentSpeaker]);
 
   useEffect(() => {
+    hasStartedRef.current = hasStarted;
+  }, [hasStarted]);
+
+  useEffect(() => {
     if (error) {
       setErrorNoticeDismissed(false);
     }
@@ -201,6 +206,8 @@ export default function Home() {
 
   // Start conversation
   const startConversation = async (initialText) => {
+    if (hasStartedRef.current) return;
+
     const id = `${Date.now()}`;
     const initialPersona = resolvePersonaHint(initialText || '');
 
@@ -221,23 +228,20 @@ export default function Home() {
       },
     });
 
+    hasStartedRef.current = true;
     setHasStarted(true);
-
-    if (initialText) {
-      setTimeout(() => handleSend(initialText), 50);
-    }
   };
 
   // Handle send
   const handleSend = async (text) => {
     const t = (text ?? "").trim();
 
-    if (!hasStarted) {
+    if (!hasStartedRef.current) {
       await startConversation(t);
       if (!t) {
         setIsVoiceActive(true);
+        return;
       }
-      return;
     }
 
     if (!t || isStreaming) return;
@@ -522,6 +526,7 @@ export default function Home() {
     streamControlRef.current.controller = null;
     clearWhisperHideTimer();
     lastTurnRef.current = null;
+    hasStartedRef.current = false;
     clearConversation();
     setHasStarted(false);
     setIsVoiceActive(false);
